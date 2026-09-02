@@ -5,8 +5,8 @@ edition.workspace = true
 description = "Stream event protocol: type + payload + envelope (protocol_spec)"
 license.workspace = true
 authors.workspace = true
-repository = "https://github.com/hi-youichi/anureo"
-homepage = "https://github.com/hi-youichi/anureo"
+repository = "https://github.com/anureo/anureo"
+homepage = "https://github.com/anureo/anureo"
 
 [lib]
 path = "src/lib.rs"

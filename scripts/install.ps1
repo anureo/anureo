@@ -14,13 +14,13 @@ Install anureo from GitHub Releases.
 Environment variables:
   ANUREO_VERSION       Release tag without the leading v (default: latest)
   ANUREO_INSTALL_DIR   Installation directory (default: %LOCALAPPDATA%\anureo\bin)
-  ANUREO_REPO          GitHub repository (default: hi-youichi/anureo)
+  ANUREO_REPO          GitHub repository (default: anureo/anureo)
 '@
     exit 0
 }
 
 if ([string]::IsNullOrWhiteSpace($Version)) { $Version = 'latest' }
-if ([string]::IsNullOrWhiteSpace($Repository)) { $Repository = 'hi-youichi/anureo' }
+if ([string]::IsNullOrWhiteSpace($Repository)) { $Repository = 'anureo/anureo' }
 if ([string]::IsNullOrWhiteSpace($InstallDir)) {
     $InstallDir = Join-Path $env:LOCALAPPDATA 'anureo\bin'
 }

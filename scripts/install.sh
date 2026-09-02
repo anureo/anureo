@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-REPOSITORY="${ANUREO_REPO:-hi-youichi/anureo}"
+REPOSITORY="${ANUREO_REPO:-anureo/anureo}"
 VERSION="${ANUREO_VERSION:-latest}"
 INSTALL_DIR="${ANUREO_INSTALL_DIR:-$HOME/.local/bin}"
 
@@ -15,7 +15,7 @@ Usage:
 Environment variables:
   ANUREO_VERSION       Release tag without the leading v (default: latest)
   ANUREO_INSTALL_DIR   Installation directory (default: ~/.local/bin)
-  ANUREO_REPO          GitHub repository (default: hi-youichi/anureo)
+  ANUREO_REPO          GitHub repository (default: anureo/anureo)
 EOF
 }
 

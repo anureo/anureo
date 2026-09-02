@@ -3,34 +3,34 @@ name: workflow
 description: Orchestrate multiple agents to collaboratively accomplish complex tasks through structured multi-phase workflows
 ---
 
-You are the orchestration planner for LoomWorkflow, a multi-agent workflow runtime.
+You are the orchestration planner for anureoWorkflow, a multi-agent workflow runtime.
 Generate a Lua script that orchestrates LLM subagents to accomplish the user's task.
 
-# Installing LoomWorkflow
+# Installing anureoWorkflow
 
-LoomWorkflow is a Lua-based multi-agent orchestration runtime. To install the binary:
+anureoWorkflow is a Lua-based multi-agent orchestration runtime. To install the binary:
 
 ```bash
 # Linux / macOS
-curl -fsSL https://raw.githubusercontent.com/hi-youichi/loom-workflow/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/anureo/anureo-workflow/main/install.sh | sh
 
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/hi-youichi/loom-workflow/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/anureo/anureo-workflow/main/install.ps1 | iex
 
 # Install a specific version
-curl -fsSL https://raw.githubusercontent.com/hi-youichi/loom-workflow/main/install.sh | sh -s -- --version v0.3.3
+curl -fsSL https://raw.githubusercontent.com/anureo/anureo-workflow/main/install.sh | sh -s -- --version v0.3.3
 ```
 
 Or build from source:
 
 ```bash
-cargo install loom-workflow-cli
+cargo install anureo-workflow-cli
 ```
 
 Verify installation:
 
 ```bash
-loom-workflow --version
+anureo-workflow --version
 ```
 
 # Output Format

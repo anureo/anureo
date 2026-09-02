@@ -1,8 +1,8 @@
-# Loom
+# anureo
 
-Loom is a local-first AI Agent runtime. It lets developers run agents in the CLI, IDE (ACP), and messaging bots, while keeping tool calls, sessions, memory, skills, and workflows within a controllable project context.
+anureo is a local-first AI Agent runtime. It lets developers run agents in the CLI, IDE (ACP), and messaging bots, while keeping tool calls, sessions, memory, skills, and workflows within a controllable project context.
 
-Loom's goal is not to replace code review or let agents modify systems unattended, but to enable them to complete real project tasks continuously and interpretably.
+anureo's goal is not to replace code review or let agents modify systems unattended, but to enable them to complete real project tasks continuously and interpretably.
 
 > The current version is still evolving. Workflows, browser extension, and task modes include experimental capabilities; `evolve` is not yet implemented.
 
@@ -13,34 +13,34 @@ Loom's goal is not to replace code review or let agents modify systems unattende
 Linux (x86_64):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/hi-youichi/loom/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/anureo/anureo/main/scripts/install.sh | sh
 ```
 
 macOS (Intel / Apple Silicon):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/hi-youichi/loom/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/anureo/anureo/main/scripts/install.sh | sh
 ```
 
 The macOS installer detects Intel versus Apple Silicon automatically. To install a specific release on Linux or macOS:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/hi-youichi/loom/main/scripts/install.sh | sh -s -- --version VERSION
+curl -fsSL https://raw.githubusercontent.com/anureo/anureo/main/scripts/install.sh | sh -s -- --version VERSION
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/hi-youichi/loom/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/anureo/anureo/main/scripts/install.ps1 | iex
 ```
 
 To install a specific Windows release:
 
 ```powershell
-$env:LOOM_VERSION = "VERSION"; irm https://raw.githubusercontent.com/hi-youichi/loom/main/scripts/install.ps1 | iex
+$env:ANUREO_VERSION = "VERSION"; irm https://raw.githubusercontent.com/anureo/anureo/main/scripts/install.ps1 | iex
 ```
 
-The installers use a user-level directory and do not require administrator privileges. Set `LOOM_VERSION`, `LOOM_REPO`, or `LOOM_INSTALL_DIR` to override the release, repository, or destination.
+The installers use a user-level directory and do not require administrator privileges. Set `ANUREO_VERSION`, `ANUREO_REPO`, or `ANUREO_INSTALL_DIR` to override the release, repository, or destination.
 
 ### 1. Configure Your Model
 
@@ -50,24 +50,24 @@ Copy the example environment file and fill in your model credentials:
 Copy-Item .env.example .env
 ```
 
-You can also create a `config.toml` in the user config directory (default `~/.loom/`, overridable via the `--home DIR` flag). The `.env` in the project root takes precedence over that config.
+You can also create a `config.toml` in the user config directory (default `~/.anureo/`, overridable via the `--home DIR` flag). The `.env` in the project root takes precedence over that config.
 
 ### 2. Run an Agent in Your Project
 
 ```powershell
 # Run the default ReAct agent
-cargo run -p cli -- -m "Survey this repo and list test entry points"
+cargo run -p anureo-cli -- -m "Survey this repo and list test entry points"
 
 # Explicitly specify the agent's working directory
-cargo run -p cli -- --working-folder . "Find failing tests and explain why"
+cargo run -p anureo-cli -- --working-folder . "Find failing tests and explain why"
 
 # Continue in the same session
-cargo run -p cli -- --session-id bug-123 "Now fix it and run the relevant tests"
+cargo run -p anureo-cli -- --session-id bug-123 "Now fix it and run the relevant tests"
 ```
 
 Before the first run, verify the agent's effective working directory, model, and tool permissions. For modification tasks, use `--worktree` to run in an isolated Git worktree.
 
-## What Loom Can Do
+## What anureo Can Do
 
 | Capability | Use Case |
 | --- | --- |
@@ -80,15 +80,15 @@ Before the first run, verify the agent's effective working directory, model, and
 ## Common Commands
 
 ```text
-loom -m "task"                         # Start a one-shot task
-loom -i -m "task"                      # Enter an interactive session
-loom --session-id <id> "continue task" # Resume a session
-loom session list                       # List sessions
-loom models                             # List available models
-loom tool list                          # List tools
-loom mcp list                           # Manage MCP services
-loom skills list / loom memory list     # Manage reusable context
-loom acp                                # Start as an ACP server
+anureo -m "task"                         # Start a one-shot task
+anureo -i -m "task"                      # Enter an interactive session
+anureo --session-id <id> "continue task" # Resume a session
+anureo session list                       # List sessions
+anureo models                             # List available models
+anureo tool list                          # List tools
+anureo mcp list                           # Manage MCP services
+anureo skills list / anureo memory list     # Manage reusable context
+anureo acp                                # Start as an ACP server
 ```
 
 For full usage, see the [CLI Guide](docs/guides/cli.md).
@@ -104,11 +104,11 @@ For full usage, see the [CLI Guide](docs/guides/cli.md).
 ## Development
 
 ```powershell
-cargo build -p cli
-cargo test -p cli
+cargo build -p anureo-cli
+cargo test -p anureo-cli
 ```
 
-Loom is a Rust workspace; crate and experimental module details can be found in each module's `Cargo.toml`, source code, and `docs/design/`. User experience and scope are defined by the guides under `docs/`.
+anureo is a Rust workspace; crate and experimental module details can be found in each module's `Cargo.toml`, source code, and `docs/design/`. User experience and scope are defined by the guides under `docs/`.
 
 ## License
 
