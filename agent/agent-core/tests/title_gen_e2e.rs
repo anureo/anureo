@@ -22,6 +22,7 @@ fn sample_conversation() -> Vec<Message> {
 }
 
 #[tokio::test]
+#[ignore = "e2e: needs real LLM providers with api_key+base_url in ~/.anureo/config.toml; run with --run-ignored only"]
 async fn e2e_generate_title_real_llm() {
     let full = xdg_toml::load_full_config("anureo").expect("load ~/.anureo/config.toml");
     let conv = sample_conversation();
