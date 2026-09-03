@@ -172,6 +172,9 @@ impl SessionListHandler {
             ));
         }
         let now = (self.clock)();
+        let directory = parsed
+            .directory
+            .map(canonicalize_directory_filter);
         let (snapshot_id, offset, records, snapshot_version) = if let Some(cursor) = parsed.cursor {
             let payload = self.decode_cursor(&cursor)?;
             let mut snapshots = self.snapshots.lock().expect("session snapshots poisoned");
@@ -183,8 +186,7 @@ impl SessionListHandler {
                 // Subsequent pages are allowed to send only `cursor` and
                 // `limit`; omitted filters inherit the immutable snapshot.
                 // If a caller explicitly supplies a filter, it must match.
-                || parsed
-                    .directory
+                || directory
                     .as_ref()
                     .is_some_and(|directory| snapshot.directory.as_ref() != Some(directory))
                 || parsed
@@ -205,13 +207,13 @@ impl SessionListHandler {
         } else {
             let agent = self.agent()?;
             let (records, snapshot_version) = agent
-                .list_index_records_for_owner(&ctx.principal, parsed.directory.as_deref(), archived)
+                .list_index_records_for_owner(&ctx.principal, directory.as_deref(), archived)
                 .await
                 .map_err(|error| internal_error(error.message))?;
             let snapshot_id = Uuid::new_v4().simple().to_string();
             let snapshot = Snapshot {
                 owner_principal: ctx.principal.clone(),
-                directory: parsed.directory.clone(),
+                directory: directory.clone(),
                 archived: archived.to_string(),
                 records: records.clone(),
                 snapshot_version,
@@ -533,6 +535,18 @@ struct DeleteParams {
 
 fn default_archived() -> bool {
     true
+}
+
+/// Spec 37: `directory` must match the server-canonicalized cwd stored by
+/// `session/new`, so caller paths that resolve differently (macOS `/var` →
+/// `/private/var`, Windows `\\?\` verbatim prefix, `.` segments) still match
+/// the stored records — same normalization the standard `session/list` uses.
+/// A filter pointing at a missing directory keeps verbatim matching: the SQL
+/// layer still strips verbatim prefixes and unifies separators.
+fn canonicalize_directory_filter(directory: String) -> String {
+    std::fs::canonicalize(&directory)
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or(directory)
 }
 
 fn internal_error(message: impl Into<String>) -> ExtensionError {
@@ -1402,6 +1416,58 @@ mod tests {
         assert_eq!(ids.len(), 5);
         let unique = ids.iter().collect::<std::collections::HashSet<_>>();
         assert_eq!(unique.len(), ids.len());
+    }
+
+    /// Regression (GH run 33637237811, macos-14): `session/new` stores the
+    /// canonicalized cwd, but a client listing with a non-canonical path
+    /// (macOS `/var/folders/...` vs stored `/private/var/folders/...`)
+    /// previously matched zero rows. The `directory` filter must be
+    /// canonicalized the same way before matching. `join(".")` is a portable
+    /// stand-in for a symlinked caller path: it exists but differs lexically.
+    #[tokio::test]
+    async fn list_directory_filter_canonicalizes_non_canonical_caller_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let agent =
+            Arc::new(AnureoAcpAgent::new_with_db_path(temp.path().join("memory.db")).expect("agent"));
+        let session_id = agent
+            .new_session(NewSessionRequest::new(temp.path()))
+            .await
+            .expect("session")
+            .session_id
+            .to_string();
+
+        let handler = SessionListHandler::new();
+        handler.bind(&agent);
+        let ctx = ExtensionContext {
+            session_id: None,
+            principal: "local-anonymous".into(),
+            connection_id: "test-connection".into(),
+            working_directory: Some(temp.path().to_path_buf()),
+            client_capabilities: ClientCapabilitiesInfo::default(),
+        };
+        let non_canonical = temp.path().join(".").to_string_lossy().to_string();
+        assert_ne!(
+            non_canonical,
+            std::fs::canonicalize(temp.path())
+                .expect("canonicalize")
+                .to_string_lossy(),
+            "precondition: caller path must differ lexically from the canonical path"
+        );
+        let response = handler
+            .handle(
+                "list",
+                json!({ "directory": non_canonical, "limit": 10 }),
+                &ctx,
+            )
+            .await
+            .expect("list page");
+        let ids: Vec<_> = response["sessions"]
+            .as_array()
+            .expect("sessions array")
+            .iter()
+            .filter(|item| item["sessionId"] == session_id)
+            .collect();
+        assert_eq!(ids.len(), 1, "non-canonical directory must still match");
     }
 
     fn base_metadata() -> SessionMetadata {
