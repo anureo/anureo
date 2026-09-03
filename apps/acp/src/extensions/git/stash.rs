@@ -78,7 +78,10 @@ pub async fn handle_stash_create(
         .working_directory
         .clone()
         .unwrap_or_else(|| std::path::PathBuf::from("."));
-    if !anureo_git::facade::is_dirty(&repo_dir).await.unwrap_or(false) {
+    if !anureo_git::facade::is_dirty(&repo_dir)
+        .await
+        .unwrap_or(false)
+    {
         return Err(ExtensionError::invalid_params("no local changes to save"));
     }
 
