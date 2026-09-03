@@ -79,5 +79,6 @@ typescript-sdk
 .anureo/worktrees/
 
 .anureo-home/
+.anureo-home-local/
 scripts/web-audit/node_modules/
 scripts/web-audit/report.json
