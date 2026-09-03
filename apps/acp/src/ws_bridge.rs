@@ -440,7 +440,16 @@ fn spawn_server(
     cmd.args(["server", "--host", host, "--port", &port.to_string()]);
     if let Some(home) = home {
         cmd.arg("--home").arg(home);
+        // The companion server is private to this bridge (loopback, freshly
+        // bound port). Ambient desktop auth config the bridge cannot satisfy
+        // (UI password, shared Express data dir with `jwt-secret`) must not
+        // flip it into pre-auth mode: `/health` would answer 401, the probe
+        // would loop forever and the WebSocket relay would never start.
+        // `ANUREO_AUTH_TOKEN` is kept — the bridge presents it as Bearer.
+        cmd.env("ANUREO_DATA_DIR", home);
     }
+    cmd.env_remove("ANUREO_UI_PASSWORD");
+    cmd.env_remove("ANUREO_JWT_SECRET");
     if let Some(pid_file) = pid_file {
         cmd.arg("--pid-file").arg(pid_file);
     }
