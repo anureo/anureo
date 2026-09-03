@@ -352,7 +352,7 @@ impl AnureoAcpAgent {
     }
 
     /// Resolve model configuration with tier awareness.
-    /// Priority: ACP explicit model > agent model name > agent tier > default config.
+    /// Priority: ACP explicit model > last explicitly selected model > agent model name > agent tier > default config.
     async fn resolve_model_with_tier_awareness(
         &self,
         session_config: &crate::session::SessionConfig,
@@ -367,6 +367,18 @@ impl AnureoAcpAgent {
                 resolved_model = %resolved.model.as_deref().unwrap_or("none"),
                 resolution_time_ms = start_time.elapsed().as_millis(),
                 "Using ACP selected model, overriding agent tier configuration"
+            );
+            return resolved;
+        }
+
+        if let Some(last_selected) = crate::last_model::load().filter(|m| !m.is_empty() && m != "default") {
+            let resolved = agent::run::resolve_model_config(Some(&last_selected)).await;
+            tracing::info!(
+                last_selected_model = %last_selected,
+                agent = %session_config.current_agent,
+                resolved_model = %resolved.model.as_deref().unwrap_or("none"),
+                resolution_time_ms = start_time.elapsed().as_millis(),
+                "No session model configured, using last explicitly selected model"
             );
             return resolved;
         }
@@ -687,7 +699,7 @@ impl AnureoAcpAgent {
         }
 
         let default_mode = self.agent_registry.default_mode_id();
-        let current_model = None.or_else(crate::last_model::load).unwrap_or_default();
+        let current_model = crate::last_model::load().unwrap_or_default();
         let is_default = current_model.is_empty() || current_model == "default";
         self.sessions.update_session_config(&our_id, |c| {
             c.current_agent = default_mode.to_string();
@@ -854,11 +866,12 @@ impl AnureoAcpAgent {
                 if value_str == "default" {
                     self.sessions
                         .update_session_config(&key, |c| c.model = None);
+                    crate::last_model::clear();
                 } else {
                     self.sessions
                         .update_session_config(&key, |c| c.model = Some(value_str.clone()));
+                    crate::last_model::save(&value_str);
                 }
-                crate::last_model::save(&value_str);
                 if let Err(e) = self.config_store.set(&key, "model", &value_str) {
                     tracing::warn!(session_id = %args.session_id, error = %e, "Failed to persist model config");
                 }
@@ -1025,12 +1038,7 @@ impl AnureoAcpAgent {
             .session_config
             .model
             .clone()
-            .unwrap_or_else(|| {
-                std::env::var("MODEL")
-                    .ok()
-                    .or_else(crate::last_model::load)
-                    .unwrap_or_default()
-            });
+            .unwrap_or_else(|| crate::last_model::load().unwrap_or_default());
         // If model was resolved from fallback rather than source config, persist it
         if !current_model.is_empty() && source_entry.session_config.model.is_none() {
             self.sessions.update_session_config(&new_our_id, |c| {
