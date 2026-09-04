@@ -1611,7 +1611,11 @@ impl AnureoAcpAgent {
             }
         };
 
-        if !recovery_delta {
+        // Checkpoint replay only serves the restore path (entry rebuilt from
+        // durable metadata) or legacy clients without sessionRecovery metadata.
+        // A live attach full-load gets its history from the coordinator's
+        // seq'd event-stream replay instead.
+        if !recovery_delta && (entry_was_created || !recovery_requested) {
             match checkpoint {
                 Ok(Some((checkpoint, _metadata))) => {
                     let state: ReActState = checkpoint.channel_values;
@@ -1775,7 +1779,9 @@ impl AnureoAcpAgent {
         });
         let response: LoadSessionResponse = serde_json::from_value(json)
             .map_err(|e| agent_client_protocol::Error::internal_error().data(e.to_string()))?;
-        if (!recovery_delta || entry_was_created)
+        // Only a fresh entry actually went through begin_restore (Loading);
+        // a live attach must not touch the lifecycle (a prompt may be active).
+        if entry_was_created
             && self
                 .sessions
                 .finish_restore(&our_session_id, SessionLifecycle::Idle)

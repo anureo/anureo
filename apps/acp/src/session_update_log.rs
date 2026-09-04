@@ -151,16 +151,7 @@ impl UpdateLogRepository {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let Some((stream_id, next_seq)) = transaction
-            .query_row(
-                "SELECT stream_id, next_seq FROM acp_session_sync_streams WHERE session_id = ?1",
-                [session_id.to_string()],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?)),
-            )
-            .optional()?
-        else {
-            return Ok(None);
-        };
+        let (stream_id, next_seq) = Self::ensure_stream(&transaction, session_id)?;
         let event = SessionUpdateEvent {
             stream_id: stream_id.clone(),
             seq: next_seq,
@@ -350,6 +341,27 @@ impl SessionUpdateLog {
         prompt_state: SessionLoadPromptState,
     ) -> rusqlite::Result<SessionReplayResult> {
         self.open_internal(session_id, connection_id, cursor, prompt_state)
+            .await
+    }
+
+    /// Read the entire retained replay window and bind the connection to the session.
+    ///
+    /// Attach-path companion to `read_after_cursor` for full `session/load`
+    /// against a live in-memory session: the client has no cursor, so the
+    /// retained window (all events since the oldest unpruned seq) is the
+    /// replay, and live updates keep the (streamId, seq) space continuous.
+    pub async fn read_full_stream(
+        &self,
+        session_id: SessionId,
+        connection_id: String,
+        prompt_state: SessionLoadPromptState,
+    ) -> rusqlite::Result<SessionReplayResult> {
+        let stream = self.repository.read_or_create(&session_id)?;
+        let cursor = SessionUpdateCursor {
+            stream_id: stream.stream_id.clone(),
+            seq: stream.min_replay_seq.saturating_sub(1),
+        };
+        self.open_internal(session_id, connection_id, Some(cursor), prompt_state)
             .await
     }
 
@@ -624,6 +636,30 @@ mod tests {
         assert_eq!(replay.stream_id, stream_id);
         assert_eq!(replay.events.len(), 1);
         assert_eq!(replay.events[0].seq, 1);
+    }
+
+    #[tokio::test]
+    async fn full_stream_replays_retained_window_without_cursor() {
+        let (service, connection) = fixture(2);
+        let session_id = SessionId::new("session-full-stream");
+        for _ in 0..3 {
+            service.record(&notification("session-full-stream")).await;
+        }
+
+        let replay = service
+            .read_full_stream(
+                session_id,
+                connection.id.clone(),
+                SessionSyncPromptState::Running,
+            )
+            .await
+            .expect("full stream replay");
+        assert_eq!(replay.mode, SessionSyncMode::Delta);
+        assert_eq!(replay.prompt_state, SessionSyncPromptState::Running);
+        assert_eq!(replay.through_seq, 3);
+        assert_eq!(replay.events.len(), 2);
+        assert_eq!(replay.events[0].seq, 2);
+        assert_eq!(replay.events[1].seq, 3);
     }
 
     #[test]

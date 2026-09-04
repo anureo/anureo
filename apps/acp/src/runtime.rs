@@ -242,6 +242,7 @@ impl AcpRuntime {
         })?;
         self.metrics.total_prompts.fetch_add(1, Ordering::Relaxed);
         self.metrics.active_prompts.fetch_add(1, Ordering::Relaxed);
+        self.record_user_turn(&request.session_id, &request.prompt).await;
         let result = self
             .prompt_executor
             .execute(
@@ -328,6 +329,45 @@ impl AcpRuntime {
         ack_rx.await.map_err(|_| "ACP ingress flush was dropped")?;
         self.notification_router.flush_session(session_id).await?;
         Ok(())
+    }
+
+    /// Record the user's prompt turn into the session event log and broadcast
+    /// it to bound connections. Streaming never emits `user_message_chunk`
+    /// (see stream_bridge), so without this the seq'd replay log — the source
+    /// of `session/load` attach replays — contains no user turns and a
+    /// restored conversation projects as one unbroken assistant turn (the
+    /// legacy turn grouping only starts a turn at `role: "user"`).
+    async fn record_user_turn(
+        &self,
+        session_id: &agent_client_protocol::schema::v1::SessionId,
+        prompt: &[agent_client_protocol::schema::v1::ContentBlock],
+    ) {
+        let text = prompt
+            .iter()
+            .filter_map(|block| match block {
+                agent_client_protocol::schema::v1::ContentBlock::Text(text) => {
+                    Some(text.text.clone())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        if text.is_empty() {
+            return;
+        }
+        let notification = crate::stream_bridge::stream_update_to_session_notification(
+            session_id,
+            &crate::stream_bridge::StreamUpdate::UserMessageChunk {
+                text,
+                message_id: None,
+            },
+        );
+        if let Some(notification) = notification {
+            let _ = self
+                .updates_tx
+                .send(crate::stream_bridge::SessionUpdateEnvelope::Session(notification))
+                .await;
+        }
     }
 
     pub fn open_connection(&self, principal: String) -> OpenConnection {
