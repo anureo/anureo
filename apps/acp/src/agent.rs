@@ -191,7 +191,7 @@ pub struct AnureoAcpAgent {
     /// Keeping it on the agent lets embedded hosts and tests isolate agents
     /// without mutating the process-wide `ANUREO_HOME` environment variable.
     pub(crate) checkpoint_db_path: PathBuf,
-    pub(crate) session_update_tx: Option<mpsc::Sender<SessionUpdateEnvelope>>,
+    pub(crate) session_update_tx: Option<mpsc::UnboundedSender<SessionUpdateEnvelope>>,
     pub(crate) model_provider: Arc<dyn ModelProvider>,
     pub(crate) extension_registry: Arc<ExtensionRegistry>,
 }
@@ -242,7 +242,7 @@ impl AnureoAcpAgent {
 
     pub(crate) fn new_with_extension_registry(
         extension_registry: Arc<ExtensionRegistry>,
-        session_update_tx: Option<mpsc::Sender<SessionUpdateEnvelope>>,
+        session_update_tx: Option<mpsc::UnboundedSender<SessionUpdateEnvelope>>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         Self::new_with_extension_registry_and_db_path(
             extension_registry,
@@ -253,7 +253,7 @@ impl AnureoAcpAgent {
 
     pub(crate) fn new_with_extension_registry_and_db_path(
         extension_registry: Arc<ExtensionRegistry>,
-        session_update_tx: Option<mpsc::Sender<SessionUpdateEnvelope>>,
+        session_update_tx: Option<mpsc::UnboundedSender<SessionUpdateEnvelope>>,
         db_path: PathBuf,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         if let Some(parent) = db_path.parent() {
@@ -284,7 +284,7 @@ impl AnureoAcpAgent {
     }
 
     pub fn with_session_update_tx(
-        tx: mpsc::Sender<SessionUpdateEnvelope>,
+        tx: mpsc::UnboundedSender<SessionUpdateEnvelope>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let mut extension_registry = ExtensionRegistry::new();
         register_default_extensions(
@@ -1172,36 +1172,45 @@ impl AnureoAcpAgent {
                                 >
                         });
 
-                        let cancel = tokio_util::sync::CancellationToken::new();
+                        // A goal is server-owned and must outlive the prompt
+                        // that created it. In particular, disconnecting the
+                        // ACP client must not cancel the goal; explicit
+                        // `_anureo.dev/goal/pause` and `cancel` requests use
+                        // the runtime control registered by the runner.
+                        let session_id = args.session_id.clone();
+                        let origin_session_id = session_id.to_string();
+                        tokio::spawn(async move {
+                            let result = crate::goal_runner::run_goal(
+                                description,
+                                working_folder,
+                                resolved_goal,
+                                Some(origin_session_id),
+                                tokio_util::sync::CancellationToken::new(),
+                                event_sender,
+                                None,
+                            )
+                            .await;
 
-                        let result = crate::goal_runner::run_goal(
-                            description,
-                            working_folder,
-                            cancel,
-                            event_sender,
-                            Some(cancellation.clone()),
-                        )
-                        .await;
+                            match result {
+                                Ok(goal_result) => {
+                                    tracing::info!(
+                                        session_id = %session_id,
+                                        task_id = %goal_result.task_id,
+                                        outcome = %goal_result.outcome,
+                                        "Goal finished"
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        session_id = %session_id,
+                                        error = %e,
+                                        "Goal run failed"
+                                    );
+                                }
+                            }
+                        });
 
-                        match result {
-                            Ok(goal_result) => {
-                                tracing::info!(
-                                    session_id = %args.session_id,
-                                    task_id = %goal_result.task_id,
-                                    outcome = %goal_result.outcome,
-                                    "Goal finished"
-                                );
-                                return Ok(PromptResponse::new(StopReason::EndTurn));
-                            }
-                            Err(e) => {
-                                tracing::error!(
-                                    session_id = %args.session_id,
-                                    error = %e,
-                                    "Goal run failed"
-                                );
-                                return Ok(PromptResponse::new(StopReason::EndTurn));
-                            }
-                        }
+                        return Ok(PromptResponse::new(StopReason::EndTurn));
                     }
                     agent::commands::Command::ReviewSkill { scope } => {
                         tracing::info!(
@@ -1792,6 +1801,27 @@ impl AnureoAcpAgent {
                     agent_client_protocol::Error::internal_error()
                         .data(format!("failed to persist session lifecycle: {error}"))
                 })?;
+        }
+        let loaded_goal_session_id = session_id.to_string();
+        let goal_event_sender: Option<
+            Arc<dyn Fn(agent::run::TypedAnyStreamEvent) + Send + Sync>,
+        > = self.session_update_tx.clone().map(|sender| {
+            let loaded_session_id = session_id.clone();
+            Arc::new(move |event: agent::run::TypedAnyStreamEvent| {
+                SessionNotifier::new(sender.clone(), loaded_session_id.clone())
+                    .try_send_stream_event(&event);
+            }) as Arc<dyn Fn(agent::run::TypedAnyStreamEvent) + Send + Sync>
+        });
+        if let Err(error) = crate::extensions::goal::recover_persisted_goals(
+            &canonical_cwd,
+            &loaded_goal_session_id,
+            goal_event_sender,
+        ) {
+            tracing::warn!(
+                session_id = %session_id,
+                error = %error,
+                "failed to scan persisted goals during session restore"
+            );
         }
         Ok(response)
     }

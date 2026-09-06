@@ -64,7 +64,7 @@ pub struct AcpRuntime {
     prompt_capacity: Arc<Semaphore>,
     metrics: Arc<AcpRuntimeMetrics>,
     session_list_handler: Arc<crate::extensions::session_list::SessionListHandler>,
-    updates_tx: mpsc::Sender<crate::stream_bridge::SessionUpdateEnvelope>,
+    updates_tx: mpsc::UnboundedSender<crate::stream_bridge::SessionUpdateEnvelope>,
     flush_waiters: Arc<Mutex<std::collections::HashMap<String, oneshot::Sender<()>>>>,
     #[allow(clippy::type_complexity)]
     session_bridges: Arc<Mutex<HashMap<String, Vec<Arc<dyn ClientBridgeTrait>>>>>,
@@ -98,7 +98,7 @@ impl AcpRuntime {
         prompt_executor: Arc<dyn AcpPromptExecutor>,
         db_path: impl Into<PathBuf>,
     ) -> Result<Arc<Self>, Box<dyn std::error::Error + Send + Sync>> {
-        let (updates_tx, mut updates_rx) = mpsc::channel(256);
+        let (updates_tx, mut updates_rx) = mpsc::unbounded_channel();
         let global_bus = Arc::new(crate::global_events::GlobalEventBus::new());
         let connections = Arc::new(ConnectionRegistry::default());
         let bindings = Arc::new(SessionBindings::new());
@@ -320,7 +320,6 @@ impl AcpRuntime {
         if self
             .updates_tx
             .send(crate::stream_bridge::SessionUpdateEnvelope::Session(marker))
-            .await
             .is_err()
         {
             self.flush_waiters.lock().await.remove(&marker_id);
@@ -365,8 +364,7 @@ impl AcpRuntime {
         if let Some(notification) = notification {
             let _ = self
                 .updates_tx
-                .send(crate::stream_bridge::SessionUpdateEnvelope::Session(notification))
-                .await;
+                .send(crate::stream_bridge::SessionUpdateEnvelope::Session(notification));
         }
     }
 
@@ -408,6 +406,43 @@ mod tests {
     use super::*;
     use crate::tools::{ClientBridgeTrait, TerminalExitResult, TerminalOutput};
     use std::sync::atomic::AtomicUsize;
+
+    struct ParallelPromptProbe {
+        rendezvous: tokio::sync::Barrier,
+        active: AtomicUsize,
+        max_active: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl AcpPromptExecutor for ParallelPromptProbe {
+        async fn execute(
+            &self,
+            agent: &AnureoAcpAgent,
+            _router: &NotificationRouter,
+            request: agent_client_protocol::schema::v1::PromptRequest,
+            _capabilities: crate::client_capabilities::ClientCapabilitiesInfo,
+            _bridge: Arc<dyn ClientBridgeTrait>,
+        ) -> agent_client_protocol::Result<agent_client_protocol::schema::v1::PromptResponse>
+        {
+            let session_id = crate::session::SessionId::new(request.session_id.to_string());
+            let cancellation = agent.sessions().begin_prompt(&session_id).ok_or_else(|| {
+                agent_client_protocol::Error::new(-32010, "prompt unexpectedly busy")
+            })?;
+            let _guard = crate::session::PromptGuard::new(
+                agent.sessions(),
+                &session_id,
+                cancellation.generation(),
+            );
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_active.fetch_max(active, Ordering::SeqCst);
+            self.rendezvous.wait().await;
+            tokio::task::yield_now().await;
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            Ok(agent_client_protocol::schema::v1::PromptResponse::new(
+                agent_client_protocol::schema::v1::StopReason::EndTurn,
+            ))
+        }
+    }
 
     struct CleanupProbe(Arc<AtomicUsize>);
 
@@ -487,6 +522,58 @@ mod tests {
         assert!(first.connection.is_active());
         assert!(!second.connection.is_active());
         assert_eq!(runtime.connections.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn different_sessions_execute_prompts_in_parallel() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let probe = Arc::new(ParallelPromptProbe {
+            rendezvous: tokio::sync::Barrier::new(2),
+            active: AtomicUsize::new(0),
+            max_active: AtomicUsize::new(0),
+        });
+        let runtime = AcpRuntime::with_prompt_executor_and_db_path(
+            probe.clone(),
+            temp.path().join("memory.db"),
+        )
+        .expect("runtime");
+        let cwd = std::env::current_dir().expect("cwd");
+        let session_a = runtime
+            .agent
+            .sessions()
+            .create_owned(Some(cwd.clone()), "owner-a");
+        let session_b = runtime.agent.sessions().create_owned(Some(cwd), "owner-a");
+        let request = |session: &crate::session::SessionId| {
+            agent_client_protocol::schema::v1::PromptRequest::new(
+                session.as_str().to_owned(),
+                vec![ContentBlock::Text(TextContent::new("parallel"))],
+            )
+        };
+        let bridge_a: Arc<dyn ClientBridgeTrait> =
+            Arc::new(CleanupProbe(Arc::new(AtomicUsize::new(0))));
+        let bridge_b: Arc<dyn ClientBridgeTrait> =
+            Arc::new(CleanupProbe(Arc::new(AtomicUsize::new(0))));
+
+        let both = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            tokio::join!(
+                runtime.execute_prompt(
+                    request(&session_a),
+                    crate::client_capabilities::ClientCapabilitiesInfo::default(),
+                    bridge_a,
+                ),
+                runtime.execute_prompt(
+                    request(&session_b),
+                    crate::client_capabilities::ClientCapabilitiesInfo::default(),
+                    bridge_b,
+                )
+            )
+        })
+        .await
+        .expect("different sessions should not serialize or deadlock");
+
+        assert!(both.0.is_ok());
+        assert!(both.1.is_ok());
+        assert_eq!(probe.max_active.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]

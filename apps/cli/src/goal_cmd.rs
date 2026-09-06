@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::args::GoalArgs;
-use crate::goal_runner::{resume, write_mcp_config, GoalRunner, AnureoTool, ShellTool};
+use crate::goal_runner::{resume, write_mcp_config, AnureoTool, GoalRunner, ShellTool};
 use agent::goal_runner::GoalOutcome;
 use task_core::TaskDb;
 use tokio_util::sync::CancellationToken;
@@ -34,7 +34,7 @@ pub(crate) async fn handle_goal_command(ga: &GoalArgs) -> Result<(), Box<dyn std
         print_task_id(runner.task_id());
         let outcome = runner.run().await;
         print_outcome(&outcome);
-        if let GoalOutcome::Error(_) = outcome {
+        if matches!(outcome, GoalOutcome::Error(_) | GoalOutcome::Blocked(_)) {
             std::process::exit(1);
         }
         return Ok(());
@@ -49,17 +49,25 @@ pub(crate) async fn handle_goal_command(ga: &GoalArgs) -> Result<(), Box<dyn std
     };
 
     // Create task first to get task_id for session_id
-    let task = db
-        .create_task(&task_core::CreateParams {
+    let create_params = task_core::CreateParams {
             name: description.clone(),
             description: description.clone(),
             status: task_core::TaskStatus::InProgress,
             ..Default::default()
-        })
-        .await
-        .map_err(|e| format!("failed to create task: {}", e))?;
+        };
+    let task = match ga.id.as_deref().map(str::trim) {
+        Some(id) if !id.is_empty() => db
+            .create_task_with_id(id, &create_params)
+            .await
+            .map_err(|e| format!("failed to create task '{}': {}", id, e))?,
+        Some(_) => return Err("--id must not be empty".into()),
+        None => db
+            .create_task(&create_params)
+            .await
+            .map_err(|e| format!("failed to create task: {}", e))?,
+    };
 
-    let task_id_short = task.id[..8.min(task.id.len())].to_string();
+    let task_id_short = task.id[..task.id.floor_char_boundary(8)].to_string();
     let session_id = format!("goal-{}", &task_id_short);
 
     let tool: Box<dyn crate::goal_runner::CodingTool> = match ga.tool.as_str() {
@@ -82,29 +90,34 @@ pub(crate) async fn handle_goal_command(ga: &GoalArgs) -> Result<(), Box<dyn std
         }
     };
 
-    let mut runner = GoalRunner::new(description, working_dir, db, tool, cancel).await?;
+    let mut runner =
+        GoalRunner::from_task(task.id, description, working_dir, db, tool, cancel).await?;
+    runner = runner.with_model_config(ga.model.clone(), ga.effort.clone());
     if let Some(budget) = ga.token_budget {
         runner = runner.with_token_budget(budget);
     }
     if let Some(ref verify) = ga.verify {
         runner = runner.with_verify_command(verify.clone());
     }
+    runner.persist_initial_state().await?;
     print_task_id(runner.task_id());
     let outcome = runner.run().await;
     print_outcome(&outcome);
-    if let GoalOutcome::Error(_) = outcome {
+    if matches!(outcome, GoalOutcome::Error(_) | GoalOutcome::Blocked(_)) {
         std::process::exit(1);
     }
     Ok(())
 }
 
 fn print_task_id(task_id: &str) {
-    eprintln!("task_id: {}", &task_id[..8.min(task_id.len())]);
+    let end = task_id.floor_char_boundary(8);
+    eprintln!("task_id: {}", &task_id[..end]);
 }
 
 fn print_outcome(outcome: &GoalOutcome) {
     match outcome {
         GoalOutcome::Error(e) => eprintln!("goal failed: {}", e),
+        GoalOutcome::Blocked(reason) => eprintln!("goal blocked: {}", reason),
         GoalOutcome::UsageLimited {
             tokens_used,
             token_budget,

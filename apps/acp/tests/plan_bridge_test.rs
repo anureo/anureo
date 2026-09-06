@@ -270,7 +270,7 @@ mod session_notifier_tests {
     }
 
     fn send_and_collect(event: &TypedAnyStreamEvent) -> Vec<Value> {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let notifier = SessionNotifier::new(tx, "test-session".into());
         notifier.try_send_event(event);
         let mut results = Vec::new();
@@ -343,7 +343,7 @@ mod session_notifier_tests {
             raw_result: None,
         });
 
-        let (tx2, mut rx2) = tokio::sync::mpsc::channel(64);
+        let (tx2, mut rx2) = tokio::sync::mpsc::unbounded_channel();
         let notifier = SessionNotifier::new(tx2, "test-session".into());
         notifier.try_send_event(&sub_ev);
         notifier.try_send_event(&parent_ev);

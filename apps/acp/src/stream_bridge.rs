@@ -589,7 +589,7 @@ pub fn name_to_tool_kind(name: &str) -> ToolKind {
 }
 
 pub struct SessionNotifier {
-    tx: mpsc::Sender<SessionUpdateEnvelope>,
+    tx: mpsc::UnboundedSender<SessionUpdateEnvelope>,
     session_id: SessionId,
     current_message_id: Mutex<Option<String>>,
     /// Context window size in tokens; when set, usage_update notifications are emitted.
@@ -606,7 +606,7 @@ pub struct SessionNotifier {
 }
 
 impl SessionNotifier {
-    pub fn new(tx: mpsc::Sender<SessionUpdateEnvelope>, session_id: SessionId) -> Self {
+    pub fn new(tx: mpsc::UnboundedSender<SessionUpdateEnvelope>, session_id: SessionId) -> Self {
         Self {
             tx,
             session_id,
@@ -708,7 +708,7 @@ impl SessionNotifier {
             }
 
             if let Some(notif) = stream_update_to_session_notification(&self.session_id, &u) {
-                if let Err(e) = self.tx.send(SessionUpdateEnvelope::Session(notif)).await {
+                if let Err(e) = self.tx.send(SessionUpdateEnvelope::Session(notif)) {
                     tracing::error!(session_id = %self.session_id, error = %e, "Failed to send stream event notification");
                 }
             }
@@ -734,7 +734,7 @@ impl SessionNotifier {
         for u in updates {
             let u = self.inject_message_id(u);
             if let Some(notif) = stream_update_to_session_notification(&self.session_id, &u) {
-                match self.tx.try_send(SessionUpdateEnvelope::Session(notif)) {
+                match self.tx.send(SessionUpdateEnvelope::Session(notif)) {
                     Ok(_) => {
                         tracing::trace!(
                             session_id = %self.session_id,
@@ -747,7 +747,7 @@ impl SessionNotifier {
                             session_id = %self.session_id,
                             update_type = ?u,
                             error = %e,
-                            "Failed to send session notification (channel full or closed)"
+                            "Failed to send session notification (channel closed)"
                         );
                     }
                 }
@@ -806,7 +806,7 @@ impl SessionNotifier {
             &StreamUpdate::Plan { entries },
         );
         if let Some(notif) = notif {
-            if let Err(e) = self.tx.try_send(SessionUpdateEnvelope::Session(notif)) {
+            if let Err(e) = self.tx.send(SessionUpdateEnvelope::Session(notif)) {
                 tracing::warn!(
                     session_id = %self.session_id,
                     error = %e,
@@ -920,13 +920,10 @@ impl SessionNotifier {
         // Wrap the replay batch in begin/end markers so the runtime ingress
         // loop suppresses `session.updated` global broadcasts for every
         // replayed message (a load is a read, not a mutation).
-        let _ = self
-            .tx
-            .send(SessionUpdateEnvelope::Session(replay_marker(
-                REPLAY_BEGIN_MARKER_PREFIX,
-                &self.session_id,
-            )))
-            .await;
+        let _ = self.tx.send(SessionUpdateEnvelope::Session(replay_marker(
+            REPLAY_BEGIN_MARKER_PREFIX,
+            &self.session_id,
+        )));
         let mut sent_count: usize = 0;
         let mut skipped_system: usize = 0;
 
@@ -983,14 +980,10 @@ impl SessionNotifier {
             // JSON-RPC notification on the wire. The client applies the
             // whole tail in a single commit instead of N frames.
             let update_count = replay_updates.len();
-            if let Err(e) = self
-                .tx
-                .send(SessionUpdateEnvelope::HistoryBatch {
-                    session_id: self.session_id.clone(),
-                    updates: replay_updates,
-                })
-                .await
-            {
+            if let Err(e) = self.tx.send(SessionUpdateEnvelope::HistoryBatch {
+                session_id: self.session_id.clone(),
+                updates: replay_updates,
+            }) {
                 tracing::error!(
                     session_id = %self.session_id,
                     error = %e,
@@ -1006,7 +999,7 @@ impl SessionNotifier {
                     notification: notif,
                     recovery: recovery_replay,
                 };
-                if let Err(e) = self.tx.send(envelope).await {
+                if let Err(e) = self.tx.send(envelope) {
                     tracing::error!(session_id = %self.session_id, error = %e, "Failed to send session update during history replay");
                 } else {
                     sent_count += 1;
@@ -1021,13 +1014,10 @@ impl SessionNotifier {
             system_skipped = skipped_system,
             "send_history completed"
         );
-        let _ = self
-            .tx
-            .send(SessionUpdateEnvelope::Session(replay_marker(
-                REPLAY_END_MARKER_PREFIX,
-                &self.session_id,
-            )))
-            .await;
+        let _ = self.tx.send(SessionUpdateEnvelope::Session(replay_marker(
+            REPLAY_END_MARKER_PREFIX,
+            &self.session_id,
+        )));
     }
 
     pub async fn send_current_mode(&self, mode_id: &str) {
@@ -1037,7 +1027,7 @@ impl SessionNotifier {
                 mode_id.to_string(),
             ))),
         );
-        if let Err(e) = self.tx.send(SessionUpdateEnvelope::Session(notif)).await {
+        if let Err(e) = self.tx.send(SessionUpdateEnvelope::Session(notif)) {
             tracing::error!(session_id = %self.session_id, error = %e, "Failed to send current mode update");
         }
     }
@@ -1049,7 +1039,7 @@ impl SessionNotifier {
                 mode_id.to_string(),
             ))),
         );
-        let _ = self.tx.try_send(SessionUpdateEnvelope::Session(notif));
+        let _ = self.tx.send(SessionUpdateEnvelope::Session(notif));
     }
 
     pub fn try_send_session_info_update(&self, title: &str) {
@@ -1057,7 +1047,7 @@ impl SessionNotifier {
             self.session_id.clone(),
             SessionUpdate::SessionInfoUpdate(SessionInfoUpdate::new().title(title.to_string())),
         );
-        if let Err(e) = self.tx.try_send(SessionUpdateEnvelope::Session(notif)) {
+        if let Err(e) = self.tx.send(SessionUpdateEnvelope::Session(notif)) {
             tracing::warn!(
                 session_id = %self.session_id,
                 error = %e,
@@ -1076,7 +1066,7 @@ impl SessionNotifier {
             self.session_id.clone(),
             SessionUpdate::SessionInfoUpdate(info),
         );
-        if let Err(e) = self.tx.try_send(SessionUpdateEnvelope::Session(notif)) {
+        if let Err(e) = self.tx.send(SessionUpdateEnvelope::Session(notif)) {
             tracing::warn!(
                 session_id = %self.session_id,
                 error = %e,
@@ -1200,7 +1190,7 @@ impl SessionNotifier {
 
         for update in pending {
             if let Some(notif) = stream_update_to_session_notification(&self.session_id, &update) {
-                if let Err(e) = self.tx.send(SessionUpdateEnvelope::Session(notif)).await {
+                if let Err(e) = self.tx.send(SessionUpdateEnvelope::Session(notif)) {
                     tracing::error!(
                         session_id = %self.session_id,
                         error = %e,
@@ -1234,7 +1224,7 @@ impl SessionNotifier {
             meta: Some(extended_meta),
         };
         if let Some(notif) = stream_update_to_session_notification(&self.session_id, &update) {
-            if let Err(e) = self.tx.send(SessionUpdateEnvelope::Session(notif)).await {
+            if let Err(e) = self.tx.send(SessionUpdateEnvelope::Session(notif)) {
                 tracing::error!(session_id = %self.session_id, error = %e,
                     "Failed to send high-freq usage update");
             }
@@ -1436,7 +1426,7 @@ mod token_usage_meta_tests {
     /// Capture should leave the snapshot empty when no LLM usage has been observed.
     #[test]
     fn snapshot_meta_is_none_when_acc_is_empty() {
-        let (tx, _rx) = mpsc::channel::<SessionUpdateEnvelope>(8);
+        let (tx, _rx) = mpsc::unbounded_channel::<SessionUpdateEnvelope>();
         let acc: Arc<Mutex<TurnUsage>> = Arc::new(Mutex::new(TurnUsage::default()));
         let notifier = SessionNotifier::new(tx, SessionId::new("sess"))
             .with_context_window_size(8192)
@@ -1447,7 +1437,7 @@ mod token_usage_meta_tests {
     /// Capture then snapshot: meta must contain all four billing fields.
     #[test]
     fn snapshot_meta_includes_all_billing_fields_after_capture() {
-        let (tx, _rx) = mpsc::channel::<SessionUpdateEnvelope>(8);
+        let (tx, _rx) = mpsc::unbounded_channel::<SessionUpdateEnvelope>();
         let acc: Arc<Mutex<TurnUsage>> = Arc::new(Mutex::new(TurnUsage::default()));
         let notifier = SessionNotifier::new(tx, SessionId::new("sess"))
             .with_context_window_size(8192)
@@ -1481,7 +1471,7 @@ mod token_usage_meta_tests {
     /// Multi-turn accumulation must monotonically grow the snapshot.
     #[test]
     fn snapshot_meta_grows_across_multiple_llm_calls() {
-        let (tx, _rx) = mpsc::channel::<SessionUpdateEnvelope>(8);
+        let (tx, _rx) = mpsc::unbounded_channel::<SessionUpdateEnvelope>();
         let acc: Arc<Mutex<TurnUsage>> = Arc::new(Mutex::new(TurnUsage::default()));
         let notifier = SessionNotifier::new(tx, SessionId::new("sess"))
             .with_context_window_size(8192)
@@ -1517,7 +1507,7 @@ mod token_usage_meta_tests {
     /// when the notifier is wired with an accumulator and a Usage event arrives.
     #[tokio::test]
     async fn notifier_emits_usage_update_with_token_usage_meta() {
-        let (tx, mut rx) = mpsc::channel::<SessionUpdateEnvelope>(8);
+        let (tx, mut rx) = mpsc::unbounded_channel::<SessionUpdateEnvelope>();
         let acc: Arc<Mutex<TurnUsage>> = Arc::new(Mutex::new(TurnUsage::default()));
         let notifier = SessionNotifier::new(tx, SessionId::new("sess"))
             .with_context_window_size(8192)
@@ -1564,7 +1554,7 @@ mod token_usage_meta_tests {
     /// without `_meta.token_usage` (backward compatibility).
     #[tokio::test]
     async fn notifier_without_acc_omits_token_usage_meta() {
-        let (tx, mut rx) = mpsc::channel::<SessionUpdateEnvelope>(8);
+        let (tx, mut rx) = mpsc::unbounded_channel::<SessionUpdateEnvelope>();
         let notifier =
             SessionNotifier::new(tx, SessionId::new("sess")).with_context_window_size(8192);
 

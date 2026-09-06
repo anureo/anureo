@@ -11,6 +11,7 @@ use agent::run::{
     build_react_config, run_agent_from_config, RunParams,
     TypedAnyStreamEvent as FullTypedAnyStreamEvent,
 };
+use anureo_llm::LlmUsage;
 use stream_event::StreamEvent;
 
 use agent::goal_runner::state::{ToolCallSummary, ToolError, TurnResult};
@@ -207,13 +208,16 @@ impl CodingTool for AnureoTool {
         use anureo_llm::message::UserContent;
 
         let tool_summaries: Arc<Mutex<Vec<ToolCallSummary>>> = Arc::new(Mutex::new(Vec::new()));
+        let usage: Arc<Mutex<Option<LlmUsage>>> = Arc::new(Mutex::new(None));
 
         let on_event: Option<Box<dyn FnMut(FullTypedAnyStreamEvent) + Send>> =
             if let Some(ref sender) = self.any_stream_event_sender {
                 let sender = sender.clone();
                 let summaries = tool_summaries.clone();
+                let usage = usage.clone();
                 Some(Box::new(move |ev: FullTypedAnyStreamEvent| {
                     collect_tool_summary(&ev, &summaries);
+                    collect_usage(&ev, &usage);
                     sender(ev);
                 }))
             } else {
@@ -227,8 +231,10 @@ impl CodingTool for AnureoTool {
                     },
                 );
                 let summaries = tool_summaries.clone();
+                let usage = usage.clone();
                 Some(Box::new(move |ev: FullTypedAnyStreamEvent| {
                     collect_tool_summary(&ev, &summaries);
+                    collect_usage(&ev, &usage);
                     original(ev);
                 }))
             };
@@ -291,13 +297,14 @@ impl CodingTool for AnureoTool {
             })?;
 
         let tool_calls_summary = tool_summaries.lock().unwrap().drain(..).collect();
+        let usage = usage.lock().unwrap().take();
 
         match result {
             RunCompletion::Finished(agent_result) => Ok(TurnResult {
                 reply: agent_result.reply,
                 reasoning_content: agent_result.reasoning_content,
                 tool_calls_summary,
-                usage: None,
+                usage,
                 work_summary: None,
             }),
             RunCompletion::Cancelled => Err(ToolError::Aborted),
@@ -339,4 +346,21 @@ fn collect_tool_summary(
             result_preview: preview.to_string(),
         });
     }
+}
+
+/// Convert the agent's streamed turn usage into the goal runner's accounting
+/// type. The callback can observe more than one model call in a turn, so add
+/// the headline counts instead of keeping only the last event.
+fn collect_usage(ev: &FullTypedAnyStreamEvent, usage: &Arc<Mutex<Option<LlmUsage>>>) {
+    let FullTypedAnyStreamEvent::React(StreamEvent::TurnFinish { usage: turn, .. }) = ev else {
+        return;
+    };
+
+    let mut guard = usage.lock().unwrap();
+    let current = guard.get_or_insert_with(LlmUsage::default);
+    current.prompt_tokens = current.prompt_tokens.saturating_add(turn.input);
+    current.completion_tokens = current.completion_tokens.saturating_add(turn.output);
+    current.total_tokens = current
+        .total_tokens
+        .saturating_add(turn.input.saturating_add(turn.output));
 }

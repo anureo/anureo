@@ -361,7 +361,7 @@ mod session_notifier_integration_tests {
 
     #[tokio::test]
     async fn test_high_freq_tracking_with_notifier() {
-        let (tx, _rx) = mpsc::channel(100);
+        let (tx, _rx) = mpsc::unbounded_channel();
         let session_id = SessionId::new("test_session");
 
         let notifier = SessionNotifier::new(tx, session_id);
@@ -393,7 +393,7 @@ mod session_notifier_integration_tests {
 
     #[tokio::test]
     async fn test_percentage_trigger_in_notifier() {
-        let (tx, _rx) = mpsc::channel(100);
+        let (tx, _rx) = mpsc::unbounded_channel();
         let session_id = SessionId::new("test_session");
 
         let notifier = SessionNotifier::new(tx, session_id);
@@ -411,7 +411,7 @@ mod session_notifier_integration_tests {
 
     #[tokio::test]
     async fn test_time_interval_trigger_in_notifier() {
-        let (tx, _rx) = mpsc::channel(100);
+        let (tx, _rx) = mpsc::unbounded_channel();
         let session_id = SessionId::new("test_session");
 
         let notifier = SessionNotifier::new(tx, session_id);
@@ -442,7 +442,7 @@ mod session_notifier_integration_tests {
 
     #[tokio::test]
     async fn test_custom_configuration_in_notifier() {
-        let (tx, _rx) = mpsc::channel(100);
+        let (tx, _rx) = mpsc::unbounded_channel();
         let session_id = SessionId::new("test_session");
 
         let notifier = SessionNotifier::new(tx, session_id);
@@ -465,7 +465,7 @@ mod session_notifier_integration_tests {
 
     #[tokio::test]
     async fn test_disable_high_freq_tracking() {
-        let (tx, _rx) = mpsc::channel(100);
+        let (tx, _rx) = mpsc::unbounded_channel();
         let session_id = SessionId::new("test_session");
 
         let notifier = SessionNotifier::new(tx, session_id);
@@ -485,7 +485,7 @@ mod session_notifier_integration_tests {
 
     #[tokio::test]
     async fn test_adaptive_frequency_adjustment() {
-        let (tx, _rx) = mpsc::channel(100);
+        let (tx, _rx) = mpsc::unbounded_channel();
         let session_id = SessionId::new("test_session");
 
         let notifier = SessionNotifier::new(tx, session_id);
@@ -520,7 +520,7 @@ mod session_notifier_integration_tests {
 
     #[tokio::test]
     async fn test_high_freq_tracker_status_query() {
-        let (tx, _rx) = mpsc::channel(100);
+        let (tx, _rx) = mpsc::unbounded_channel();
         let session_id = SessionId::new("test_session");
 
         let notifier = SessionNotifier::new(tx, session_id);

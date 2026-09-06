@@ -1,9 +1,14 @@
 use std::path::PathBuf;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 
+use crate::client_capabilities::ClientCapabilitiesInfo;
 use super::auth;
 use super::pagination::{PaginatedResult, PaginationParams};
 use super::{ExtensionContext, ExtensionError, ExtensionHandler};
@@ -12,6 +17,33 @@ use config::home::anureo_home;
 
 const DEFAULT_LIMIT: usize = 50;
 const MAX_LIMIT: usize = 200;
+
+// The store is a JSON snapshot rather than a database transaction. Serialize
+// every mutation in this process so concurrent ACP requests cannot both read
+// the same snapshot and then lose one another's update. The final rename is
+// still atomic, so readers never observe a partially-written document.
+static GOAL_STORE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static RUNTIME_CONTROLS: OnceLock<Mutex<HashMap<String, RuntimeControl>>> = OnceLock::new();
+
+#[derive(Clone)]
+pub(crate) struct RuntimeControl {
+    pub(crate) token: CancellationToken,
+    terminal: Arc<AtomicBool>,
+    instance_id: String,
+}
+
+impl RuntimeControl {
+    pub(crate) fn is_terminal(&self) -> bool {
+        self.terminal.load(Ordering::Acquire)
+    }
+}
+
+fn lock_goal_store() -> std::sync::MutexGuard<'static, ()> {
+    GOAL_STORE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 pub struct GoalHandler;
 
@@ -208,7 +240,9 @@ fn save_store(ctx: &ExtensionContext, store: &GoalStore) -> Result<(), Extension
             "failed to serialize goals store: {e}"
         ))),
     })?;
-    let tmp = path.with_extension("json.tmp");
+    // A unique temporary path prevents unrelated writers/processes from
+    // clobbering one another's staging file before rename.
+    let tmp = path.with_extension(format!("json.tmp-{}", uuid::Uuid::new_v4()));
     std::fs::write(&tmp, &json).map_err(|e| ExtensionError {
         code: -32603,
         message: "internal_error".into(),
@@ -268,6 +302,239 @@ fn optional_param_str(params: &Value, key: &str) -> Option<String> {
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
+}
+
+/// Materialize a goal started by the ACP `/goal` command in the same view
+/// used by `_anureo.dev/goal/*`. The task DB remains the execution source of
+/// truth; this JSON record makes the running goal discoverable after a client
+/// reconnects.
+pub(crate) fn runtime_start(
+    working_directory: &std::path::Path,
+    title: &str,
+    description: &str,
+    task_id: &str,
+    session_id: Option<&str>,
+    model: Option<&str>,
+    effort: Option<&str>,
+) -> Result<(String, RuntimeControl), String> {
+    let ctx = runtime_context(working_directory, session_id);
+    let _store_guard = lock_goal_store();
+    let mut store = load_store(&ctx).map_err(|e| e.to_string())?;
+    let now = now_iso();
+    let id = generate_goal_id();
+    // Register before publishing the active JSON record. A concurrent
+    // goal/list recovery scan will then observe a live generation and skip it.
+    let control = register_runtime_goal(&id);
+    store.goals.push(Goal {
+        id: id.clone(),
+        title: title.to_string(),
+        description: description.to_string(),
+        status: GoalStatus::Active,
+        created_at: now.clone(),
+        updated_at: now,
+        session_ids: session_id.into_iter().map(str::to_string).collect(),
+        progress: None,
+        metadata: Some(serde_json::json!({
+            "source": "acp_goal_runner",
+            "taskId": task_id,
+            "model": model,
+            "effort": effort,
+        })),
+        steps: Vec::new(),
+        idempotency_key: None,
+        working_directory: Some(working_directory.to_string_lossy().to_string()),
+    });
+    if let Err(error) = save_store(&ctx, &store) {
+        unregister_runtime_goal(&id, &control);
+        return Err(error.to_string());
+    }
+    Ok((id, control))
+}
+
+pub(crate) fn runtime_set_status(
+    working_directory: &std::path::Path,
+    id: &str,
+    status: GoalStatus,
+) -> Result<(), String> {
+    let ctx = runtime_context(working_directory, None);
+    let _store_guard = lock_goal_store();
+    let mut store = load_store(&ctx).map_err(|e| e.to_string())?;
+    let goal = store
+        .find_mut(id)
+        .ok_or_else(|| format!("goal '{id}' not found"))?;
+    goal.status = status;
+    goal.updated_at = now_iso();
+    save_store(&ctx, &store).map_err(|e| e.to_string())
+}
+
+pub(crate) fn register_runtime_goal(id: &str) -> RuntimeControl {
+    let control = new_runtime_control();
+    RUNTIME_CONTROLS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(id.to_string(), control.clone());
+    control
+}
+
+fn new_runtime_control() -> RuntimeControl {
+    RuntimeControl {
+        token: CancellationToken::new(),
+        terminal: Arc::new(AtomicBool::new(false)),
+        instance_id: uuid::Uuid::new_v4().to_string(),
+    }
+}
+
+/// Atomically reserve a persisted goal for recovery. Only the process that
+/// inserts the control may start the runner, so concurrent goal/list calls do
+/// not duplicate execution.
+pub(crate) fn try_claim_runtime_goal(id: &str) -> Option<RuntimeControl> {
+    let mut controls = RUNTIME_CONTROLS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if controls.contains_key(id) {
+        return None;
+    }
+    let control = new_runtime_control();
+    controls.insert(id.to_string(), control.clone());
+    Some(control)
+}
+
+pub(crate) fn unregister_runtime_goal(id: &str, control: &RuntimeControl) {
+    if let Some(controls) = RUNTIME_CONTROLS.get() {
+        let mut controls = controls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if controls
+            .get(id)
+            .is_some_and(|current| current.instance_id == control.instance_id)
+        {
+            controls.remove(id);
+        }
+    }
+}
+
+pub(crate) fn request_runtime_pause(id: &str) {
+    if let Some(control) = runtime_control(id) {
+        control.token.cancel();
+    }
+}
+
+pub(crate) fn request_runtime_cancel(id: &str) {
+    if let Some(control) = runtime_control(id) {
+        control.terminal.store(true, Ordering::Release);
+        control.token.cancel();
+    }
+}
+
+fn runtime_control(id: &str) -> Option<RuntimeControl> {
+    RUNTIME_CONTROLS.get().and_then(|controls| {
+        controls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)
+            .cloned()
+    })
+}
+
+fn runtime_context(working_directory: &std::path::Path, session_id: Option<&str>) -> ExtensionContext {
+    ExtensionContext {
+        session_id: session_id.map(str::to_string),
+        principal: "acp-goal-runner".to_string(),
+        connection_id: "acp-goal-runner".to_string(),
+        working_directory: Some(working_directory.to_path_buf()),
+        client_capabilities: ClientCapabilitiesInfo::default(),
+    }
+}
+
+/// Reconnect active ACP-owned goals to a runner after an ACP process restart.
+/// The JSON store is the durable discovery index; the task DB remains the
+/// execution checkpoint. Recovery is triggered by `goal/list`, which is the
+/// reconnect path clients already use after losing notifications.
+fn spawn_persisted_goal_recovery(
+    goals: &[Goal],
+    loaded_session_id: &str,
+    event_sender: Option<Arc<dyn Fn(agent::run::TypedAnyStreamEvent) + Send + Sync>>,
+) {
+    for goal in goals {
+        if goal.status != GoalStatus::Active {
+            continue;
+        }
+        let Some(metadata) = goal.metadata.as_ref() else {
+            continue;
+        };
+        if metadata.get("source").and_then(Value::as_str) != Some("acp_goal_runner") {
+            continue;
+        }
+        let Some(task_id) = metadata.get("taskId").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(working_directory) = goal.working_directory.clone() else {
+            continue;
+        };
+        let Some(runtime_control) = try_claim_runtime_goal(&goal.id) else {
+            continue;
+        };
+
+        let goal_id = goal.id.clone();
+        let objective = goal.description.clone();
+        let model = metadata
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let effort = metadata
+            .get("effort")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let task_id = task_id.to_string();
+        let cleanup_control = runtime_control.clone();
+        let recovery_event_sender = goal
+            .session_ids
+            .iter()
+            .any(|id| id == loaded_session_id)
+            .then(|| event_sender.clone())
+            .flatten();
+
+        tokio::spawn(async move {
+            let result = crate::goal_runner::recover_goal(
+                task_id,
+                goal_id.clone(),
+                objective,
+                PathBuf::from(&working_directory),
+                agent::run::ResolvedModelConfig {
+                    model,
+                    effort,
+                    ..Default::default()
+                },
+                runtime_control,
+                recovery_event_sender,
+            )
+            .await;
+            if let Err(error) = result {
+                unregister_runtime_goal(&goal_id, &cleanup_control);
+                let _ = runtime_set_status(
+                    PathBuf::from(&working_directory).as_path(),
+                    &goal_id,
+                    GoalStatus::Paused,
+                );
+                tracing::error!(goal_id = %goal_id, error = %error, "failed to recover persisted ACP goal");
+            }
+        });
+    }
+}
+
+pub(crate) fn recover_persisted_goals(
+    working_directory: &std::path::Path,
+    session_id: &str,
+    event_sender: Option<
+        Arc<dyn Fn(agent::run::TypedAnyStreamEvent) + Send + Sync>,
+    >,
+) -> Result<(), String> {
+    let ctx = runtime_context(working_directory, None);
+    let store = load_store(&ctx).map_err(|error| error.to_string())?;
+    spawn_persisted_goal_recovery(&store.goals, session_id, event_sender);
+    Ok(())
 }
 
 // ── ExtensionHandler impl ──────────────────────────────────────────────
@@ -368,6 +635,7 @@ async fn handle_start(params: Value, ctx: &ExtensionContext) -> Result<Value, Ex
     let working_directory = optional_param_str(&params, "workingDirectory");
     let idempotency_key = optional_param_str(&params, "idempotencyKey");
 
+    let _store_guard = lock_goal_store();
     let mut store = load_store(ctx)?;
 
     if let Some(ref key) = idempotency_key {
@@ -432,6 +700,7 @@ async fn handle_pause(params: Value, ctx: &ExtensionContext) -> Result<Value, Ex
 
     let id = require_param_str(&params, "id")?;
 
+    let _store_guard = lock_goal_store();
     let mut store = load_store(ctx)?;
 
     let goal = store
@@ -452,6 +721,7 @@ async fn handle_pause(params: Value, ctx: &ExtensionContext) -> Result<Value, Ex
     let progress = goal.progress.clone();
 
     save_store(ctx, &store)?;
+    request_runtime_pause(&id);
 
     Ok(serde_json::json!({
         "id": id,
@@ -471,6 +741,7 @@ async fn handle_resume(params: Value, ctx: &ExtensionContext) -> Result<Value, E
 
     let id = require_param_str(&params, "id")?;
 
+    let _store_guard = lock_goal_store();
     let mut store = load_store(ctx)?;
 
     let goal = store
@@ -484,6 +755,30 @@ async fn handle_resume(params: Value, ctx: &ExtensionContext) -> Result<Value, E
         )));
     }
 
+    let resume_task_id = goal
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("taskId"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let resume_model = goal
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("model"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let resume_effort = goal
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("effort"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let resume_objective = goal.description.clone();
+    let resume_working_directory = goal
+        .working_directory
+        .clone()
+        .or_else(|| ctx.working_directory.as_ref().map(|path| path.to_string_lossy().to_string()));
+
     goal.status = GoalStatus::Active;
     let now = now_iso();
     goal.updated_at = now.clone();
@@ -491,6 +786,35 @@ async fn handle_resume(params: Value, ctx: &ExtensionContext) -> Result<Value, E
     let progress = goal.progress.clone();
 
     save_store(ctx, &store)?;
+
+    drop(_store_guard);
+    if let (Some(task_id), Some(working_directory)) =
+        (resume_task_id, resume_working_directory)
+    {
+        let goal_id = id.clone();
+        tokio::spawn(async move {
+            let result = crate::goal_runner::resume_goal(
+                task_id,
+                goal_id.clone(),
+                resume_objective,
+                PathBuf::from(&working_directory),
+                agent::run::ResolvedModelConfig {
+                    model: resume_model,
+                    effort: resume_effort,
+                    ..Default::default()
+                },
+            )
+            .await;
+            if let Err(error) = result {
+                let _ = runtime_set_status(
+                    PathBuf::from(&working_directory).as_path(),
+                    &goal_id,
+                    GoalStatus::Paused,
+                );
+                tracing::error!(goal_id = %goal_id, error = %error, "failed to resume ACP goal");
+            }
+        });
+    }
 
     Ok(serde_json::json!({
         "id": id,
@@ -511,6 +835,7 @@ async fn handle_cancel(params: Value, ctx: &ExtensionContext) -> Result<Value, E
     let id = require_param_str(&params, "id")?;
     let reason = optional_param_str(&params, "reason");
 
+    let _store_guard = lock_goal_store();
     let mut store = load_store(ctx)?;
 
     let goal = store
@@ -523,8 +848,8 @@ async fn handle_cancel(params: Value, ctx: &ExtensionContext) -> Result<Value, E
         let current_status = goal.status.clone();
         return Ok(serde_json::json!({
             "id": id,
-            "status": "cancelled",
-            "cancelledAt": cancelled_at,
+            "status": current_status.clone(),
+            "updatedAt": cancelled_at,
             "notification": build_notification(
                 &id,
                 GoalChangeType::Cancelled,
@@ -551,6 +876,7 @@ async fn handle_cancel(params: Value, ctx: &ExtensionContext) -> Result<Value, E
     let progress = goal.progress.clone();
 
     save_store(ctx, &store)?;
+    request_runtime_cancel(&id);
 
     Ok(serde_json::json!({
         "id": id,
@@ -602,6 +928,66 @@ mod tests {
             .unwrap();
         assert_eq!(result["items"].as_array().unwrap().len(), 0);
         assert_eq!(result["hasMore"], false);
+    }
+
+    #[tokio::test]
+    async fn runtime_goal_is_visible_and_updates_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let (id, control) = runtime_start(
+            dir.path(),
+            "runtime goal",
+            "do work",
+            "task-1",
+            Some("session-1"),
+            Some("test-model"),
+            Some("medium"),
+        )
+        .unwrap();
+        let ctx = make_ctx(dir.path().to_path_buf());
+        let handler = GoalHandler::new();
+
+        let listed = handler
+            .handle("list", serde_json::json!({}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(listed["items"][0]["id"], id);
+        assert_eq!(listed["items"][0]["status"], "active");
+        assert_eq!(listed["items"][0]["sessionIds"][0], "session-1");
+        assert_eq!(listed["items"][0]["metadata"]["taskId"], "task-1");
+
+        runtime_set_status(dir.path(), &id, GoalStatus::Completed).unwrap();
+        let completed = handler
+            .handle("get", serde_json::json!({"id": id}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(completed["status"], "completed");
+        unregister_runtime_goal(&id, &control);
+    }
+
+    #[test]
+    fn stale_runtime_cleanup_cannot_remove_new_instance() {
+        let id = format!("test-runtime-{}", uuid::Uuid::new_v4());
+        let first = register_runtime_goal(&id);
+        let second = register_runtime_goal(&id);
+
+        unregister_runtime_goal(&id, &first);
+        request_runtime_cancel(&id);
+
+        assert!(!first.token.is_cancelled());
+        assert!(second.token.is_cancelled());
+        unregister_runtime_goal(&id, &second);
+    }
+
+    #[test]
+    fn runtime_recovery_claim_has_single_owner() {
+        let id = format!("test-recovery-{}", uuid::Uuid::new_v4());
+        let first = try_claim_runtime_goal(&id).expect("first claim should win");
+        assert!(try_claim_runtime_goal(&id).is_none());
+        unregister_runtime_goal(&id, &first);
+        assert!(try_claim_runtime_goal(&id).is_some());
+        if let Some(current) = runtime_control(&id) {
+            unregister_runtime_goal(&id, &current);
+        }
     }
 
     #[tokio::test]
@@ -897,6 +1283,35 @@ mod tests {
             .await
             .unwrap();
         assert_ne!(r1["id"], r2["id"]);
+    }
+
+    #[tokio::test]
+    async fn concurrent_starts_do_not_drop_updates() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = make_ctx(dir.path().to_path_buf());
+        let handler = GoalHandler::new();
+
+        let (first, second) = tokio::join!(
+            handler.handle(
+                "start",
+                serde_json::json!({"title": "first", "description": "d1"}),
+                &ctx,
+            ),
+            handler.handle(
+                "start",
+                serde_json::json!({"title": "second", "description": "d2"}),
+                &ctx,
+            ),
+        );
+
+        assert!(first.is_ok());
+        assert!(second.is_ok());
+
+        let list = handler
+            .handle("list", serde_json::json!({}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(list["items"].as_array().unwrap().len(), 2);
     }
 
     #[tokio::test]

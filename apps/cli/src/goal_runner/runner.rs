@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use chrono::Utc;
-use task_core::{CreateParams, TaskDb, TaskStatus};
+use task_core::{TaskDb, TaskStatus};
 use tokio::process::Child;
 use tokio_util::sync::CancellationToken;
 use tracing;
@@ -11,13 +11,20 @@ use tracing;
 use super::tool::CodingTool;
 use agent::goal_runner::message;
 use agent::goal_runner::state::{
-    GoalError, GoalMeta, GoalOutcome, HistoryEntry, ToolError, DEFAULT_MAX_ITERATIONS,
+    GoalError, GoalLifecycle, GoalMeta, GoalOutcome, HistoryEntry, ToolError,
+    DEFAULT_MAX_ITERATIONS,
     MAX_CONSECUTIVE_FAILURES, MAX_HISTORY_ENTRIES,
 };
 use agent::run::TypedAnyStreamEvent as FullTypedAnyStreamEvent;
 
 /// Fraction of token budget remaining that triggers the budget-limit prompt.
 const BUDGET_WARNING_FRACTION: f64 = 0.2;
+
+enum VerifyResult {
+    Passed,
+    Failed,
+    Aborted,
+}
 
 pub struct GoalRunner {
     task_id: String,
@@ -36,6 +43,12 @@ pub struct GoalRunner {
     token_budget: Option<u32>,
     /// Cumulative tokens consumed across all iterations.
     tokens_used: u32,
+    lifecycle: GoalLifecycle,
+    lifecycle_reason: Option<String>,
+    /// Persisted anureo model override, if configured.
+    model: Option<String>,
+    /// Persisted reasoning effort override, if configured.
+    effort: Option<String>,
     /// Optional shell command to verify objective after each iteration.
     verify_command: Option<String>,
     /// Number of consecutive rate-limit retries in the current streak.
@@ -43,27 +56,24 @@ pub struct GoalRunner {
 }
 
 impl GoalRunner {
-    pub async fn new(
+    /// Construct a runner for an already-created task.
+    ///
+    /// The CLI needs the task id before constructing `AnureoTool`, because the
+    /// id is also used as the agent thread id. Keeping task creation outside
+    /// the runner avoids creating one task to obtain an id and a second task
+    /// when the runner is initialized.
+    pub async fn from_task(
+        task_id: String,
         objective: String,
         working_dir: PathBuf,
         db: Arc<TaskDb>,
         tool: Box<dyn CodingTool>,
         cancel: CancellationToken,
     ) -> Result<Self, GoalError> {
-        let task = db
-            .create_task(&CreateParams {
-                name: objective.clone(),
-                description: objective.clone(),
-                status: TaskStatus::InProgress,
-                ..Default::default()
-            })
-            .await
-            .map_err(|e| GoalError::Db(Box::new(e)))?;
-
         let mcp_server = spawn_mcp_server(&db).ok();
 
         Ok(Self {
-            task_id: task.id,
+            task_id,
             objective,
             db,
             tool,
@@ -77,6 +87,10 @@ impl GoalRunner {
             time_used_seconds: 0,
             token_budget: None,
             tokens_used: 0,
+            lifecycle: GoalLifecycle::Active,
+            lifecycle_reason: None,
+            model: None,
+            effort: None,
             verify_command: None,
             rate_limit_retries: 0,
         })
@@ -92,10 +106,35 @@ impl GoalRunner {
         self
     }
 
+    /// Persist the model and reasoning effort selected for future resumes.
+    pub fn with_model_config(mut self, model: Option<String>, effort: Option<String>) -> Self {
+        self.model = model;
+        self.effort = effort;
+        self
+    }
+
     /// Set an optional verification command to run after each iteration.
     pub fn with_verify_command(mut self, cmd: String) -> Self {
         self.verify_command = Some(cmd);
         self
+    }
+
+    /// Save the goal configuration before the first turn starts.
+    pub async fn persist_initial_state(&self) -> Result<(), GoalError> {
+        let mut meta = self.load_meta_async().await.unwrap_or_default();
+        meta.tool = self.tool.name().to_string();
+        meta.token_budget = self.token_budget;
+        meta.model = self.model.clone();
+        meta.effort = self.effort.clone();
+        meta.lifecycle = self.lifecycle;
+        meta.lifecycle_reason = self.lifecycle_reason.clone();
+        meta.verify_command = self.verify_command.clone();
+        self.save_meta_async(&meta).await
+    }
+
+    fn set_lifecycle(&mut self, lifecycle: GoalLifecycle, reason: impl Into<String>) {
+        self.lifecycle = lifecycle;
+        self.lifecycle_reason = Some(reason.into());
     }
 
     pub async fn run(&mut self) -> GoalOutcome {
@@ -116,8 +155,13 @@ impl GoalRunner {
                     "max iterations ({}) reached",
                     self.max_iterations
                 );
+                self.save_terminal_state(
+                    GoalLifecycle::Blocked,
+                    "maximum iterations reached",
+                )
+                .await;
                 self.cleanup().await;
-                return GoalOutcome::Error(format!(
+                return GoalOutcome::Blocked(format!(
                     "max iterations ({}) reached",
                     self.max_iterations
                 ));
@@ -168,7 +212,7 @@ impl GoalRunner {
 
                     // Accumulate token usage.
                     if let Some(ref usage) = turn_result.usage {
-                        self.tokens_used += usage.total_tokens;
+                        self.tokens_used = self.tokens_used.saturating_add(usage.total_tokens);
                     }
 
                     // Store work summary for history injection.
@@ -219,8 +263,11 @@ impl GoalRunner {
                             retries = self.rate_limit_retries,
                             "rate-limit retries exhausted"
                         );
+                        self.save_paused_state().await;
+                        self.set_lifecycle(GoalLifecycle::Blocked, "rate-limit retries exhausted");
+                        self.save_iteration_state().await;
                         self.cleanup().await;
-                        return GoalOutcome::Error(format!(
+                        return GoalOutcome::Blocked(format!(
                             "API rate-limited after {} retries: {}",
                             self.rate_limit_retries, msg
                         ));
@@ -259,9 +306,12 @@ impl GoalRunner {
                             iteration = self.iteration,
                             "consecutive failures limit reached"
                         );
-                        self.cleanup().await;
                         let details = self.last_errors.join("\n");
-                        return GoalOutcome::Error(format!(
+                        self.save_paused_state().await;
+                        self.set_lifecycle(GoalLifecycle::Blocked, "consecutive tool failures");
+                        self.save_iteration_state().await;
+                        self.cleanup().await;
+                        return GoalOutcome::Blocked(format!(
                             "consecutive tool failures:\n{}",
                             details
                         ));
@@ -302,49 +352,16 @@ impl GoalRunner {
             self.save_iteration_state_with_summary(work_summary.as_deref())
                 .await;
 
-            // Check token budget exhaustion.
-            if let Some(budget) = self.token_budget {
-                if self.tokens_used >= budget {
-                    tracing::warn!(
-                        session_id = %self.task_id,
-                        tokens_used = self.tokens_used,
-                        budget = budget,
-                        "token budget exhausted"
-                    );
-                    self.cleanup().await;
-                    return GoalOutcome::UsageLimited {
-                        tokens_used: self.tokens_used,
-                        token_budget: budget,
-                    };
-                }
-            }
-
-            // Run verify command if configured.
-            if let Some(ref verify_cmd) = self.verify_command {
-                let verify_passed = self.run_verify_command(verify_cmd).await;
-                if verify_passed {
-                    tracing::info!(session_id = %self.task_id, "verify command passed");
-                    // Auto-mark complete.
-                    if let Err(e) = self
-                        .db
-                        .atomic_update_status(
-                            &self.task_id,
-                            TaskStatus::InProgress,
-                            TaskStatus::Completed,
-                        )
-                        .await
-                    {
-                        tracing::error!(session_id = %self.task_id, error = %e, "failed to mark complete after verify");
-                    }
-                    self.cleanup().await;
-                    return GoalOutcome::Achieved;
-                }
-            }
-
+            // A successful task update is authoritative for this iteration.
+            // Check it before the budget so a completion turn is not reported
+            // as usage-limited merely because its final response crossed the
+            // configured cap.
             let task = match self.db.show_task(&self.task_id).await {
                 Ok(t) => t,
                 Err(e) => {
                     tracing::error!(session_id = %self.task_id, error = %e, "failed to read task");
+                    self.set_lifecycle(GoalLifecycle::Failed, format!("db error: {}", e));
+                    self.save_iteration_state().await;
                     self.cleanup().await;
                     return GoalOutcome::Error(format!("db error: {}", e));
                 }
@@ -356,8 +373,63 @@ impl GoalRunner {
                     time_used_seconds = self.time_used_seconds,
                     "goal achieved"
                 );
+                self.set_lifecycle(GoalLifecycle::Completed, "task marked completed");
+                self.save_iteration_state().await;
                 self.cleanup().await;
                 return GoalOutcome::Achieved;
+            }
+
+            // Check token budget exhaustion.
+            if let Some(budget) = self.token_budget {
+                if self.tokens_used >= budget {
+                    tracing::warn!(
+                        session_id = %self.task_id,
+                        tokens_used = self.tokens_used,
+                        budget = budget,
+                        "token budget exhausted"
+                    );
+                    self.save_terminal_state(
+                        GoalLifecycle::UsageLimited,
+                        "token budget exhausted",
+                    )
+                    .await;
+                    self.cleanup().await;
+                    return GoalOutcome::UsageLimited {
+                        tokens_used: self.tokens_used,
+                        token_budget: budget,
+                    };
+                }
+            }
+
+            // Run verify command if configured.
+            if let Some(ref verify_cmd) = self.verify_command {
+                match self.run_verify_command(verify_cmd).await {
+                    VerifyResult::Passed => {
+                        tracing::info!(session_id = %self.task_id, "verify command passed");
+                        // Auto-mark complete.
+                        if let Err(e) = self
+                            .db
+                            .atomic_update_status(
+                                &self.task_id,
+                                TaskStatus::InProgress,
+                                TaskStatus::Completed,
+                            )
+                            .await
+                        {
+                            tracing::error!(session_id = %self.task_id, error = %e, "failed to mark complete after verify");
+                        }
+                        self.set_lifecycle(GoalLifecycle::Completed, "verification passed");
+                        self.save_iteration_state().await;
+                        self.cleanup().await;
+                        return GoalOutcome::Achieved;
+                    }
+                    VerifyResult::Failed => {}
+                    VerifyResult::Aborted => {
+                        self.save_paused_state().await;
+                        self.cleanup().await;
+                        return GoalOutcome::Error("aborted by user".into());
+                    }
+                }
             }
         }
     }
@@ -373,6 +445,10 @@ impl GoalRunner {
         meta.time_used_seconds = self.time_used_seconds;
         meta.token_budget = self.token_budget;
         meta.tokens_used = self.tokens_used;
+        meta.lifecycle = self.lifecycle;
+        meta.lifecycle_reason = self.lifecycle_reason.clone();
+        meta.model = self.model.clone();
+        meta.effort = self.effort.clone();
 
         meta.history.push(HistoryEntry {
             iteration: self.iteration,
@@ -389,7 +465,8 @@ impl GoalRunner {
         }
     }
 
-    async fn save_paused_state(&self) {
+    async fn save_paused_state(&mut self) {
+        self.set_lifecycle(GoalLifecycle::Paused, "aborted by user");
         if let Err(e) = self
             .db
             .atomic_update_status(&self.task_id, TaskStatus::InProgress, TaskStatus::Pending)
@@ -398,6 +475,28 @@ impl GoalRunner {
             tracing::error!(session_id = %self.task_id, error = %e, "failed to set task to paused");
         }
         self.save_iteration_state().await;
+    }
+
+    /// Persist a non-resumable stop in the task store.
+    ///
+    /// The task database has no dedicated `budget_limited` or `blocked`
+    /// status. `cancelled` is therefore used for hard runner limits, while
+    /// retryable failures continue to use `pending` via `save_paused_state`.
+    async fn save_terminal_state(&mut self, lifecycle: GoalLifecycle, reason: &str) {
+        self.set_lifecycle(lifecycle, reason);
+        self.save_iteration_state().await;
+        if let Err(e) = self
+            .db
+            .atomic_update_status(&self.task_id, TaskStatus::InProgress, TaskStatus::Cancelled)
+            .await
+        {
+            tracing::error!(
+                session_id = %self.task_id,
+                reason,
+                error = %e,
+                "failed to persist terminal goal state"
+            );
+        }
     }
 
     /// Build a short summary of recent iteration history for prompt injection.
@@ -438,8 +537,10 @@ impl GoalRunner {
         }
     }
 
-    /// Run the verify command and return true if it succeeds (exit code 0).
-    async fn run_verify_command(&self, cmd: &str) -> bool {
+    /// Run the verify command while honoring the same cancellation token as
+    /// the coding tool. A cancelled verification is resumable, not a failed
+    /// goal and not a successful verification.
+    async fn run_verify_command(&self, cmd: &str) -> VerifyResult {
         tracing::info!(session_id = %self.task_id, cmd = cmd, "running verify command");
         eprintln!(
             "{}",
@@ -447,31 +548,68 @@ impl GoalRunner {
         );
         // Use cmd.exe on Windows, sh elsewhere.
         #[cfg(windows)]
-        let result = {
+        let mut child = {
             let mut c = tokio::process::Command::new("cmd");
-            c.args(["/C", cmd]).current_dir(&self.working_dir);
+            c.args(["/C", cmd])
+                .current_dir(&self.working_dir)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             c.creation_flags(CREATE_NO_WINDOW);
-            c.output().await
+            match c.spawn() {
+                Ok(child) => child,
+                Err(e) => {
+                    return self.report_verify_error(e);
+                }
+            }
         };
         #[cfg(not(windows))]
-        let result = {
-            tokio::process::Command::new("sh")
+        let mut child = match tokio::process::Command::new("sh")
                 .args(["-c", cmd])
                 .current_dir(&self.working_dir)
-                .output()
-                .await
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+            {
+                Ok(child) => child,
+                Err(e) => return self.report_verify_error(e),
+            };
+
+        let output_fut = async {
+            let stdout = child.stdout.take();
+            let stderr = child.stderr.take();
+            let status = child.wait().await?;
+            let mut stdout_buf = Vec::new();
+            let mut stderr_buf = Vec::new();
+            if let Some(mut out) = stdout {
+                use tokio::io::AsyncReadExt;
+                let _ = out.read_to_end(&mut stdout_buf).await;
+            }
+            if let Some(mut err) = stderr {
+                use tokio::io::AsyncReadExt;
+                let _ = err.read_to_end(&mut stderr_buf).await;
+            }
+            Ok::<_, std::io::Error>((status, stdout_buf, stderr_buf))
         };
+
+        let result = tokio::select! {
+            result = output_fut => result,
+            _ = self.cancel.cancelled() => {
+                let _ = child.kill().await;
+                return VerifyResult::Aborted;
+            }
+        };
+
         match result {
-            Ok(output) => {
-                if output.status.success() {
+            Ok((status, _stdout, stderr)) => {
+                if status.success() {
                     eprintln!(
                         "{}",
                         crate::display::panel_format::format_panel_line("VERIFY", "passed",)
                     );
-                    true
+                    VerifyResult::Passed
                 } else {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    let stderr = String::from_utf8_lossy(&stderr);
                     eprintln!(
                         "{}",
                         crate::display::panel_format::format_panel_line(
@@ -479,21 +617,25 @@ impl GoalRunner {
                             &format!("failed: {}", stderr.trim()),
                         )
                     );
-                    false
+                    VerifyResult::Failed
                 }
             }
             Err(e) => {
-                tracing::error!(session_id = %self.task_id, error = %e, "verify command failed to execute");
-                eprintln!(
-                    "{}",
-                    crate::display::panel_format::format_panel_line(
-                        "VERIFY",
-                        &format!("error: {}", e),
-                    )
-                );
-                false
+                self.report_verify_error(e)
             }
         }
+    }
+
+    fn report_verify_error(&self, error: std::io::Error) -> VerifyResult {
+        tracing::error!(session_id = %self.task_id, error = %error, "verify command failed to execute");
+        eprintln!(
+            "{}",
+            crate::display::panel_format::format_panel_line(
+                "VERIFY",
+                &format!("error: {}", error),
+            )
+        );
+        VerifyResult::Failed
     }
 
     async fn load_meta_async(&self) -> Result<GoalMeta, GoalError> {
@@ -595,6 +737,8 @@ pub async fn resume_with_event_sender(
         &run_cancellation,
         &event_sender,
         &cancel,
+        meta.model.as_deref(),
+        meta.effort.as_deref(),
     )?;
     let mcp_server = spawn_mcp_server(&db).ok();
 
@@ -613,11 +757,16 @@ pub async fn resume_with_event_sender(
         time_used_seconds: meta.time_used_seconds,
         token_budget: meta.token_budget,
         tokens_used: meta.tokens_used,
+        lifecycle: GoalLifecycle::Active,
+        lifecycle_reason: None,
+        model: meta.model,
+        effort: meta.effort,
         verify_command: meta.verify_command,
         rate_limit_retries: 0,
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn resolve_tool(
     tool_name: &str,
     id: &str,
@@ -626,13 +775,18 @@ fn resolve_tool(
     run_cancellation: &Option<tool_core::active_operation::RunCancellation>,
     event_sender: &Option<Arc<dyn Fn(FullTypedAnyStreamEvent) + Send + Sync>>,
     cancel: &CancellationToken,
+    model: Option<&str>,
+    effort: Option<&str>,
 ) -> Result<Box<dyn CodingTool>, GoalError> {
     match tool_name {
         "anureo" => {
             let mcp_config_path = write_mcp_config(db_path, working_dir)?;
             let session_id = format!("goal-{}", &id[..id.floor_char_boundary(8)]);
-            let mut tool =
-                super::tool::AnureoTool::new(session_id, working_dir.to_path_buf(), mcp_config_path);
+            let mut tool = super::tool::AnureoTool::new(
+                session_id,
+                working_dir.to_path_buf(),
+                mcp_config_path,
+            );
             if let Some(ref rc) = run_cancellation {
                 tool = tool.with_cancellation(rc.clone());
             }
@@ -643,6 +797,12 @@ fn resolve_tool(
                         sender(ev);
                     });
                 tool = tool.with_event_sender(adapted);
+            }
+            if let Some(model) = model {
+                tool = tool.with_model(model.to_string());
+            }
+            if let Some(effort) = effort {
+                tool = tool.with_effort(effort.to_string());
             }
             Ok(Box::new(tool))
         }

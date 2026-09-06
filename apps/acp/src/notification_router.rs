@@ -18,6 +18,8 @@ pub enum NotificationRouteError {
     ConnectionUnavailable(String),
     #[error("connection outbound queue is closed")]
     QueueClosed,
+    #[error("connection outbound queue is full: {0}")]
+    QueueFull(String),
     #[error("notification flush acknowledgement was dropped")]
     FlushDropped,
     #[error(transparent)]
@@ -42,7 +44,7 @@ impl NotificationRouter {
         &self,
         notification: SessionNotification,
     ) -> Result<(), NotificationRouteError> {
-        self.route(notification, None).await
+        self.route(notification, None, false).await
     }
 
     /// Route a batch and wait until the final notification has been accepted
@@ -55,10 +57,10 @@ impl NotificationRouter {
         let mut final_ack = None;
         while let Some(notification) = values.next() {
             if values.peek().is_some() {
-                self.route(notification, None).await?;
+                self.route(notification, None, true).await?;
             } else {
                 let (ack_tx, ack_rx) = oneshot::channel();
-                self.route(notification, Some(ack_tx)).await?;
+                self.route(notification, Some(ack_tx), true).await?;
                 final_ack = Some(ack_rx);
             }
         }
@@ -130,6 +132,7 @@ impl NotificationRouter {
         &self,
         notification: SessionNotification,
         mut enqueued: Option<oneshot::Sender<()>>,
+        wait_for_capacity: bool,
     ) -> Result<(), NotificationRouteError> {
         let session_id = SessionId::new(notification.session_id.to_string());
         let connection_ids = self.bindings.connections_for(&session_id);
@@ -164,17 +167,23 @@ impl NotificationRouter {
                         None
                     };
 
-                match connection
-                    .outbound_tx
-                    .send(ConnectionOutbound::Notification {
-                        value: notification_clone,
-                        enqueued: enqueued_for_connection,
-                    })
-                    .await
-                {
+                let outbound = ConnectionOutbound::Notification {
+                    value: notification_clone,
+                    enqueued: enqueued_for_connection,
+                };
+                let sent = if wait_for_capacity {
+                    connection
+                        .outbound_tx
+                        .send(outbound)
+                        .await
+                        .map_err(|_| NotificationRouteError::QueueClosed)
+                } else {
+                    try_send_live(&connection.outbound_tx, outbound, connection_id)
+                };
+                match sent {
                     Ok(()) => success_count += 1,
-                    Err(_) => {
-                        last_error = Some(Err(NotificationRouteError::QueueClosed));
+                    Err(error) => {
+                        last_error = Some(Err(error));
                     }
                 }
             } else {
@@ -267,5 +276,70 @@ impl NotificationRouter {
         } else {
             last_error.unwrap_or(Err(NotificationRouteError::Unbound(session_id.clone())))
         }
+    }
+}
+
+fn try_send_live(
+    sender: &tokio::sync::mpsc::Sender<ConnectionOutbound>,
+    outbound: ConnectionOutbound,
+    connection_id: &str,
+) -> Result<(), NotificationRouteError> {
+    sender.try_send(outbound).map_err(|error| match error {
+        tokio::sync::mpsc::error::TrySendError::Full(_) => {
+            NotificationRouteError::QueueFull(connection_id.to_string())
+        }
+        tokio::sync::mpsc::error::TrySendError::Closed(_) => NotificationRouteError::QueueClosed,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agent_client_protocol::schema::v1::{
+        ContentBlock, ContentChunk, SessionId as AcpSessionId, SessionUpdate, TextContent,
+    };
+
+    fn notification(session_id: &str) -> SessionNotification {
+        SessionNotification::new(
+            AcpSessionId::new(session_id),
+            SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
+                TextContent::new("update"),
+            ))),
+        )
+    }
+
+    #[test]
+    fn full_live_queue_does_not_prevent_another_connection_enqueue() {
+        let (slow_tx, _slow_rx) = tokio::sync::mpsc::channel(1);
+        slow_tx
+            .try_send(ConnectionOutbound::Notification {
+                value: notification("session-a"),
+                enqueued: None,
+            })
+            .unwrap();
+        let slow = try_send_live(
+            &slow_tx,
+            ConnectionOutbound::Notification {
+                value: notification("session-a"),
+                enqueued: None,
+            },
+            "connection-a",
+        );
+        assert!(matches!(
+            slow,
+            Err(NotificationRouteError::QueueFull(ref id)) if id == "connection-a"
+        ));
+
+        let (healthy_tx, mut healthy_rx) = tokio::sync::mpsc::channel(1);
+        try_send_live(
+            &healthy_tx,
+            ConnectionOutbound::Notification {
+                value: notification("session-b"),
+                enqueued: None,
+            },
+            "connection-b",
+        )
+        .unwrap();
+        assert!(healthy_rx.try_recv().is_ok());
     }
 }

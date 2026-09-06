@@ -131,6 +131,8 @@ impl ToolError {
 #[derive(Debug)]
 pub enum GoalOutcome {
     Achieved,
+    /// The runner stopped because progress was blocked by its safety limits.
+    Blocked(String),
     Error(String),
     /// Token budget exhausted; the loop stopped to avoid overruns.
     UsageLimited {
@@ -143,6 +145,7 @@ impl std::fmt::Display for GoalOutcome {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             GoalOutcome::Achieved => write!(f, "Goal achieved"),
+            GoalOutcome::Blocked(reason) => write!(f, "Goal blocked: {}", reason),
             GoalOutcome::Error(e) => write!(f, "Goal error: {}", e),
             GoalOutcome::UsageLimited {
                 tokens_used,
@@ -175,6 +178,18 @@ pub struct GoalMeta {
     pub iteration: u32,
     pub tool: String,
     pub time_used_seconds: i64,
+    /// Durable lifecycle state, independent from the coarse task scheduler state.
+    #[serde(default)]
+    pub lifecycle: GoalLifecycle,
+    /// Human-readable reason for the latest non-active lifecycle state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle_reason: Option<String>,
+    /// Model configuration used by the anureo goal tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Reasoning effort used by the anureo goal tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
     /// Optional hard cap on total tokens consumed across all iterations.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_budget: Option<u32>,
@@ -186,6 +201,19 @@ pub struct GoalMeta {
     /// Optional verification command (e.g. "cargo test") run after each iteration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verify_command: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalLifecycle {
+    #[default]
+    Active,
+    Paused,
+    Blocked,
+    UsageLimited,
+    Completed,
+    Cancelled,
+    Failed,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -203,6 +231,10 @@ impl Default for GoalMeta {
             iteration: 0,
             tool: "anureo".to_string(),
             time_used_seconds: 0,
+            lifecycle: GoalLifecycle::Active,
+            lifecycle_reason: None,
+            model: None,
+            effort: None,
             token_budget: None,
             tokens_used: 0,
             history: Vec::new(),
@@ -444,6 +476,11 @@ mod tests {
         assert_eq!(format!("{}", GoalOutcome::Achieved), "Goal achieved");
 
         assert_eq!(
+            format!("{}", GoalOutcome::Blocked("no progress".to_string())),
+            "Goal blocked: no progress"
+        );
+
+        assert_eq!(
             format!("{}", GoalOutcome::Error("Test error".to_string())),
             "Goal error: Test error"
         );
@@ -467,10 +504,30 @@ mod tests {
         assert_eq!(default_meta.iteration, 0);
         assert_eq!(default_meta.tool, "anureo");
         assert_eq!(default_meta.time_used_seconds, 0);
+        assert_eq!(default_meta.lifecycle, GoalLifecycle::Active);
+        assert!(default_meta.lifecycle_reason.is_none());
         assert!(default_meta.token_budget.is_none());
         assert_eq!(default_meta.tokens_used, 0);
         assert!(default_meta.history.is_empty());
         assert!(default_meta.verify_command.is_none());
+    }
+
+    #[test]
+    fn test_goal_meta_legacy_json_defaults_to_active() {
+        let meta: GoalMeta = serde_json::from_str(
+            r#"{
+                "iteration": 3,
+                "tool": "anureo",
+                "time_used_seconds": 12,
+                "tokens_used": 7,
+                "history": []
+            }"#,
+        )
+        .expect("legacy goal metadata should remain readable");
+
+        assert_eq!(meta.iteration, 3);
+        assert_eq!(meta.lifecycle, GoalLifecycle::Active);
+        assert!(meta.lifecycle_reason.is_none());
     }
 
     #[test]
@@ -479,6 +536,10 @@ mod tests {
             iteration: 5,
             tool: "test_tool".to_string(),
             time_used_seconds: 120,
+            lifecycle: GoalLifecycle::Active,
+            lifecycle_reason: None,
+            model: Some("test-model".to_string()),
+            effort: Some("high".to_string()),
             token_budget: Some(5000),
             tokens_used: 2500,
             history: vec![],
@@ -552,6 +613,7 @@ mod tests {
     #[test]
     fn test_goal_outcome_debug() {
         let achieved = GoalOutcome::Achieved;
+        let blocked = GoalOutcome::Blocked("no progress".to_string());
         let error = GoalOutcome::Error("Test error".to_string());
         let limited = GoalOutcome::UsageLimited {
             tokens_used: 100,
@@ -559,6 +621,7 @@ mod tests {
         };
 
         assert!(format!("{:?}", achieved).contains("Achieved"));
+        assert!(format!("{:?}", blocked).contains("Blocked"));
         assert!(format!("{:?}", error).contains("Error"));
         assert!(format!("{:?}", limited).contains("UsageLimited"));
     }

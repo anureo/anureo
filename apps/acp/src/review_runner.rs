@@ -122,7 +122,7 @@ pub fn spawn_inprocess_review(
     review_memory: bool,
     review_skills: bool,
     trigger: String,
-    tx: Option<mpsc::Sender<SessionUpdateEnvelope>>,
+    tx: Option<mpsc::UnboundedSender<SessionUpdateEnvelope>>,
     session_id: Option<SessionId>,
 ) {
     // Per-session dedup: skip if a review is already in flight for this
@@ -250,7 +250,7 @@ pub fn spawn_inprocess_review(
 ///
 /// No-op when either `tx` or `session_id` is `None` (non-ACP embedding).
 fn notify_completion(
-    tx: Option<&mpsc::Sender<SessionUpdateEnvelope>>,
+    tx: Option<&mpsc::UnboundedSender<SessionUpdateEnvelope>>,
     session_id: Option<&SessionId>,
     thread_id: &str,
     outcome: Result<&ReviewOutcome, ()>,
@@ -280,7 +280,7 @@ fn notify_completion(
         session_id.clone(),
         agent_client_protocol::schema::v1::SessionUpdate::AgentMessageChunk(chunk),
     );
-    if let Err(e) = tx.try_send(SessionUpdateEnvelope::Session(msg_notif)) {
+    if let Err(e) = tx.send(SessionUpdateEnvelope::Session(msg_notif)) {
         warn!(thread_id = %thread_id, error = %e, "Failed to send review summary chunk");
     }
 
@@ -585,7 +585,7 @@ mod tests {
     async fn notify_completion_emits_chunk_and_session_info_with_meta() {
         use agent_client_protocol::schema::v1::{SessionId, SessionUpdate};
 
-        let (tx, mut rx) = mpsc::channel::<SessionUpdateEnvelope>(4);
+        let (tx, mut rx) = mpsc::unbounded_channel::<SessionUpdateEnvelope>();
         let session_id = SessionId::new("test-session-1");
 
         let outcome = ReviewOutcome {
@@ -693,7 +693,7 @@ mod tests {
         // Both args None → must not panic.
         notify_completion(None, None, "thread-2", Ok(&outcome), 0);
         // tx without session_id → also a no-op (we don't know who to address).
-        let (tx, _rx) = mpsc::channel::<SessionUpdateEnvelope>(1);
+        let (tx, _rx) = mpsc::unbounded_channel::<SessionUpdateEnvelope>();
         notify_completion(Some(&tx), None, "thread-2", Ok(&outcome), 0);
     }
 }

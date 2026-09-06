@@ -45,6 +45,20 @@ impl TaskDb {
     }
 
     pub async fn create_task(&self, p: &CreateParams) -> Result<Task, TaskDbError> {
+        self.create_task_with_id(&uuid::Uuid::new_v4().to_string(), p)
+            .await
+    }
+
+    /// Create a task with a caller-supplied stable ID.
+    ///
+    /// Goal runners use this to bind the persisted task to an external
+    /// scheduler or an agent session. The database's primary-key constraint
+    /// rejects accidental reuse instead of silently creating a second task.
+    pub async fn create_task_with_id(
+        &self,
+        id: &str,
+        p: &CreateParams,
+    ) -> Result<Task, TaskDbError> {
         let now = Local::now().to_rfc3339();
         let start_time = p
             .start_time
@@ -53,13 +67,12 @@ impl TaskDb {
             .transpose()
             .map_err(TaskDbError::Other)?
             .unwrap_or_else(|| now.clone());
-        let id = uuid::Uuid::new_v4().to_string();
         let status_str = p.status.as_str().to_string();
 
         sqlx::query(
             "INSERT INTO tasks (id, name, description, assignee, start_time, created_at, status, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, '{}')",
         )
-        .bind(&id)
+        .bind(id)
         .bind(&p.name)
         .bind(&p.description)
         .bind(&p.assignee)
@@ -70,7 +83,7 @@ impl TaskDb {
         .await?;
 
         Ok(Task {
-            id,
+            id: id.to_string(),
             name: p.name.clone(),
             description: p.description.clone(),
             assignee: p.assignee.clone(),
@@ -334,11 +347,28 @@ impl TaskDb {
         to: TaskStatus,
     ) -> Result<bool, TaskDbError> {
         let like_pattern = format!("{}%", id_prefix);
+        let matching_ids = sqlx::query_scalar::<_, String>(
+            "SELECT id FROM tasks WHERE id LIKE ? ORDER BY id",
+        )
+        .bind(&like_pattern)
+        .fetch_all(&self.pool)
+        .await?;
+        let id = match matching_ids.as_slice() {
+            [] => return Ok(false),
+            [id] => id,
+            _ => {
+                return Err(TaskDbError::Other(format!(
+                    "ambiguous task id prefix '{}': matched {} pending tasks",
+                    id_prefix,
+                    matching_ids.len()
+                )))
+            }
+        };
         let result = sqlx::query(
-            "UPDATE tasks SET status = ? WHERE id = (SELECT id FROM tasks WHERE id LIKE ? AND status = ? LIMIT 1)",
+            "UPDATE tasks SET status = ? WHERE id = ? AND status = ?",
         )
         .bind(to.as_str())
-        .bind(&like_pattern)
+        .bind(id)
         .bind(from.as_str())
         .execute(&self.pool)
         .await?;
@@ -471,6 +501,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_create_with_caller_supplied_id() {
+        let db = test_db().await;
+        let task = db
+            .create_task_with_id(
+                "scheduler-goal-42",
+                &CreateParams {
+                    name: "stable goal".into(),
+                    description: "desc".into(),
+                    assignee: String::new(),
+                    start_time: None,
+                    status: TaskStatus::InProgress,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(task.id, "scheduler-goal-42");
+        assert_eq!(db.show_task("scheduler-goal-42").await.unwrap().id, task.id);
+    }
+
+    #[tokio::test]
     async fn test_list_tasks() {
         let db = test_db().await;
         for i in 0..3 {
@@ -589,6 +640,76 @@ mod tests {
 
         let found = db.show_task(&task.id).await.unwrap();
         assert_eq!(found.status, TaskStatus::InProgress);
+    }
+
+    #[tokio::test]
+    async fn test_atomic_update_status_rejects_ambiguous_prefix() {
+        let db = test_db().await;
+        let params = |name: &str| CreateParams {
+            name: name.to_string(),
+            description: String::new(),
+            assignee: String::new(),
+            start_time: None,
+            status: TaskStatus::Pending,
+        };
+        db.create_task_with_id("goal-aaa", &params("a"))
+            .await
+            .unwrap();
+        db.create_task_with_id("goal-aab", &params("b"))
+            .await
+            .unwrap();
+
+        let error = db
+            .atomic_update_status("goal-aa", TaskStatus::Pending, TaskStatus::InProgress)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("ambiguous task id prefix"));
+
+        assert_eq!(
+            db.show_task("goal-aaa").await.unwrap().status,
+            TaskStatus::Pending
+        );
+        assert_eq!(
+            db.show_task("goal-aab").await.unwrap().status,
+            TaskStatus::Pending
+        );
+    }
+
+    #[tokio::test]
+    async fn test_atomic_update_status_rejects_prefix_mixed_statuses() {
+        let db = test_db().await;
+        let pending = CreateParams {
+            name: "pending".into(),
+            description: String::new(),
+            assignee: String::new(),
+            start_time: None,
+            status: TaskStatus::Pending,
+        };
+        db.create_task_with_id("mixed-a", &CreateParams { name: "a".into(), ..pending })
+            .await
+            .unwrap();
+        db.create_task_with_id(
+            "mixed-b",
+            &CreateParams {
+                name: "b".into(),
+                description: String::new(),
+                assignee: String::new(),
+                start_time: None,
+                status: TaskStatus::Completed,
+            },
+        )
+            .await
+            .unwrap();
+
+        let error = db
+            .atomic_update_status("mixed-", TaskStatus::Pending, TaskStatus::InProgress)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("ambiguous task id prefix"));
+        assert_eq!(
+            db.show_task("mixed-a").await.unwrap().status,
+            TaskStatus::Pending
+        );
     }
 
     #[tokio::test]
