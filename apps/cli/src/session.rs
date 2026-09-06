@@ -615,7 +615,7 @@ impl SessionManager {
     }
 
     pub fn delete_session(&self, session_id: &str) -> Result<usize, String> {
-        let conn = rusqlite::Connection::open(&self.db_path)
+        let mut conn = rusqlite::Connection::open(&self.db_path)
             .map_err(|e| format!("Failed to open database: {}", e))?;
         // Cascade-aware delete (priority #23 gap, Hermes `hermes_state.py`).
         //
@@ -629,7 +629,7 @@ impl SessionManager {
         // separate session rows that should be cleaned up together).
         // The checkpoint-count surfaced to callers matches the rows we
         // actually removed from the target thread (plus any delegates).
-        checkpoint_sqlite_store::execute_write(&conn, |tx| {
+        checkpoint_sqlite_store::execute_write(&mut conn, |tx| {
             // Step 1: collect related thread_ids via shared summary.
             let mut stmt = tx
                 .prepare(
@@ -855,7 +855,7 @@ impl SessionManager {
     /// Returns the new session_id (UUID-like string derived from
     /// `parent_session_id` + timestamp).
     pub fn archive_and_compact(&self, session_id: &str, summary: &str) -> Result<String, String> {
-        let conn = rusqlite::Connection::open(&self.db_path)
+        let mut conn = rusqlite::Connection::open(&self.db_path)
             .map_err(|e| format!("Failed to open database: {}", e))?;
         self.ensure_sessions_schema(&conn)?;
         let new_id = format!(
@@ -869,7 +869,7 @@ impl SessionManager {
             "summary": summary,
         })
         .to_string();
-        checkpoint_sqlite_store::execute_write(&conn, |tx| {
+        checkpoint_sqlite_store::execute_write(&mut conn, |tx| {
             // Mark source compacted.
             tx.execute(
                 "INSERT INTO sessions(id, parent_session_id, end_reason, model_config)
@@ -967,10 +967,10 @@ impl SessionManager {
         thread_id: &str,
         target_message_id: &str,
     ) -> Result<usize, String> {
-        let conn = rusqlite::Connection::open(&self.db_path)
+        let mut conn = rusqlite::Connection::open(&self.db_path)
             .map_err(|e| format!("Failed to open database: {}", e))?;
         self.ensure_message_state_schema(&conn)?;
-        checkpoint_sqlite_store::execute_write(&conn, |tx| {
+        checkpoint_sqlite_store::execute_write(&mut conn, |tx| {
             // Resolve target's metadata_created_at from the checkpoint
             // payload by message_id (search payloads containing the
             // message_id).
@@ -1099,10 +1099,10 @@ impl SessionManager {
         delta: TokenDelta<'_>,
         absolute: bool,
     ) -> Result<(), String> {
-        let conn = rusqlite::Connection::open(&self.db_path)
+        let mut conn = rusqlite::Connection::open(&self.db_path)
             .map_err(|e| format!("Failed to open database: {}", e))?;
         self.ensure_token_counters_schema(&conn)?;
-        checkpoint_sqlite_store::execute_write(&conn, |tx| {
+        checkpoint_sqlite_store::execute_write(&mut conn, |tx| {
             tx.execute(
                 "INSERT OR IGNORE INTO session_token_counters(session_id, model) VALUES (?1, ?2)",
                 rusqlite::params![session_id, model],

@@ -256,36 +256,39 @@ where
 
         let db_path = self.db_path.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = crate::sqlite_util::open_sqlite_with_wal(&db_path)
+            let mut conn = crate::sqlite_util::open_sqlite_with_wal(&db_path)
                 .map_err(CheckpointError::Storage)?;
-            conn.execute(
-                r#"
-                INSERT OR REPLACE INTO checkpoints
-                (thread_id, checkpoint_ns, checkpoint_id, ts, payload, channel_versions, versions_seen,
-                 metadata_source, metadata_step, metadata_created_at, metadata_parents, metadata_children,
-                 metadata_summary, updated_channels, pending_sends, pending_writes, pending_interrupts)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
-                "#,
-                params![
-                    thread_id,
-                    checkpoint_ns,
-                    id.clone(),
-                    ts,
-                    payload,
-                    channel_versions,
-                    versions_seen,
-                    metadata_source,
-                    metadata_step,
-                    metadata_created_at,
-                    metadata_parents,
-                    metadata_children,
-                    metadata_summary,
-                    updated_channels,
-                    pending_sends,
-                    pending_writes,
-                    pending_interrupts,
-                ],
-            )
+            crate::sqlite_util::execute_write(&mut conn, |tx| {
+                tx.execute(
+                    r#"
+                    INSERT OR REPLACE INTO checkpoints
+                    (thread_id, checkpoint_ns, checkpoint_id, ts, payload, channel_versions, versions_seen,
+                     metadata_source, metadata_step, metadata_created_at, metadata_parents, metadata_children,
+                     metadata_summary, updated_channels, pending_sends, pending_writes, pending_interrupts)
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+                    "#,
+                    params![
+                        thread_id,
+                        checkpoint_ns,
+                        id,
+                        ts,
+                        payload,
+                        channel_versions,
+                        versions_seen,
+                        metadata_source,
+                        metadata_step,
+                        metadata_created_at,
+                        metadata_parents,
+                        metadata_children,
+                        metadata_summary,
+                        updated_channels,
+                        pending_sends,
+                        pending_writes,
+                        pending_interrupts,
+                    ],
+                )?;
+                Ok(())
+            })
             .map_err(|e| CheckpointError::Storage(e.to_string()))?;
             Ok::<String, CheckpointError>(id)
         })
@@ -518,34 +521,31 @@ where
             prepared.push((idx as i64, channel.clone(), bytes));
         }
         tokio::task::spawn_blocking(move || {
-            let conn = crate::sqlite_util::open_sqlite_with_wal(&db_path)
+            let mut conn = crate::sqlite_util::open_sqlite_with_wal(&db_path)
                 .map_err(CheckpointError::Storage)?;
-            // Open a short-lived transaction so multiple writes either land
-            // together or get rolled back.
-            let tx = conn
-                .unchecked_transaction()
-                .map_err(|e| CheckpointError::Storage(e.to_string()))?;
-            for (idx, channel, bytes) in prepared {
-                tx.execute(
-                    r#"
-                    INSERT OR IGNORE INTO checkpoint_writes
-                        (thread_id, checkpoint_ns, checkpoint_id, task_id, idx, channel, value, created_at)
-                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-                    "#,
-                    params![
-                        thread_id,
-                        checkpoint_ns,
-                        checkpoint_id_owned,
-                        task_id_owned,
-                        idx,
-                        channel,
-                        bytes,
-                        created_at_to_i64(&Some(std::time::SystemTime::now())),
-                    ],
-                )
-                .map_err(|e| CheckpointError::Storage(e.to_string()))?;
-            }
-            tx.commit().map_err(|e| CheckpointError::Storage(e.to_string()))?;
+            crate::sqlite_util::execute_write(&mut conn, |tx| {
+                for (idx, channel, bytes) in &prepared {
+                    tx.execute(
+                        r#"
+                        INSERT OR IGNORE INTO checkpoint_writes
+                            (thread_id, checkpoint_ns, checkpoint_id, task_id, idx, channel, value, created_at)
+                        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                        "#,
+                        params![
+                            thread_id,
+                            checkpoint_ns,
+                            checkpoint_id_owned,
+                            task_id_owned,
+                            idx,
+                            channel,
+                            bytes,
+                            created_at_to_i64(&Some(std::time::SystemTime::now())),
+                        ],
+                    )?;
+                }
+                Ok(())
+            })
+            .map_err(|e| CheckpointError::Storage(e.to_string()))?;
             Ok::<(), CheckpointError>(())
         })
         .await
@@ -607,6 +607,30 @@ where
 mod tests {
     use super::*;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    fn checkpoint(id: &str) -> Checkpoint<serde_json::Value> {
+        Checkpoint {
+            v: CHECKPOINT_VERSION,
+            id: id.to_string(),
+            ts: "2026-09-05T00:00:00Z".to_string(),
+            channel_values: serde_json::json!({"checkpoint": id}),
+            channel_versions: HashMap::new(),
+            versions_seen: HashMap::new(),
+            updated_channels: None,
+            pending_sends: Vec::new(),
+            pending_writes: Vec::new(),
+            pending_interrupts: Vec::new(),
+            user: (),
+            kernel: KernelMetadata {
+                source: CheckpointSource::Loop,
+                step: 1,
+                created_at: Some(SystemTime::now()),
+                parents: HashMap::new(),
+                children: HashMap::new(),
+                summary: None,
+            },
+        }
+    }
 
     #[test]
     fn source_roundtrip() {
@@ -762,6 +786,29 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn put_retries_while_another_session_holds_writer_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("put-contention.db");
+        let serializer =
+            Arc::new(checkpoint::JsonSerializer) as Arc<dyn Serializer<serde_json::Value>>;
+        let saver = SqliteSaver::<serde_json::Value>::new(&db_path, serializer).unwrap();
+        let mut blocker = crate::sqlite_util::open_sqlite_with_wal(&db_path).unwrap();
+        let blocker_tx = blocker
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .unwrap();
+        let config = RunnableConfig {
+            thread_id: Some("parallel-session-b".to_string()),
+            ..RunnableConfig::default()
+        };
+
+        let write = tokio::spawn(async move { saver.put(&config, &checkpoint("ck-b")).await });
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        blocker_tx.commit().unwrap();
+
+        assert_eq!(write.await.unwrap().unwrap(), "ck-b");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn list_returns_checkpoints() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("list.db");
@@ -895,6 +942,46 @@ mod tests {
         assert_eq!(writes[0].2, serde_json::json!(1));
         assert_eq!(writes[1].2, serde_json::json!("a2"));
         assert_eq!(writes[2].2, serde_json::json!("b1"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn put_writes_retries_as_one_transaction_under_writer_contention() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("put-writes-contention.db");
+        let serializer =
+            Arc::new(checkpoint::JsonSerializer) as Arc<dyn Serializer<serde_json::Value>>;
+        let saver = SqliteSaver::<serde_json::Value>::new(&db_path, serializer).unwrap();
+        let mut blocker = crate::sqlite_util::open_sqlite_with_wal(&db_path).unwrap();
+        let blocker_tx = blocker
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .unwrap();
+        let config = RunnableConfig {
+            thread_id: Some("parallel-session-b".to_string()),
+            checkpoint_ns: "main".to_string(),
+            ..RunnableConfig::default()
+        };
+
+        let write = tokio::spawn(async move {
+            saver
+                .put_writes(
+                    &config,
+                    "ck-b",
+                    "task-b",
+                    &[
+                        ("first".to_string(), serde_json::json!(1)),
+                        ("second".to_string(), serde_json::json!(2)),
+                    ],
+                )
+                .await?;
+            saver.get_writes(&config, "ck-b").await
+        });
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        blocker_tx.commit().unwrap();
+
+        let writes = write.await.unwrap().unwrap();
+        assert_eq!(writes.len(), 2);
+        assert_eq!(writes[0].2, serde_json::json!(1));
+        assert_eq!(writes[1].2, serde_json::json!(2));
     }
 
     /// **Scenario**: Re-inserting the same (task_id, idx) is idempotent.

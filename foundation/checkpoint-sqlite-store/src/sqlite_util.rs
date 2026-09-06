@@ -5,6 +5,8 @@ use std::sync::OnceLock;
 use std::sync::RwLock;
 use std::time::Duration;
 
+use rusqlite::TransactionBehavior;
+
 /// Maximum retries for `SQLITE_BUSY` / `SQLITE_LOCKED` before giving up.
 /// 5 attempts × ~50ms worst-case jitter ≈ 250ms; cheap enough to be
 /// invisible to interactive sessions but enough to absorb
@@ -32,13 +34,13 @@ const MEMORY_DB_FILENAME: &str = "memory.db";
 ///
 /// On retry, the function sleeps a random `[0, BUSY_BACKOFF_JITTER_MAX)`
 /// to desynchronise thundering-herd retry waves.
-pub fn execute_write<T, F>(conn: &rusqlite::Connection, mut f: F) -> Result<T, rusqlite::Error>
+pub fn execute_write<T, F>(conn: &mut rusqlite::Connection, mut f: F) -> Result<T, rusqlite::Error>
 where
     F: FnMut(&rusqlite::Transaction<'_>) -> Result<T, rusqlite::Error>,
 {
     for attempt in 0..EXECUTE_WRITE_BUSY_RETRIES {
         let result: Result<T, rusqlite::Error> = (|| {
-            let tx = conn.unchecked_transaction()?;
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let out = f(&tx)?;
             tx.commit()?;
             Ok(out)
@@ -129,6 +131,8 @@ pub fn open_sqlite_with_wal(path: &Path) -> Result<rusqlite::Connection, String>
             return Err(msg);
         }
     };
+    conn.busy_timeout(Duration::from_millis(250))
+        .map_err(|error| open_error_message(path, &error))?;
     // Hermes parity: try WAL first; if WAL fails (NFS, SMB, network
     // volume, EROFS on /tmp sandbox), fall back to DELETE and warn once.
     // The fallback is logged at warn-level so a real outage shows up in
