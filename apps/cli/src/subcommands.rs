@@ -40,7 +40,7 @@ pub(crate) async fn handle_models_command(
     let opts = build_run_options(args, String::new(), false);
     match &models_args.sub {
         ModelsCommand::List => cli_list_models(&opts, None).await?,
-        ModelsCommand::Show(_show_args) => cli_list_models(&opts, None).await?,
+        ModelsCommand::Show(show_args) => cli_list_models(&opts, Some(&show_args.name)).await?,
     }
     Ok(())
 }

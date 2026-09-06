@@ -38,9 +38,6 @@ impl ProviderModels {
     }
 }
 
-/// Maximum number of models to display per provider before truncating.
-const MAX_MODELS_DISPLAY: usize = 30;
-
 /// List models from all configured providers.
 pub async fn list_all_models(json: bool) -> Result<(), RunError> {
     let config = load_full_config("anureo")
@@ -187,19 +184,12 @@ fn output_human(results: &[ProviderModels]) {
             continue;
         }
 
-        let display_count = result.models.len().min(MAX_MODELS_DISPLAY);
-        for model in result.models.iter().take(display_count) {
+        println!("  Models ({}):", result.models.len());
+        for model in &result.models {
             println!("  • {}", model.id);
             if let Some(ref owned_by) = model.owned_by {
                 println!("    Owner: {}", owned_by);
             }
-        }
-
-        if result.models.len() > MAX_MODELS_DISPLAY {
-            println!(
-                "  ... and {} more",
-                result.models.len() - MAX_MODELS_DISPLAY
-            );
         }
     }
 }
