@@ -82,6 +82,22 @@ pub async fn run_repl_loop(
                 anureo_command::Command::Models { .. } | anureo_command::Command::ModelsUse { .. } => {
                     println!("/models is not yet supported in CLI mode.");
                 }
+                anureo_command::Command::Goal { subcommand } => {
+                    // /goal (P5): binds to the run's thread id; the fallback
+                    // id is surfaced in the receipt so the binding is clear.
+                    let fallback = base_opts.thread_id.is_none();
+                    let thread = base_opts
+                        .thread_id
+                        .clone()
+                        .unwrap_or_else(|| "repl".to_string());
+                    let mut reply =
+                        crate::goal_repl::run_goal_subcommand(subcommand, &thread).await;
+                    if fallback {
+                        reply
+                            .push_str(&format!("\n(no --thread given; goal bound to \"{thread}\")"));
+                    }
+                    println!("{}", reply);
+                }
                 _ => {
                     let reply = handle_repl_command(parsed);
                     println!("{}", reply);
@@ -121,7 +137,7 @@ fn handle_repl_command(cmd: anureo_command::Command) -> String {
             unreachable!("handled above")
         }
         anureo_command::Command::Goal { .. } => {
-            "/goal requires an active session with LLM access.".into()
+            unreachable!("goal handled in run_repl_loop")
         }
 anureo_command::Command::ReviewSkill { .. } => {
             "/review-skill requires an active session with LLM access.".into()

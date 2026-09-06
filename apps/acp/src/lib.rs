@@ -205,6 +205,8 @@ pub mod connection_registry;
 pub mod content;
 pub mod extensions;
 pub mod global_events;
+
+pub mod goal_runtime;
 pub mod goal_runner;
 pub mod high_freq_usage;
 pub mod last_model;

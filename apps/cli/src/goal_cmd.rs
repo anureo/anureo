@@ -1,3 +1,8 @@
+//! **goal-codex-alignment P6 冻结**：`anureo goal start/--resume` 是旧
+//! detached goal runner 入口，已不在关键路径（新路径 = `/goal` 六子命令与
+//! `_anureo.dev/goal/*`，后端 `agent/goal` crate）。保留供迁移审计与回退，
+//! 移除见 P7。新迁移入口：`anureo goal --migrate`。
+
 use std::sync::Arc;
 
 use crate::args::GoalArgs;
@@ -8,6 +13,11 @@ use tokio_util::sync::CancellationToken;
 use tool_core::active_operation::RunCancellation;
 
 pub(crate) async fn handle_goal_command(ga: &GoalArgs) -> Result<(), Box<dyn std::error::Error>> {
+    // P6：一次性迁移到 thread_goals（幂等，先备份）。优先于 legacy 路径。
+    if ga.migrate {
+        return crate::goal_migrate::run_migrate().await;
+    }
+
     if ga.verbose {
         let _ = tracing_subscriber::fmt()
             .with_env_filter("anureo=info")

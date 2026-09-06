@@ -9,6 +9,8 @@ mod codex_event_builder;
 mod config_cmd;
 mod display_limits;
 mod goal_cmd;
+mod goal_migrate;
+mod goal_repl;
 mod goal_runner;
 mod logging;
 mod mcp_manager;

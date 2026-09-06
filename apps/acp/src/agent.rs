@@ -24,7 +24,7 @@ use agent_client_protocol::schema::v1::{
     ForkSessionResponse, InitializeRequest, InitializeResponse, ListSessionsRequest,
     ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, NewSessionRequest,
     NewSessionResponse, PromptRequest, PromptResponse, ResumeSessionRequest, ResumeSessionResponse,
-    SessionConfigOptionValue, SessionId, SessionUpdate, SetSessionConfigOptionRequest,
+    SessionConfigOptionValue, SessionId, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
     SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse, StopReason,
     Usage,
 };
@@ -194,6 +194,20 @@ pub struct AnureoAcpAgent {
     pub(crate) session_update_tx: Option<mpsc::UnboundedSender<SessionUpdateEnvelope>>,
     pub(crate) model_provider: Arc<dyn ModelProvider>,
     pub(crate) extension_registry: Arc<ExtensionRegistry>,
+    /// Session-threaded goal runtimes (goal-codex-alignment P5), keyed by
+    /// agent thread id. Each handle owns its store clone and the driver
+    /// back-reference into this agent.
+    pub(crate) goal_runtimes:
+        tokio::sync::Mutex<std::collections::HashMap<String, Arc<goal::GoalRuntimeHandle>>>,
+    /// Lazily opened shared TaskDb pool backing the goal runtimes
+    /// (`<anureo_home>/tasks/tasks.db`). One pool per process: opening a
+    /// second pool against the same SQLite file would defeat write
+    /// serialization and waste connections.
+    pub(crate) goal_db: tokio::sync::OnceCell<Arc<task_core::TaskDb>>,
+    /// Weak self-reference handed to [`crate::goal_runtime::AcpTurnDriver`];
+    /// set via [`Self::register_goal_self`] right after the agent is wrapped
+    /// in `Arc`. Unset in embedded tests ⇒ goal wiring is inert there.
+    pub(crate) goal_self: std::sync::OnceLock<std::sync::Weak<AnureoAcpAgent>>,
 }
 
 impl std::fmt::Debug for AnureoAcpAgent {
@@ -278,9 +292,86 @@ impl AnureoAcpAgent {
             session_update_tx,
             model_provider: Arc::new(RealModelProvider),
             extension_registry,
+            goal_runtimes: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+            goal_db: tokio::sync::OnceCell::new(),
+            goal_self: std::sync::OnceLock::new(),
         };
         agent.restore_session_metadata()?;
         Ok(agent)
+    }
+
+    /// Register the agent's own weak reference for goal-runtime drivers.
+    ///
+    /// Must be called once, immediately after the agent is wrapped in `Arc`
+    /// (see [`crate::runtime`]). Until then goal wiring is disabled: prompts
+    /// run without goal hooks/tools and `/goal` degrades with an explicit
+    /// error instead of guessing.
+    pub fn register_goal_self(self: &Arc<Self>) {
+        if self.goal_self.set(Arc::downgrade(self)).is_err() {
+            tracing::debug!("goal self-reference already registered");
+        }
+    }
+
+    /// Shared TaskDb pool for goal persistence (`<anureo_home>/tasks/tasks.db`).
+    ///
+    /// Opening the pool also runs the task-db migrations, which is where the
+    /// `thread_goals` table comes from. One pool per process: opening a
+    /// second pool against the same SQLite file would defeat write
+    /// serialization and waste connections.
+    ///
+    /// P5b：对 `extensions::goal` 以 `pub(crate)` 暴露（goal/list 等只读路径）。
+    pub(crate) async fn goal_task_db(&self) -> Result<Arc<task_core::TaskDb>, String> {
+        self.goal_db
+            .get_or_try_init(|| async {
+                let path = config::home::anureo_home().join("tasks").join("tasks.db");
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| format!("create goal db dir: {e}"))?;
+                }
+                task_core::TaskDb::open(&path)
+                    .await
+                    .map(Arc::new)
+                    .map_err(|e| format!("open goal TaskDb: {e}"))
+            })
+            .await
+            .cloned()
+    }
+
+    /// Get (or lazily create) the goal runtime handle for a thread.
+    ///
+    /// Returns `None` when goal wiring is inert (embedded tests: no
+    /// [`Self::register_goal_self`]) or the shared TaskDb cannot be opened;
+    /// the prompt path then proceeds without goal accounting and `/goal`
+    /// commands degrade with an explicit error.
+    pub async fn goal_runtime_for(
+        &self,
+        thread_id: &str,
+    ) -> Option<Arc<goal::GoalRuntimeHandle>> {
+        let agent_weak = self.goal_self.get().cloned()?;
+        // Hold the map lock across creation so concurrent first prompts for
+        // the same thread share one handle (and one TaskDb pool).
+        let mut runtimes = self.goal_runtimes.lock().await;
+        if let Some(existing) = runtimes.get(thread_id) {
+            return Some(existing.clone());
+        }
+        let db = match self.goal_task_db().await {
+            Ok(db) => db,
+            Err(e) => {
+                tracing::warn!(
+                    thread_id,
+                    error = %e,
+                    "goal TaskDb unavailable; goal wiring disabled for this process"
+                );
+                return None;
+            }
+        };
+        let store = goal::GoalStore::from_task_db(&db);
+        let driver = Arc::new(crate::goal_runtime::AcpTurnDriver {
+            agent: agent_weak,
+        });
+        let handle = goal::GoalRuntimeHandle::new(store, thread_id, driver);
+        runtimes.insert(thread_id.to_string(), handle.clone());
+        Some(handle)
     }
 
     pub fn with_session_update_tx(
@@ -1114,6 +1205,21 @@ impl AnureoAcpAgent {
         let _prompt_guard =
             crate::session::PromptGuard::new(&self.sessions, &key, cancellation.generation());
 
+        // Goal wiring (goal-codex-alignment P5): resolve the thread's goal
+        // runtime once per turn, while the busy gate is held. `None` means
+        // goal wiring is inert for this process — turns then run without
+        // goal hooks/tools (embedded tests) or degrade explicitly (`/goal`).
+        let goal_runtime = self.goal_runtime_for(&entry.thread_id).await;
+        if let Some(goal_rt) = &goal_runtime {
+            if let Err(e) = goal_rt.on_turn_start().await {
+                tracing::warn!(
+                    thread_id = %entry.thread_id,
+                    error = %e,
+                    "goal on_turn_start failed"
+                );
+            }
+        }
+
         let user_content =
             content_blocks_to_user_content(args.prompt.as_slice()).map_err(|_| {
                 agent_client_protocol::Error::new(-32602, "content_blocks parse failed")
@@ -1140,76 +1246,28 @@ impl AnureoAcpAgent {
                         tracing::info!(session_id = %args.session_id, "Context cleared via /reset command");
                         return Ok(PromptResponse::new(StopReason::EndTurn));
                     }
-                    agent::commands::Command::Goal { description } => {
-                        tracing::info!(
-                            session_id = %args.session_id,
-                            goal = %description,
-                            "Goal mode activated via /goal command"
+                    agent::commands::Command::Goal { subcommand } => {
+                        tracing::info!(session_id = %args.session_id, "goal command received; routing to session goal runtime");
+                        // Goal wiring is inert in this process (embedded tests,
+                        // or the shared goal TaskDb could not be opened).
+                        // Degrade with an explicit error instead of guessing.
+                        let Some(goal_rt) = goal_runtime.clone() else {
+                            return Err(
+                                agent_client_protocol::Error::internal_error()
+                                    .data("goal runtime unavailable"),
+                            );
+                        };
+                        let receipt = crate::goal_runtime::run_goal_subcommand(
+                            &goal_rt,
+                            &entry.thread_id,
+                            subcommand,
+                        )
+                        .await;
+                        send_goal_receipt(
+                            self.session_update_tx.as_ref(),
+                            &args.session_id,
+                            receipt,
                         );
-                        let working_folder = entry.working_directory.clone().ok_or_else(|| {
-                            agent_client_protocol::Error::internal_error()
-                                .data("ACP session has no working directory")
-                        })?;
-
-                        let resolved_goal = self
-                            .resolve_model_with_tier_awareness(&entry.session_config)
-                            .await;
-                        let goal_ctx_window =
-                            resolve_context_window_size(resolved_goal.model.as_deref()).await;
-
-                        let event_sender: Option<
-                            std::sync::Arc<dyn Fn(agent::run::TypedAnyStreamEvent) + Send + Sync>,
-                        > = self.session_update_tx.clone().map(|sender| {
-                            let session_id = args.session_id.clone();
-                            std::sync::Arc::new(move |ev: agent::run::TypedAnyStreamEvent| {
-                                let notifier =
-                                    SessionNotifier::new(sender.clone(), session_id.clone())
-                                        .with_context_window_size(goal_ctx_window);
-                                notifier.try_send_stream_event(&ev);
-                            })
-                                as std::sync::Arc<
-                                    dyn Fn(agent::run::TypedAnyStreamEvent) + Send + Sync,
-                                >
-                        });
-
-                        // A goal is server-owned and must outlive the prompt
-                        // that created it. In particular, disconnecting the
-                        // ACP client must not cancel the goal; explicit
-                        // `_anureo.dev/goal/pause` and `cancel` requests use
-                        // the runtime control registered by the runner.
-                        let session_id = args.session_id.clone();
-                        let origin_session_id = session_id.to_string();
-                        tokio::spawn(async move {
-                            let result = crate::goal_runner::run_goal(
-                                description,
-                                working_folder,
-                                resolved_goal,
-                                Some(origin_session_id),
-                                tokio_util::sync::CancellationToken::new(),
-                                event_sender,
-                                None,
-                            )
-                            .await;
-
-                            match result {
-                                Ok(goal_result) => {
-                                    tracing::info!(
-                                        session_id = %session_id,
-                                        task_id = %goal_result.task_id,
-                                        outcome = %goal_result.outcome,
-                                        "Goal finished"
-                                    );
-                                }
-                                Err(e) => {
-                                    tracing::error!(
-                                        session_id = %session_id,
-                                        error = %e,
-                                        "Goal run failed"
-                                    );
-                                }
-                            }
-                        });
-
                         return Ok(PromptResponse::new(StopReason::EndTurn));
                     }
                     agent::commands::Command::ReviewSkill { scope } => {
@@ -1325,16 +1383,25 @@ impl AnureoAcpAgent {
             },
             extra_tools: {
                 let tools = create_acp_tools(&client_capabilities, client_bridge.clone());
+                let mut tools: Vec<Arc<dyn tool_core::Tool>> = tools
+                    .into_iter()
+                    .map(|t| Arc::from(t) as Arc<dyn tool_core::Tool>)
+                    .collect();
+                // Goal tools (P5): model-facing get/create/update_goal, visible
+                // only on the session's primary turn (extra_tools is not
+                // plumbed into sub-agent/workflow tool registries, so those
+                // never see them).
+                if let Some(goal_rt) = &goal_runtime {
+                    tools.extend(goal::goal_tools(
+                        goal_rt.clone(),
+                        Arc::new(goal::ShellVerifyRunner::default()),
+                    ));
+                }
                 if tools.is_empty() {
                     None
                 } else {
                     tracing::info!(count = tools.len(), "Registering ACP tools");
-                    Some(Arc::new(
-                        tools
-                            .into_iter()
-                            .map(|t| Arc::from(t) as Arc<dyn tool_core::Tool>)
-                            .collect(),
-                    ))
+                    Some(Arc::new(tools))
                 }
             },
             default_extra_tools_provider: Some(tool_workflow::default_workflow_tool_provider()),
@@ -1445,6 +1512,72 @@ impl AnureoAcpAgent {
         }
 
         self.sessions.finish_prompt(&key, cancellation.generation());
+
+        // Goal runtime turn hooks (goal-codex-alignment P5): fold this turn's
+        // usage and outcome into goal state, then — if a goal is still active
+        // and this session is idle — schedule the next continuation turn.
+        // `finish_prompt` above already released the busy gate; the driver's
+        // `start_turn_if_idle` + `begin_prompt` pair keeps continuation
+        // idempotent against a racing user prompt.
+        if let Some(goal_rt) = goal_runtime.clone() {
+            let totals = {
+                let acc = usage_acc.lock().unwrap_or_else(|e| e.into_inner());
+                goal::TokenTotals {
+                    input_tokens: acc.input_tokens,
+                    output_tokens: acc.output_tokens,
+                    cached_tokens: acc.cached_tokens,
+                }
+            };
+            match &result {
+                Ok(RunCompletion::Finished(_)) => {
+                    if let Err(e) = goal_rt.on_turn_finish(Some(totals)).await {
+                        tracing::warn!(
+                            thread_id = %goal_rt.thread_id(),
+                            error = %e,
+                            "goal on_turn_finish failed"
+                        );
+                    }
+                }
+                Ok(RunCompletion::Cancelled) => {
+                    if let Err(e) = goal_rt.on_turn_abort(Some(totals)).await {
+                        tracing::warn!(
+                            thread_id = %goal_rt.thread_id(),
+                            error = %e,
+                            "goal on_turn_abort failed"
+                        );
+                    }
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    let lower = msg.to_lowercase();
+                    if lower.contains("quota") || msg.contains("429") {
+                        if let Err(err) = goal_rt.on_provider_quota_exhausted(&msg).await {
+                            tracing::warn!(
+                                thread_id = %goal_rt.thread_id(),
+                                error = %err,
+                                "goal on_provider_quota_exhausted failed"
+                            );
+                        }
+                    } else if let Err(err) = goal_rt.on_turn_error(&msg, Some(totals)).await {
+                        tracing::warn!(
+                            thread_id = %goal_rt.thread_id(),
+                            error = %err,
+                            "goal on_turn_error failed"
+                        );
+                    }
+                }
+            }
+            let cont = goal_rt.clone();
+            tokio::spawn(async move {
+                if let Err(e) = cont.continue_if_idle().await {
+                    tracing::warn!(
+                        thread_id = %cont.thread_id(),
+                        error = %e,
+                        "goal idle continuation failed"
+                    );
+                }
+            });
+        }
 
         match result {
             Ok(RunCompletion::Finished(_reply)) => {
@@ -1802,27 +1935,9 @@ impl AnureoAcpAgent {
                         .data(format!("failed to persist session lifecycle: {error}"))
                 })?;
         }
-        let loaded_goal_session_id = session_id.to_string();
-        let goal_event_sender: Option<
-            Arc<dyn Fn(agent::run::TypedAnyStreamEvent) + Send + Sync>,
-        > = self.session_update_tx.clone().map(|sender| {
-            let loaded_session_id = session_id.clone();
-            Arc::new(move |event: agent::run::TypedAnyStreamEvent| {
-                SessionNotifier::new(sender.clone(), loaded_session_id.clone())
-                    .try_send_stream_event(&event);
-            }) as Arc<dyn Fn(agent::run::TypedAnyStreamEvent) + Send + Sync>
-        });
-        if let Err(error) = crate::extensions::goal::recover_persisted_goals(
-            &canonical_cwd,
-            &loaded_goal_session_id,
-            goal_event_sender,
-        ) {
-            tracing::warn!(
-                session_id = %session_id,
-                error = %error,
-                "failed to scan persisted goals during session restore"
-            );
-        }
+        // P5b：goals.json 重启恢复预约机制已退役——goal 现持久于 thread_goals
+        // （tasks.db），恢复由 agent.rs 的 continue_if_idle 钩子在 prompt 后
+        // 自然续跑承担，session/load 无需再扫描 goals.json。
         Ok(response)
     }
 
@@ -2543,6 +2658,32 @@ pub(crate) fn capture_turn_usage(ev: &TypedAnyStreamEvent, acc: &Mutex<TurnUsage
         if let Some(c) = cached {
             a.cached_tokens += c as u64;
         }
+    }
+}
+
+/// Deliver a `/goal` subcommand receipt as an assistant message chunk.
+///
+/// Mirrors the notification shape used by the in-process review runner so
+/// clients render goal receipts like any other agent message. No-op when the
+/// session has no update channel (embedded tests).
+fn send_goal_receipt(
+    tx: Option<&mpsc::UnboundedSender<SessionUpdateEnvelope>>,
+    session_id: &SessionId,
+    text: String,
+) {
+    use agent_client_protocol::schema::v1::{
+        ContentChunk, MessageId, SessionUpdate, TextContent,
+    };
+
+    let Some(tx) = tx else { return };
+    let chunk = ContentChunk::new(agent_client_protocol::schema::v1::ContentBlock::Text(
+        TextContent::new(text),
+    ))
+    .message_id(Some(MessageId::new(uuid::Uuid::new_v4().to_string())));
+    let notification =
+        SessionNotification::new(session_id.clone(), SessionUpdate::AgentMessageChunk(chunk));
+    if let Err(e) = tx.send(SessionUpdateEnvelope::Session(notification)) {
+        tracing::warn!(session_id = %session_id, error = %e, "goal receipt delivery failed");
     }
 }
 

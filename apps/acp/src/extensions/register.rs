@@ -14,6 +14,9 @@ pub struct ExtensionRegistryHandles {
     pub session_history: Arc<SessionHistoryHandler>,
     pub session_list: Arc<SessionListHandler>,
     pub question: Arc<super::question::QuestionHandler>,
+    /// P5b：goal 扩展句柄，需在 agent `Arc` 包装后 `bind`（thread 解析 +
+    /// runtime 钩子 + goal/updated 广播）。
+    pub goal: Arc<super::goal::GoalHandler>,
 }
 
 /// Register every extension domain implemented in this crate.
@@ -35,7 +38,15 @@ pub fn register_default_extensions(
         Arc::new(super::config_entity::ConfigEntityHandler::new()),
     );
     registry.register("model", Arc::new(super::model::ModelHandler::new()));
-    registry.register("goal", Arc::new(super::goal::GoalHandler));
+    // P5b：goal 后端 = thread_goals；构造后经 handles.goal.bind(&agent) 接线。
+    let goal_handler = match connections.as_ref() {
+        Some(connections) => {
+            super::goal::GoalHandler::new().with_connections(connections.clone())
+        }
+        None => super::goal::GoalHandler::new(),
+    };
+    let goal_handler = Arc::new(goal_handler);
+    registry.register("goal", goal_handler.clone());
     registry.register(
         "scheduled-task",
         Arc::new(super::scheduled_task::ScheduledTaskHandler),
@@ -160,5 +171,6 @@ pub fn register_default_extensions(
         session_history,
         session_list,
         question: question_handler,
+        goal: goal_handler,
     }
 }

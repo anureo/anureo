@@ -283,6 +283,7 @@ dependencies = [
  "ctor",
  "env_logger",
  "futures",
+ "goal",
  "ignore",
  "libc",
  "model-spec-core",
@@ -333,6 +334,7 @@ dependencies = [
  "ctrlc",
  "dotenv",
  "futures-util",
+ "goal",
  "memory-v2",
  "minus",
  "model-spec-core",
@@ -360,6 +362,7 @@ dependencies = [
  "tracing-core",
  "tracing-subscriber",
  "unicode-width",
+ "uuid",
 ]
 
 [[package]]
@@ -4142,6 +4145,23 @@ dependencies = [
  "futures-core",
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "goal"
+version = "0.5.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "task-core",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tool-core",
+ "uuid",
 ]
 
 [[package]]

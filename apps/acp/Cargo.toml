@@ -15,6 +15,7 @@ test-support = []
 
 [dependencies]
 agent = { path = "../../agent/agent-core" }
+goal = { path = "../../agent/goal" }
 
 anureo-graph-core = { path = "../../foundation/graph-core" }
 anureo-llm = { path = "../../foundation/llm" }

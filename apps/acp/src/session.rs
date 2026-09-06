@@ -503,6 +503,18 @@ impl SessionStore {
             .unwrap_or(false)
     }
 
+    /// Find the session that owns the given agent thread id.
+    ///
+    /// Used by the goal runtime's [`crate::goal_runtime::AcpTurnDriver`] to map a
+    /// `thread_id` back to its session so idle continuation prompts can be routed
+    /// through the normal `prompt` entry point. Returns the first match.
+    pub fn find_session_id_by_thread(&self, thread_id: &str) -> Option<SessionId> {
+        recover_read(&self.inner)
+            .iter()
+            .find(|(_, entry)| entry.thread_id == thread_id)
+            .map(|(session_id, _)| session_id.clone())
+    }
+
     pub fn cancel_all_generations(&self) {
         let inner = recover_read(&self.inner);
         for (session_id, entry) in inner.iter() {

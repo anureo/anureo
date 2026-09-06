@@ -46,6 +46,8 @@ members = [
 
     "agent/agent-core",
 
+    "agent/goal",
+
     "agent/tool/tool-core",
 
     "agent/tool/tool-basic",

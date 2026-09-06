@@ -569,6 +569,12 @@ pub(crate) struct GoalArgs {
     /// "auto" means use the model's default. Forwarded to the LLM client per turn.
     #[arg(long, value_name = "LEVEL")]
     pub(crate) effort: Option<String>,
+
+    /// P6 一次性迁移：把旧 goal 存储（task meta 的 GoalMeta、goals.json）
+    /// 写入 thread_goals（tasks.db）。幂等；迁移前自动备份 tasks.db。
+    /// 源数据保留不删。
+    #[arg(long)]
+    pub(crate) migrate: bool,
 }
 
 #[derive(clap::Args, Debug, Clone)]

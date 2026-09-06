@@ -254,7 +254,18 @@ pub async fn handle_common_message(ctx: &MessageContext<'_>) -> Result<(), BotEr
                     // fall through to existing model handling below
                 }
                 anureo_command::Command::Goal { .. } => {
-                    // fall through to normal message handling
+                    // /goal subcommands (P5/R3) target the session goal
+                    // runtime, which is not wired into the telegram pipeline.
+                    // Reply explicitly instead of leaking the command text to
+                    // the LLM as a normal message.
+                    ctx.deps
+                        .sender
+                        .send_text(
+                            ctx.chat_id(),
+                            "⚠️ /goal 命令在 Telegram 端暂不支持，请在 ACP/REPL 客户端使用。",
+                        )
+                        .await?;
+                    return Ok(());
                 }
                 anureo_command::Command::ReviewSkill { .. } => {
                     // not supported in telegram bot; fall through

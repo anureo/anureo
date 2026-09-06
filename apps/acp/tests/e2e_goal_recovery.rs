@@ -1,141 +1,91 @@
-//! Process-level regression for persisted ACP goal recovery.
+//! P5b 重对接：`_anureo.dev/goal/*` 的持久性来自 thread_goals 表
+//! （`<anureo_home>/tasks/tasks.db`）。旧的 goals.json 重启恢复预约机制已
+//! 退役——goal 天然持久，跨进程 `get` 直接读表。
 //!
-//! The fixture represents the state left by a process that stopped while a
-//! goal was active. A fresh ACP process must claim it during `session/load`;
-//! an explicit goal cancel then reaches that recovered runtime and transitions
-//! the task checkpoint to `cancelled`.
+//! 流程：进程 1 `goal/start`（绑定 session）→ 退出 → 进程 2 `goal/get`
+//! 读到同一 goal（status=active）→ `goal/cancel` 清除 → `goal/get` 404。
 
 #[path = "e2e/common/mod.rs"]
 mod common;
 
-use std::time::Duration;
-
-use common::{with_anureo_home, AcpTestHarness, TestEnv};
+use common::{with_anureo_home, AcpTestHarness, MockLlmServer, TestEnv};
 use serde_json::json;
-use task_core::{CreateParams, TaskDb, TaskStatus};
 
-async fn initialize(harness: &AcpTestHarness) {
-    harness
-        .request(
-            "initialize",
-            json!({
-                "protocolVersion": 1,
-                "clientInfo": {"name": "goal-recovery-e2e", "version": "0.1.0"},
-                "capabilities": {"session": {"resume": {}}}
-            }),
-        )
-        .await;
+fn initialize_params() -> serde_json::Value {
+    json!({
+        "protocolVersion": 1,
+        "clientInfo": {"name": "goal-persist-e2e", "version": "0.1.0"},
+        "capabilities": {"session": {"resume": {}}}
+    })
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
-async fn session_load_reclaims_active_goal_and_cancel_reaches_task() {
+async fn goal_persists_across_acp_process_restart() {
     let env = TestEnv::setup();
+    // 无 prompt 流量，但 spawn 需要一个 llm_url。
+    let llm = MockLlmServer::start().await;
 
     with_anureo_home(&env, async {
-        // First process creates the durable ACP session that will later be
-        // loaded. No model request is needed for session creation.
-        let first = AcpTestHarness::spawn(&env, "http://127.0.0.1:9").await;
-        initialize(&first).await;
+        // ── 进程 1：初始化 + 建会话 + 启动 goal ────────────────────────
+        let first = AcpTestHarness::spawn(&env, &llm.url()).await;
+        first.request("initialize", initialize_params()).await;
         let session = first
             .request(
                 "session/new",
                 json!({"cwd": env.cwd.to_string_lossy(), "mcpServers": []}),
             )
             .await;
-        let session_id = session["sessionId"]
-            .as_str()
-            .expect("session id")
-            .to_string();
-        let status = first.shutdown().await;
-        assert!(status.success(), "first ACP process exited non-zero: {status:?}");
+        let session_id = session["sessionId"].as_str().expect("sessionId").to_string();
 
-        // Simulate the durable snapshot left by a process that stopped while
-        // the goal runner and its task were active.
-        let task_id = "goal-recovery-task";
-        let db_path = env.anureo_home().join("tasks").join("tasks.db");
-        std::fs::create_dir_all(db_path.parent().expect("task db parent"))
-            .expect("create task db parent");
-        let db = TaskDb::open(&db_path).await.expect("open task db");
-        db.create_task_with_id(
-            task_id,
-            &CreateParams {
-                name: "recover me".to_string(),
-                description: "recover me".to_string(),
-                status: TaskStatus::InProgress,
-                ..Default::default()
-            },
-        )
-        .await
-        .expect("create active goal task");
-
-        let goal_id = "goal-process-recovery";
-        let goal_dir = env.cwd.join(".anureo");
-        std::fs::create_dir_all(&goal_dir).expect("create goal store directory");
-        std::fs::write(
-            goal_dir.join("goals.json"),
-            serde_json::to_vec_pretty(&json!({
-                "goals": [{
-                    "id": goal_id,
-                    "title": "recover me",
-                    "description": "recover me",
-                    "status": "active",
-                    "createdAt": "2026-09-06T00:00:00Z",
-                    "updatedAt": "2026-09-06T00:00:00Z",
-                    "sessionIds": [session_id.clone()],
-                    "progress": null,
-                    "metadata": {
-                        "source": "acp_goal_runner",
-                        "taskId": task_id,
-                        "model": "openai/gpt-4o",
-                        "effort": "medium"
-                    },
-                    "workingDirectory": env.cwd.to_string_lossy()
-                }]
-            }))
-            .expect("serialize goal store"),
-        )
-        .expect("write goal store");
-
-        // A new process has an empty runtime registry. session/load must claim
-        // the persisted active goal before returning the response.
-        let second = AcpTestHarness::spawn(&env, "http://127.0.0.1:9").await;
-        initialize(&second).await;
-        second
+        let started = first
             .request(
-                "session/load",
+                "_anureo.dev/goal/start",
                 json!({
+                    "title": "persistent goal",
+                    "description": "survive an ACP process restart",
                     "sessionId": session_id,
-                    "cwd": env.cwd.to_string_lossy(),
-                    "mcpServers": []
                 }),
             )
             .await;
-        second
+        let goal_id = started["id"].as_str().expect("goal id").to_string();
+        assert_eq!(started["status"], "active", "start response: {started}");
+
+        let status = first.shutdown().await;
+        assert!(status.success(), "first ACP process exited non-zero: {status:?}");
+
+        // ── 进程 2：新进程直接 get 到持久 goal（thread_goals 表）──────
+        let second = AcpTestHarness::spawn(&env, &llm.url()).await;
+        second.request("initialize", initialize_params()).await;
+
+        let got = second
+            .request("_anureo.dev/goal/get", json!({"id": goal_id}))
+            .await;
+        assert_eq!(got["status"], "active", "goal must persist in thread_goals: {got}");
+        assert!(
+            got["description"]
+                .as_str()
+                .is_some_and(|d| d.contains("survive an ACP process restart")),
+            "persisted objective mismatch: {got}"
+        );
+
+        // cancel 清除（clear 语义），随后 get 报 not found。
+        let cancelled = second
             .request(
                 "_anureo.dev/goal/cancel",
                 json!({"id": goal_id, "reason": "recovery test"}),
             )
             .await;
+        assert_eq!(cancelled["status"], "cancelled");
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-        loop {
-            let task = db.show_task(task_id).await.expect("read recovered task");
-            if task.status == TaskStatus::Cancelled {
-                break;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "recovered goal cancel did not reach task; status={}",
-                task.status
-            );
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-
-        let goal = second
-            .request("_anureo.dev/goal/get", json!({"id": goal_id}))
+        let raw = second
+            .request_raw("_anureo.dev/goal/get", json!({"id": goal_id}))
             .await;
-        assert_eq!(goal["status"], "cancelled");
+        assert_eq!(
+            raw["error"]["code"].as_i64(),
+            Some(-32003),
+            "cleared goal must be gone from thread_goals: {raw}"
+        );
 
         let status = second.shutdown().await;
         assert!(status.success(), "second ACP process exited non-zero: {status:?}");

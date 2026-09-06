@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::str::FromStr;
 
 use chrono::Local;
 use thiserror::Error;
@@ -24,9 +25,15 @@ pub struct TaskDb {
 impl TaskDb {
     pub async fn open(db_path: &Path) -> Result<Self, TaskDbError> {
         let url = format!("sqlite:{}?mode=rwc", db_path.display());
+        // foreign_keys(true)：goal-codex-alignment §7.1 前置修复——
+        // thread_goal_continuation_deferrals 的 ON DELETE CASCADE 依赖它，
+        // 不开则级联删除全部失效（P0 审计确认此前未开）。
+        let connect_opts = sqlx::sqlite::SqliteConnectOptions::from_str(&url)
+            .map_err(|e| TaskDbError::Other(e.to_string()))?
+            .foreign_keys(true);
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
-            .connect(&url)
+            .connect_with(connect_opts)
             .await?;
 
         sqlx::migrate!("./migrations")
@@ -42,6 +49,11 @@ impl TaskDb {
 
     pub fn path(&self) -> &Path {
         &self.db_path
+    }
+
+    /// 共享连接池（goal store 等同库组件复用；同库多池会有写锁竞争，勿另开）。
+    pub fn pool(&self) -> &sqlx::SqlitePool {
+        &self.pool
     }
 
     pub async fn create_task(&self, p: &CreateParams) -> Result<Task, TaskDbError> {

@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 agent = { path = "../../agent/agent-core" }
+goal = { path = "../../agent/goal" }
 anureo-llm = { path = "../../foundation/llm" }
 anureo-graph-core = { path = "../../foundation/graph-core" }
 skill = { path = "../../agent/skill" }
@@ -43,6 +44,7 @@ toml = "0.8"
 thiserror = { workspace = true }
 tracing = "0.1"
 chrono = "0.4"
+uuid = { version = "1", features = ["v4"] }
 tracing-core = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"

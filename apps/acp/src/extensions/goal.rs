@@ -1,68 +1,38 @@
-use std::path::PathBuf;
+//! `_anureo.dev/goal/*` extension — thread_goals 后端（P5b）。
+//!
+//! 后端 = `goal` crate（`thread_goals` 表，键 = session 的 thread_id）；
+//! 旧的 goals.json 文件后端与重启恢复预约机制已随 P5b 退役（遗留 detached
+//! runner 所需的 JSON 存取搬至 `crate::goal_runner`，随 P7 一并移除）。
+//!
+//! ## 兼容层（FE 在外部仓依赖，见 docs/acp-spec/extensions/14-*.md）
+//!
+//! - 方法名/参数/响应形状保持旧 API（`start/pause/resume/cancel/get/list`）；
+//! - 键映射：`get/pause/resume/cancel` 以旧 goal-id 为键（store 反查），
+//!   `start` 以 `sessionId` 定位 thread（`SessionStore` 反查 thread_id）；
+//! - 状态投影：新 6 态 → 旧 6 态（`project_status`），详情进 `metadata`；
+//! - 通知：响应内嵌旧 `notification`（goal/changed 形状）不变，另加
+//!   `updated`（全量快照）；同时向所有连接广播 `_anureo.dev/goal/changed`
+//!   与新增的 `_anureo.dev/goal/updated`。
+
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use tokio_util::sync::CancellationToken;
+use serde_json::{json, Value};
 
-use crate::client_capabilities::ClientCapabilitiesInfo;
-use super::auth;
-use super::pagination::{PaginatedResult, PaginationParams};
-use super::{ExtensionContext, ExtensionError, ExtensionHandler};
+use crate::agent::AnureoAcpAgent;
+use crate::connection_registry::ConnectionRegistry;
+use crate::extensions::{auth, ExtensionContext, ExtensionError, ExtensionHandler};
 
-use config::home::anureo_home;
+// ---------------------------------------------------------------------------
+// Wire DTOs（旧 API 形状，保持 FE 兼容；serde 形状与 P5b 前逐字段一致）
+// ---------------------------------------------------------------------------
 
-const DEFAULT_LIMIT: usize = 50;
-const MAX_LIMIT: usize = 200;
-
-// The store is a JSON snapshot rather than a database transaction. Serialize
-// every mutation in this process so concurrent ACP requests cannot both read
-// the same snapshot and then lose one another's update. The final rename is
-// still atomic, so readers never observe a partially-written document.
-static GOAL_STORE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-static RUNTIME_CONTROLS: OnceLock<Mutex<HashMap<String, RuntimeControl>>> = OnceLock::new();
-
-#[derive(Clone)]
-pub(crate) struct RuntimeControl {
-    pub(crate) token: CancellationToken,
-    terminal: Arc<AtomicBool>,
-    instance_id: String,
-}
-
-impl RuntimeControl {
-    pub(crate) fn is_terminal(&self) -> bool {
-        self.terminal.load(Ordering::Acquire)
-    }
-}
-
-fn lock_goal_store() -> std::sync::MutexGuard<'static, ()> {
-    GOAL_STORE_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-pub struct GoalHandler;
-
-impl GoalHandler {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for GoalHandler {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-// ── Types ──────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
+/// 旧 6 态（wire 枚举）。仅用于投影/筛选；后端真值是 `goal::GoalStatus`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum GoalStatus {
     Pending,
     Active,
@@ -73,34 +43,65 @@ pub enum GoalStatus {
 }
 
 impl GoalStatus {
-    fn from_str_ci(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
-            "pending" => Some(Self::Pending),
-            "active" => Some(Self::Active),
-            "paused" => Some(Self::Paused),
-            "completed" => Some(Self::Completed),
-            "cancelled" => Some(Self::Cancelled),
-            "failed" => Some(Self::Failed),
-            _ => None,
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            GoalStatus::Pending => "pending",
+            GoalStatus::Active => "active",
+            GoalStatus::Paused => "paused",
+            GoalStatus::Completed => "completed",
+            GoalStatus::Cancelled => "cancelled",
+            GoalStatus::Failed => "failed",
         }
-    }
-
-    fn is_terminal(&self) -> bool {
-        matches!(self, Self::Completed | Self::Cancelled | Self::Failed)
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// 新 6 态 → 旧 6 态投影：
+/// - `usage_limited`（用户可恢复）→ `paused`；
+/// - `budget_limited`（终态、非成功）→ `failed`（详情见 `metadata.statusReason`）；
+/// - 旧 `cancelled` 在新模型中无对应（= clear，goal 行不存在）。
+fn project_status(status: goal::GoalStatus) -> GoalStatus {
+    match status {
+        goal::GoalStatus::Active => GoalStatus::Active,
+        goal::GoalStatus::Paused | goal::GoalStatus::UsageLimited => GoalStatus::Paused,
+        goal::GoalStatus::Blocked | goal::GoalStatus::BudgetLimited => GoalStatus::Failed,
+        goal::GoalStatus::Complete => GoalStatus::Completed,
+    }
+}
+
+/// 旧状态筛选 → 新状态集（`list` 的 `status` 参数）。
+fn filter_statuses(old: &str) -> Vec<goal::GoalStatus> {
+    use goal::GoalStatus as S;
+    match old.trim().to_lowercase().as_str() {
+        "pending" | "active" => vec![S::Active],
+        "paused" => vec![S::Paused, S::UsageLimited],
+        "completed" => vec![S::Complete],
+        "failed" => vec![S::Blocked, S::BudgetLimited],
+        // 旧 `cancelled` 在新模型中 = clear（无 goal 行），永不匹配。
+        "cancelled" => vec![],
+        // 未知筛选值：不筛（宽松处理，与旧实现一致）。
+        _ => vec![
+            S::Active,
+            S::Paused,
+            S::Blocked,
+            S::UsageLimited,
+            S::BudgetLimited,
+            S::Complete,
+        ],
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct GoalProgress {
     pub completed_steps: u32,
     pub total_steps: u32,
     pub percentage: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub current_step: Option<String>,
     pub sessions_spawned: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GoalStepStatus {
     Pending,
@@ -118,6 +119,9 @@ pub struct GoalStep {
     pub status: GoalStepStatus,
 }
 
+/// 旧 wire Goal 形状（camelCase）。新后端字段投影进来；
+/// `progress`/`steps` 恒空（新架构无 step 跟踪），`sessionIds` 投影 thread_id。
+/// `#[serde(default)]` 保留：P6 迁移命令要反序列化旧 goals.json。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Goal {
@@ -127,6 +131,7 @@ pub struct Goal {
     pub status: GoalStatus,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default)]
     pub session_ids: Vec<String>,
     #[serde(default)]
     pub progress: Option<GoalProgress>,
@@ -140,29 +145,54 @@ pub struct Goal {
     pub working_directory: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct GoalStore {
-    #[serde(default)]
-    pub goals: Vec<Goal>,
+/// 全量投影：`goal::Goal` → 旧 wire 形状。
+fn project_goal(g: &goal::Goal) -> Goal {
+    let objective = g.objective.trim();
+    let title: String = objective
+        .lines()
+        .next()
+        .unwrap_or(objective)
+        .chars()
+        .take(80)
+        .collect();
+    let mut metadata = json!({
+        "threadId": g.thread_id,
+        "tokensUsed": g.tokens_used,
+        "timeUsedSeconds": g.time_used_seconds,
+    });
+    if let Some(b) = g.token_budget {
+        metadata["tokenBudget"] = json!(b);
+    }
+    if let Some(reason) = &g.status_reason {
+        metadata["statusReason"] = json!(reason);
+    }
+    Goal {
+        id: g.goal_id.clone(),
+        title,
+        description: objective.to_string(),
+        status: project_status(g.status),
+        created_at: ms_to_iso(g.created_at_ms),
+        updated_at: ms_to_iso(g.updated_at_ms),
+        session_ids: vec![g.thread_id.clone()],
+        progress: None,
+        metadata: Some(metadata),
+        steps: Vec::new(),
+        idempotency_key: None,
+        working_directory: None,
+    }
 }
 
-impl GoalStore {
-    fn find(&self, id: &str) -> Option<&Goal> {
-        self.goals.iter().find(|g| g.id == id)
-    }
-
-    fn find_mut(&mut self, id: &str) -> Option<&mut Goal> {
-        self.goals.iter_mut().find(|g| g.id == id)
-    }
-
-    fn find_by_idempotency_key(&self, key: &str) -> Option<&Goal> {
-        self.goals
-            .iter()
-            .find(|g| g.idempotency_key.as_deref() == Some(key))
-    }
+fn ms_to_iso(ms: i64) -> String {
+    DateTime::<Utc>::from_timestamp_millis(ms)
+        .unwrap_or_else(Utc::now)
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
-#[derive(Debug, Clone, Serialize)]
+// ---------------------------------------------------------------------------
+// Notifications（旧 changed 形状 + 新 updated 快照）
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum GoalChangeType {
     Started,
@@ -174,7 +204,7 @@ pub enum GoalChangeType {
     Failed,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GoalChangedNotification {
     pub id: String,
     pub change: GoalChangeType,
@@ -183,361 +213,254 @@ pub struct GoalChangedNotification {
     pub progress: Option<GoalProgress>,
 }
 
-// ── Store helpers ──────────────────────────────────────────────────────
-
-fn goals_file_path(ctx: &ExtensionContext) -> PathBuf {
-    if let Some(wd) = &ctx.working_directory {
-        wd.join(".anureo").join("goals.json")
-    } else {
-        anureo_home().join("goals.json")
-    }
-}
-
-fn load_store(ctx: &ExtensionContext) -> Result<GoalStore, ExtensionError> {
-    let path = goals_file_path(ctx);
-    match std::fs::read_to_string(&path) {
-        Ok(contents) => {
-            if contents.trim().is_empty() {
-                return Ok(GoalStore::default());
-            }
-            serde_json::from_str::<GoalStore>(&contents).map_err(|e| ExtensionError {
-                code: -32603,
-                message: "internal_error".into(),
-                data: Some(Value::String(format!(
-                    "failed to parse goals store at {}: {e}",
-                    path.display()
-                ))),
-            })
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(GoalStore::default()),
-        Err(e) => Err(ExtensionError {
-            code: -32603,
-            message: "internal_error".into(),
-            data: Some(Value::String(format!(
-                "failed to read goals store at {}: {e}",
-                path.display()
-            ))),
-        }),
-    }
-}
-
-fn save_store(ctx: &ExtensionContext, store: &GoalStore) -> Result<(), ExtensionError> {
-    let path = goals_file_path(ctx);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| ExtensionError {
-            code: -32603,
-            message: "internal_error".into(),
-            data: Some(Value::String(format!(
-                "failed to create directory {}: {e}",
-                parent.display()
-            ))),
-        })?;
-    }
-    let json = serde_json::to_string_pretty(store).map_err(|e| ExtensionError {
-        code: -32603,
-        message: "internal_error".into(),
-        data: Some(Value::String(format!(
-            "failed to serialize goals store: {e}"
-        ))),
-    })?;
-    // A unique temporary path prevents unrelated writers/processes from
-    // clobbering one another's staging file before rename.
-    let tmp = path.with_extension(format!("json.tmp-{}", uuid::Uuid::new_v4()));
-    std::fs::write(&tmp, &json).map_err(|e| ExtensionError {
-        code: -32603,
-        message: "internal_error".into(),
-        data: Some(Value::String(format!(
-            "failed to write goals store at {}: {e}",
-            tmp.display()
-        ))),
-    })?;
-    std::fs::rename(&tmp, &path).map_err(|e| ExtensionError {
-        code: -32603,
-        message: "internal_error".into(),
-        data: Some(Value::String(format!("failed to rename goals store: {e}"))),
-    })
-}
-
-fn now_iso() -> String {
-    chrono::Utc::now().to_rfc3339()
-}
-
-fn generate_goal_id() -> String {
-    format!("goal-{}", uuid::Uuid::new_v4())
-}
-
 fn build_notification(
     id: &str,
     change: GoalChangeType,
     status: GoalStatus,
     progress: Option<GoalProgress>,
-) -> Value {
-    let notif = GoalChangedNotification {
+) -> GoalChangedNotification {
+    GoalChangedNotification {
         id: id.to_string(),
         change,
         status,
         progress,
-    };
-    serde_json::to_value(&notif).unwrap_or(Value::Null)
-}
-
-fn require_param_str(params: &Value, key: &str) -> Result<String, ExtensionError> {
-    match params.get(key) {
-        Some(Value::String(s)) if !s.trim().is_empty() => Ok(s.clone()),
-        Some(Value::String(_)) => Err(ExtensionError::invalid_params(format!(
-            "{key} must not be empty"
-        ))),
-        Some(_) => Err(ExtensionError::invalid_params(format!(
-            "{key} must be a string"
-        ))),
-        None => Err(ExtensionError::invalid_params(format!(
-            "missing required parameter: {key}"
-        ))),
     }
 }
 
-fn optional_param_str(params: &Value, key: &str) -> Option<String> {
-    params
-        .get(key)
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-}
-
-/// Materialize a goal started by the ACP `/goal` command in the same view
-/// used by `_anureo.dev/goal/*`. The task DB remains the execution source of
-/// truth; this JSON record makes the running goal discoverable after a client
-/// reconnects.
-pub(crate) fn runtime_start(
-    working_directory: &std::path::Path,
-    title: &str,
-    description: &str,
-    task_id: &str,
-    session_id: Option<&str>,
-    model: Option<&str>,
-    effort: Option<&str>,
-) -> Result<(String, RuntimeControl), String> {
-    let ctx = runtime_context(working_directory, session_id);
-    let _store_guard = lock_goal_store();
-    let mut store = load_store(&ctx).map_err(|e| e.to_string())?;
-    let now = now_iso();
-    let id = generate_goal_id();
-    // Register before publishing the active JSON record. A concurrent
-    // goal/list recovery scan will then observe a live generation and skip it.
-    let control = register_runtime_goal(&id);
-    store.goals.push(Goal {
-        id: id.clone(),
-        title: title.to_string(),
-        description: description.to_string(),
-        status: GoalStatus::Active,
-        created_at: now.clone(),
-        updated_at: now,
-        session_ids: session_id.into_iter().map(str::to_string).collect(),
-        progress: None,
-        metadata: Some(serde_json::json!({
-            "source": "acp_goal_runner",
-            "taskId": task_id,
-            "model": model,
-            "effort": effort,
-        })),
-        steps: Vec::new(),
-        idempotency_key: None,
-        working_directory: Some(working_directory.to_string_lossy().to_string()),
-    });
-    if let Err(error) = save_store(&ctx, &store) {
-        unregister_runtime_goal(&id, &control);
-        return Err(error.to_string());
-    }
-    Ok((id, control))
-}
-
-pub(crate) fn runtime_set_status(
-    working_directory: &std::path::Path,
-    id: &str,
-    status: GoalStatus,
-) -> Result<(), String> {
-    let ctx = runtime_context(working_directory, None);
-    let _store_guard = lock_goal_store();
-    let mut store = load_store(&ctx).map_err(|e| e.to_string())?;
-    let goal = store
-        .find_mut(id)
-        .ok_or_else(|| format!("goal '{id}' not found"))?;
-    goal.status = status;
-    goal.updated_at = now_iso();
-    save_store(&ctx, &store).map_err(|e| e.to_string())
-}
-
-pub(crate) fn register_runtime_goal(id: &str) -> RuntimeControl {
-    let control = new_runtime_control();
-    RUNTIME_CONTROLS
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(id.to_string(), control.clone());
-    control
-}
-
-fn new_runtime_control() -> RuntimeControl {
-    RuntimeControl {
-        token: CancellationToken::new(),
-        terminal: Arc::new(AtomicBool::new(false)),
-        instance_id: uuid::Uuid::new_v4().to_string(),
+fn internal_error(msg: impl Into<String>) -> ExtensionError {
+    ExtensionError {
+        code: -32603,
+        message: "internal_error".into(),
+        data: Some(Value::String(msg.into())),
     }
 }
 
-/// Atomically reserve a persisted goal for recovery. Only the process that
-/// inserts the control may start the runner, so concurrent goal/list calls do
-/// not duplicate execution.
-pub(crate) fn try_claim_runtime_goal(id: &str) -> Option<RuntimeControl> {
-    let mut controls = RUNTIME_CONTROLS
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if controls.contains_key(id) {
-        return None;
-    }
-    let control = new_runtime_control();
-    controls.insert(id.to_string(), control.clone());
-    Some(control)
+// ---------------------------------------------------------------------------
+// Handler
+// ---------------------------------------------------------------------------
+
+/// goal 后端绑定：
+/// - `Agent`：生产路径（AcpRuntime 构造后 `bind`；共享 TaskDb + runtime 钩子）；
+/// - `Store`：测试/嵌入式（直接给 store，无 runtime 钩子）；
+/// - `Unbound`：尚未 bind（降级：list 空、mutation 报 internal_error）。
+#[derive(Clone)]
+enum GoalBackend {
+    Unbound,
+    Store(goal::GoalStore),
+    Agent(Weak<AnureoAcpAgent>),
 }
 
-pub(crate) fn unregister_runtime_goal(id: &str, control: &RuntimeControl) {
-    if let Some(controls) = RUNTIME_CONTROLS.get() {
-        let mut controls = controls
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if controls
-            .get(id)
-            .is_some_and(|current| current.instance_id == control.instance_id)
-        {
-            controls.remove(id);
+pub struct GoalHandler {
+    backend: Mutex<GoalBackend>,
+    connections: Option<Arc<ConnectionRegistry>>,
+    /// idempotencyKey → goal_id（旧 API 幂等语义；进程内，重启即失）。
+    idempotency: Mutex<HashMap<String, String>>,
+    /// 分页游标 generation（每次 mutation +1，旧游标失效）。
+    generation: Mutex<u64>,
+}
+
+impl GoalHandler {
+    pub fn new() -> Self {
+        Self {
+            backend: Mutex::new(GoalBackend::Unbound),
+            connections: None,
+            idempotency: Mutex::new(HashMap::new()),
+            generation: Mutex::new(0),
         }
     }
-}
 
-pub(crate) fn request_runtime_pause(id: &str) {
-    if let Some(control) = runtime_control(id) {
-        control.token.cancel();
+    pub fn with_connections(mut self, connections: Arc<ConnectionRegistry>) -> Self {
+        self.connections = Some(connections);
+        self
     }
-}
 
-pub(crate) fn request_runtime_cancel(id: &str) {
-    if let Some(control) = runtime_control(id) {
-        control.terminal.store(true, Ordering::Release);
-        control.token.cancel();
+    /// 生产绑定：AcpRuntime 在 `Arc::new(agent)` 之后调用（见 runtime.rs）。
+    pub fn bind(&self, agent: &Arc<AnureoAcpAgent>) {
+        *self.backend.lock().unwrap_or_else(|e| e.into_inner()) =
+            GoalBackend::Agent(Arc::downgrade(agent));
     }
-}
 
-fn runtime_control(id: &str) -> Option<RuntimeControl> {
-    RUNTIME_CONTROLS.get().and_then(|controls| {
-        controls
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(id)
-            .cloned()
-    })
-}
-
-fn runtime_context(working_directory: &std::path::Path, session_id: Option<&str>) -> ExtensionContext {
-    ExtensionContext {
-        session_id: session_id.map(str::to_string),
-        principal: "acp-goal-runner".to_string(),
-        connection_id: "acp-goal-runner".to_string(),
-        working_directory: Some(working_directory.to_path_buf()),
-        client_capabilities: ClientCapabilitiesInfo::default(),
+    /// 测试/嵌入式：直接绑定 store。
+    pub fn bind_store(&self, store: goal::GoalStore) {
+        *self.backend.lock().unwrap_or_else(|e| e.into_inner()) = GoalBackend::Store(store);
     }
-}
 
-/// Reconnect active ACP-owned goals to a runner after an ACP process restart.
-/// The JSON store is the durable discovery index; the task DB remains the
-/// execution checkpoint. Recovery is triggered by `goal/list`, which is the
-/// reconnect path clients already use after losing notifications.
-fn spawn_persisted_goal_recovery(
-    goals: &[Goal],
-    loaded_session_id: &str,
-    event_sender: Option<Arc<dyn Fn(agent::run::TypedAnyStreamEvent) + Send + Sync>>,
-) {
-    for goal in goals {
-        if goal.status != GoalStatus::Active {
-            continue;
-        }
-        let Some(metadata) = goal.metadata.as_ref() else {
-            continue;
-        };
-        if metadata.get("source").and_then(Value::as_str) != Some("acp_goal_runner") {
-            continue;
-        }
-        let Some(task_id) = metadata.get("taskId").and_then(Value::as_str) else {
-            continue;
-        };
-        let Some(working_directory) = goal.working_directory.clone() else {
-            continue;
-        };
-        let Some(runtime_control) = try_claim_runtime_goal(&goal.id) else {
-            continue;
-        };
+    /// 取后端快照（std Mutex guard 不跨 await）。
+    fn backend(&self) -> GoalBackend {
+        self.backend.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
 
-        let goal_id = goal.id.clone();
-        let objective = goal.description.clone();
-        let model = metadata
-            .get("model")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        let effort = metadata
-            .get("effort")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        let task_id = task_id.to_string();
-        let cleanup_control = runtime_control.clone();
-        let recovery_event_sender = goal
-            .session_ids
-            .iter()
-            .any(|id| id == loaded_session_id)
-            .then(|| event_sender.clone())
-            .flatten();
-
-        tokio::spawn(async move {
-            let result = crate::goal_runner::recover_goal(
-                task_id,
-                goal_id.clone(),
-                objective,
-                PathBuf::from(&working_directory),
-                agent::run::ResolvedModelConfig {
-                    model,
-                    effort,
-                    ..Default::default()
-                },
-                runtime_control,
-                recovery_event_sender,
-            )
-            .await;
-            if let Err(error) = result {
-                unregister_runtime_goal(&goal_id, &cleanup_control);
-                let _ = runtime_set_status(
-                    PathBuf::from(&working_directory).as_path(),
-                    &goal_id,
-                    GoalStatus::Paused,
+    /// sessionId → thread_id（生产路径经 SessionStore 反查；
+    /// 查不到时降级用 sessionId 本身作键并告警）。
+    fn resolve_thread_key(&self, session_id: &str) -> String {
+        if let GoalBackend::Agent(weak) = self.backend() {
+            if let Some(agent) = weak.upgrade() {
+                let sid = crate::session::SessionId::new(session_id.to_string());
+                if let Some(entry) = agent.sessions().get(&sid) {
+                    return entry.thread_id;
+                }
+                tracing::warn!(
+                    session_id,
+                    "goal extension: session not in store; using session id as thread key"
                 );
-                tracing::error!(goal_id = %goal_id, error = %error, "failed to recover persisted ACP goal");
             }
+        }
+        session_id.to_string()
+    }
+
+    /// 打开目标 thread 的（service, 可选 runtime 钩子）。
+    async fn open(
+        &self,
+        thread_id: &str,
+    ) -> Result<(goal::GoalService, Option<Arc<goal::GoalRuntimeHandle>>), ExtensionError> {
+        match self.backend() {
+            GoalBackend::Unbound => Err(internal_error(
+                "goal backend not bound (degraded runtime); goal wiring disabled",
+            )),
+            GoalBackend::Store(store) => Ok((goal::GoalService::new(store), None)),
+            GoalBackend::Agent(weak) => {
+                let agent = weak
+                    .upgrade()
+                    .ok_or_else(|| internal_error("goal backend unavailable (agent dropped)"))?;
+                let runtime = agent.goal_runtime_for(thread_id).await.ok_or_else(|| {
+                    internal_error("goal backend unavailable (task db open failed?)")
+                })?;
+                Ok((runtime.service().clone(), Some(runtime)))
+            }
+        }
+    }
+
+    /// 只读路径的 store（list/get 与 mutation 前的 goal 反查）。
+    async fn store_for_read(&self) -> Result<goal::GoalStore, ExtensionError> {
+        match self.backend() {
+            GoalBackend::Unbound => Err(internal_error("goal backend not bound")),
+            GoalBackend::Store(store) => Ok(store),
+            GoalBackend::Agent(weak) => {
+                let agent = weak
+                    .upgrade()
+                    .ok_or_else(|| internal_error("goal backend unavailable (agent dropped)"))?;
+                let db = agent
+                    .goal_task_db()
+                    .await
+                    .map_err(internal_error)?;
+                Ok(goal::GoalStore::from_task_db(&db))
+            }
+        }
+    }
+
+    fn bump_generation(&self) {
+        *self.generation.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+    }
+
+    /// 广播 `_anureo.dev/goal/changed`（旧）与 `_anureo.dev/goal/updated`（新）
+    /// 到所有连接。best-effort，不阻塞 mutation。
+    fn broadcast(&self, changed_params: Value, updated_params: Value) {
+        let Some(connections) = self.connections.clone() else {
+            return;
+        };
+        tokio::spawn(async move {
+            connections
+                .broadcast_extension_notification("_anureo.dev/goal/changed", changed_params)
+                .await;
+            connections
+                .broadcast_extension_notification("_anureo.dev/goal/updated", updated_params)
+                .await;
         });
     }
+
+    fn require_param_str(params: &Value, key: &str) -> Result<String, ExtensionError> {
+        match params.get(key) {
+            Some(Value::String(s)) if !s.trim().is_empty() => Ok(s.trim().to_string()),
+            Some(Value::String(_)) => Err(ExtensionError::invalid_params(format!(
+                "{key} must not be empty"
+            ))),
+            Some(_) => Err(ExtensionError::invalid_params(format!(
+                "{key} must be a string"
+            ))),
+            None => Err(ExtensionError::invalid_params(format!(
+                "missing required parameter: {key}"
+            ))),
+        }
+    }
+
+    fn optional_param_str(params: &Value, key: &str) -> Option<String> {
+        params
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    }
+
+    /// service 错误 → 旧 API 错误码（mutation 路径通用）。
+    fn map_service_error(op: &str, e: goal::GoalServiceError) -> ExtensionError {
+        match e {
+            goal::GoalServiceError::NoGoal(thread) => {
+                ExtensionError::not_found(format!("goal on thread {thread} not found"))
+            }
+            goal::GoalServiceError::NotResumable { status } => ExtensionError::invalid_params(
+                format!("goal status is {status:?}; {op} rejected"),
+            ),
+            goal::GoalServiceError::Store(store_err) => match store_err {
+                goal::GoalStoreError::NotFoundOrDisallowed(_) => ExtensionError::invalid_params(
+                    format!("goal status transition rejected by store; {op} failed"),
+                ),
+                other => internal_error(format!("{op} failed: {other}")),
+            },
+            other => internal_error(format!("{op} failed: {other}")),
+        }
+    }
 }
 
-pub(crate) fn recover_persisted_goals(
-    working_directory: &std::path::Path,
-    session_id: &str,
-    event_sender: Option<
-        Arc<dyn Fn(agent::run::TypedAnyStreamEvent) + Send + Sync>,
-    >,
-) -> Result<(), String> {
-    let ctx = runtime_context(working_directory, None);
-    let store = load_store(&ctx).map_err(|error| error.to_string())?;
-    spawn_persisted_goal_recovery(&store.goals, session_id, event_sender);
-    Ok(())
+impl Default for GoalHandler {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
-// ── ExtensionHandler impl ──────────────────────────────────────────────
+/// 每请求打开的（service + 可选 runtime 钩子）。
+struct GoalSession {
+    service: goal::GoalService,
+    runtime: Option<Arc<goal::GoalRuntimeHandle>>,
+}
+
+impl GoalSession {
+    /// mutation 后的 runtime 钩子（与 agent.rs `/goal` 路径对齐）；错误只记日志。
+    async fn after_start(&self, goal_id: &str) {
+        if let Some(rt) = &self.runtime {
+            rt.note_goal_armed(goal_id).await;
+        }
+    }
+
+    async fn after_pause(&self) {
+        if let Some(rt) = &self.runtime {
+            if let Err(e) = rt.on_goal_status_changed(goal::GoalStatus::Paused).await {
+                tracing::warn!(error = %e, "goal extension: on_goal_status_changed(Paused) failed");
+            }
+        }
+    }
+
+    async fn after_resume(&self) {
+        if let Some(rt) = &self.runtime {
+            if let Err(e) = rt.on_goal_status_changed(goal::GoalStatus::Active).await {
+                tracing::warn!(error = %e, "goal extension: on_goal_status_changed(Active) failed");
+            }
+            // resume 后自动续跑（对齐旧 detached runner 的 resume 语义）。
+            let cont = rt.clone();
+            tokio::spawn(async move {
+                if let Err(e) = cont.continue_if_idle().await {
+                    tracing::warn!(error = %e, "goal extension: idle continuation failed");
+                }
+            });
+        }
+    }
+
+    async fn after_clear(&self) {
+        if let Some(rt) = &self.runtime {
+            rt.on_goal_replaced(None, goal::TokenTotals::default()).await;
+        }
+    }
+}
 
 #[async_trait]
 impl ExtensionHandler for GoalHandler {
@@ -548,348 +471,384 @@ impl ExtensionHandler for GoalHandler {
         ctx: &ExtensionContext,
     ) -> Result<Value, ExtensionError> {
         match method {
-            "list" => handle_list(params, ctx).await,
-            "get" => handle_get(params, ctx).await,
-            "start" => handle_start(params, ctx).await,
-            "pause" => handle_pause(params, ctx).await,
-            "resume" => handle_resume(params, ctx).await,
-            "cancel" => handle_cancel(params, ctx).await,
+            "list" => self.handle_list(params, ctx).await,
+            "get" => self.handle_get(params, ctx).await,
+            "start" => self.handle_start(params, ctx).await,
+            "pause" => self.handle_pause(params, ctx).await,
+            "resume" => self.handle_resume(params, ctx).await,
+            "cancel" => self.handle_cancel(params, ctx).await,
             _ => Err(ExtensionError::method_not_found()),
         }
     }
 
     fn capabilities(&self) -> Value {
-        serde_json::json!({
+        // 旧扁平形状（FE 依赖），保持逐字段一致。
+        json!({
             "list": true,
             "get": true,
             "start": true,
             "pause": true,
             "resume": true,
-            "cancel": true
+            "cancel": true,
         })
     }
 }
 
-// ── Method handlers ────────────────────────────────────────────────────
+impl GoalHandler {
+    // ── list / get ──────────────────────────────────────────────────────
 
-async fn handle_list(params: Value, ctx: &ExtensionContext) -> Result<Value, ExtensionError> {
-    let pagination: PaginationParams = serde_json::from_value(params.clone())
-        .map_err(|e| ExtensionError::invalid_params(format!("invalid pagination params: {e}")))?;
+    async fn handle_list(
+        &self,
+        params: Value,
+        _ctx: &ExtensionContext,
+    ) -> Result<Value, ExtensionError> {
+        if matches!(self.backend(), GoalBackend::Unbound) {
+            // 与旧行为一致：无 store 时返回空列表而非报错。
+            return Ok(json!({"items": [], "nextCursor": null, "hasMore": false}));
+        }
+        let status_filter = Self::optional_param_str(&params, "status");
+        let limit = params
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|v| v.clamp(1, 200) as usize)
+            .unwrap_or(50);
+        let cursor_offset = match Self::optional_param_str(&params, "cursor") {
+            Some(cursor) => decode_cursor(&cursor)?,
+            None => 0,
+        };
 
-    let status_filter = params
-        .get("status")
-        .and_then(|v| v.as_str())
-        .and_then(GoalStatus::from_str_ci);
+        let store = self.store_for_read().await?;
+        let allowed: Option<Vec<goal::GoalStatus>> =
+            status_filter.as_deref().map(filter_statuses);
+        let all = store
+            .list_all()
+            .await
+            .map_err(|e| internal_error(format!("goal list failed: {e}")))?;
+        let filtered: Vec<goal::Goal> = all
+            .into_iter()
+            .filter(|(_, g)| allowed.as_ref().is_none_or(|a| a.contains(&g.status)))
+            .map(|(_, g)| g)
+            .collect();
 
-    let store = load_store(ctx)?;
+        let total = filtered.len();
+        let end = (cursor_offset + limit).min(total);
+        let items: Vec<Value> = filtered[cursor_offset.min(total)..end]
+            .iter()
+            .map(|g| serde_json::to_value(project_goal(g)).unwrap_or(Value::Null))
+            .collect();
+        let has_more = end < total;
+        let next_cursor = if has_more {
+            let gen = *self.generation.lock().unwrap_or_else(|e| e.into_inner());
+            Some(encode_cursor(gen, end))
+        } else {
+            None
+        };
+        Ok(json!({
+            "items": items,
+            "nextCursor": next_cursor,
+            "hasMore": has_more,
+        }))
+    }
 
-    let mut goals: Vec<Goal> = store
-        .goals
-        .into_iter()
-        .filter(|g| match &status_filter {
-            Some(s) => &g.status == s,
-            None => true,
-        })
-        .collect();
+    async fn handle_get(
+        &self,
+        params: Value,
+        _ctx: &ExtensionContext,
+    ) -> Result<Value, ExtensionError> {
+        let id = Self::require_param_str(&params, "id")?;
+        if matches!(self.backend(), GoalBackend::Unbound) {
+            return Err(ExtensionError::not_found(format!("goal '{id}' not found")));
+        }
+        let store = self.store_for_read().await?;
+        let (_, goal) = store
+            .find_by_goal_id(&id)
+            .await
+            .map_err(|e| internal_error(format!("goal get failed: {e}")))?
+            .ok_or_else(|| ExtensionError::not_found(format!("goal '{id}' not found")))?;
+        let mut projected =
+            serde_json::to_value(project_goal(&goal)).unwrap_or(Value::Null);
+        // 旧 get 响应含 steps（新后端无 step 跟踪，恒空数组）。
+        if let Some(obj) = projected.as_object_mut() {
+            obj.insert("steps".to_string(), json!([]));
+        }
+        Ok(projected)
+    }
 
-    goals.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    // ── start ───────────────────────────────────────────────────────────
 
-    let limit = pagination.limit_or_default(DEFAULT_LIMIT, MAX_LIMIT);
-    let offset = pagination
-        .decode_cursor::<serde_json::Value>()?
-        .and_then(|v| v.get("offset").and_then(|o| o.as_u64()))
-        .map(|o| o as usize)
-        .unwrap_or(0);
+    async fn handle_start(
+        &self,
+        params: Value,
+        ctx: &ExtensionContext,
+    ) -> Result<Value, ExtensionError> {
+        auth::check_server_policy(ctx, "goal", "start")?;
 
-    let items: Vec<Value> = goals
-        .into_iter()
-        .map(|g| serde_json::to_value(&g).unwrap_or(Value::Null))
-        .collect();
+        let title = Self::require_param_str(&params, "title")?;
+        let description = Self::require_param_str(&params, "description")?;
+        let session_id = Self::optional_param_str(&params, "sessionId")
+            .or_else(|| ctx.session_id.clone())
+            .ok_or_else(|| {
+                // 兼容性偏离：旧实现允许无 sessionId 的 goal（仅落 JSON 记录）；
+                // 新后端以 thread 为键，必须能定位 thread（见 P5b 报告）。
+                ExtensionError::invalid_params("missing required parameter: sessionId")
+            })?;
+        let idempotency_key = Self::optional_param_str(&params, "idempotencyKey");
 
-    let result = PaginatedResult::from_slice(items, offset, limit);
-    Ok(result.to_json())
-}
+        let thread_id = self.resolve_thread_key(&session_id);
+        let (service, runtime) = self.open(&thread_id).await?;
+        let session = GoalSession {
+            service,
+            runtime,
+        };
 
-async fn handle_get(params: Value, ctx: &ExtensionContext) -> Result<Value, ExtensionError> {
-    let id = require_param_str(&params, "id")?;
+        // 幂等：同 key 已有 goal 且仍存在 → 返回既有。
+        if let Some(key) = &idempotency_key {
+            let existing_id = self
+                .idempotency
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(key)
+                .cloned();
+            if let Some(gid) = existing_id {
+                if let Ok(Some((_, goal))) = session.service.store().find_by_goal_id(&gid).await {
+                    let projected = project_goal(&goal);
+                    return Ok(json!({
+                        "id": projected.id,
+                        "title": projected.title,
+                        "status": projected.status.as_str(),
+                        "sessionId": session_id,
+                        "createdAt": projected.created_at,
+                        "notification": build_notification(
+                            &projected.id,
+                            GoalChangeType::Started,
+                            projected.status,
+                            None,
+                        ),
+                        "updated": projected,
+                    }));
+                }
+            }
+        }
 
-    let store = load_store(ctx)?;
+        // objective = title + description 合成（title 与 description 相同时取一）。
+        let objective = if description == title {
+            title.clone()
+        } else {
+            format!("{title}: {description}")
+        };
 
-    let goal = store
-        .find(&id)
-        .ok_or_else(|| ExtensionError::not_found(format!("goal '{id}' not found")))?;
+        let created = session
+            .service
+            .set_with_verify(&thread_id, &objective, None, None)
+            .await
+            .map_err(|e| Self::map_service_error("start", e))?;
+        session.after_start(&created.goal_id).await;
+        self.bump_generation();
+        if let Some(key) = &idempotency_key {
+            self.idempotency
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(key.clone(), created.goal_id.clone());
+        }
 
-    let mut result = serde_json::to_value(goal).unwrap_or(Value::Null);
-    result["steps"] = serde_json::to_value(&goal.steps).unwrap_or(Value::Array(vec![]));
+        let projected = project_goal(&created);
+        let notification =
+            build_notification(&projected.id, GoalChangeType::Started, projected.status, None);
+        let response = json!({
+            "id": projected.id,
+            "title": projected.title,
+            "status": projected.status.as_str(),
+            "sessionId": session_id,
+            "createdAt": projected.created_at,
+            "notification": notification,
+            "updated": projected,
+        });
+        let changed = serde_json::to_value(&notification).unwrap_or(Value::Null);
+        let updated = response["updated"].clone();
+        self.broadcast(changed, updated);
+        Ok(response)
+    }
 
-    Ok(result)
-}
+    // ── pause / resume / cancel ─────────────────────────────────────────
 
-async fn handle_start(params: Value, ctx: &ExtensionContext) -> Result<Value, ExtensionError> {
-    auth::check_server_policy(ctx, "goal", "start")?;
+    /// 以旧 goal-id 反查（thread_id, goal, GoalSession）。
+    async fn resolve_goal_by_id(
+        &self,
+        id: &str,
+    ) -> Result<(String, goal::Goal, GoalSession), ExtensionError> {
+        if matches!(self.backend(), GoalBackend::Unbound) {
+            return Err(ExtensionError::not_found(format!("goal '{id}' not found")));
+        }
+        let store = self.store_for_read().await?;
+        let (thread_id, goal) = store
+            .find_by_goal_id(id)
+            .await
+            .map_err(|e| internal_error(format!("goal lookup failed: {e}")))?
+            .ok_or_else(|| ExtensionError::not_found(format!("goal '{id}' not found")))?;
+        let (service, runtime) = self.open(&thread_id).await?;
+        Ok((
+            thread_id,
+            goal,
+            GoalSession {
+                service,
+                runtime,
+            },
+        ))
+    }
 
-    let title = require_param_str(&params, "title")?;
-    let description = require_param_str(&params, "description")?;
+    async fn handle_pause(
+        &self,
+        params: Value,
+        ctx: &ExtensionContext,
+    ) -> Result<Value, ExtensionError> {
+        auth::check_server_policy(ctx, "goal", "pause")?;
+        let id = Self::require_param_str(&params, "id")?;
+        let (thread_id, _existing, session) = self.resolve_goal_by_id(&id).await?;
 
-    let session_id = optional_param_str(&params, "sessionId");
-    let working_directory = optional_param_str(&params, "workingDirectory");
-    let idempotency_key = optional_param_str(&params, "idempotencyKey");
+        let paused = session
+            .service
+            .pause(&thread_id)
+            .await
+            .map_err(|e| Self::map_service_error("pause", e))?;
+        session.after_pause().await;
+        self.bump_generation();
 
-    let _store_guard = lock_goal_store();
-    let mut store = load_store(ctx)?;
+        let projected = project_goal(&paused);
+        let notification =
+            build_notification(&id, GoalChangeType::Paused, projected.status, None);
+        let response = json!({
+            "id": id,
+            "status": "paused",
+            "pausedAt": projected.updated_at,
+            "notification": notification,
+            "updated": projected,
+        });
+        let changed = serde_json::to_value(&notification).unwrap_or(Value::Null);
+        let updated = response["updated"].clone();
+        self.broadcast(changed, updated);
+        Ok(response)
+    }
 
-    if let Some(ref key) = idempotency_key {
-        if let Some(existing) = store.find_by_idempotency_key(key) {
-            let existing_goal = existing.clone();
-            return Ok(serde_json::json!({
-                "id": existing_goal.id,
-                "title": existing_goal.title,
-                "status": existing_goal.status,
-                "sessionId": existing_goal.session_ids.first(),
-                "createdAt": existing_goal.created_at,
-                "notification": build_notification(
-                    &existing_goal.id,
-                    GoalChangeType::Started,
-                    existing_goal.status.clone(),
-                    existing_goal.progress.clone(),
-                ),
+    async fn handle_resume(
+        &self,
+        params: Value,
+        ctx: &ExtensionContext,
+    ) -> Result<Value, ExtensionError> {
+        auth::check_server_policy(ctx, "goal", "resume")?;
+        let id = Self::require_param_str(&params, "id")?;
+        let (thread_id, _existing, session) = self.resolve_goal_by_id(&id).await?;
+
+        let resumed = session
+            .service
+            .resume(&thread_id)
+            .await
+            .map_err(|e| Self::map_service_error("resume", e))?;
+        session.after_resume().await;
+        self.bump_generation();
+
+        let projected = project_goal(&resumed);
+        let notification =
+            build_notification(&id, GoalChangeType::Resumed, projected.status, None);
+        let response = json!({
+            "id": id,
+            "status": "active",
+            "resumedAt": projected.updated_at,
+            "notification": notification,
+            "updated": projected,
+        });
+        let changed = serde_json::to_value(&notification).unwrap_or(Value::Null);
+        let updated = response["updated"].clone();
+        self.broadcast(changed, updated);
+        Ok(response)
+    }
+
+    async fn handle_cancel(
+        &self,
+        params: Value,
+        ctx: &ExtensionContext,
+    ) -> Result<Value, ExtensionError> {
+        auth::check_server_policy(ctx, "goal", "cancel")?;
+        let id = Self::require_param_str(&params, "id")?;
+        let reason = Self::optional_param_str(&params, "reason");
+        let (thread_id, existing, session) = self.resolve_goal_by_id(&id).await?;
+
+        let now = ms_to_iso(chrono::Utc::now().timestamp_millis());
+        // 幂等：终态 goal 再次 cancel 不报错、不清行（新模型终态行保留）。
+        if existing.status.is_terminal() {
+            let notification =
+                build_notification(&id, GoalChangeType::Cancelled, GoalStatus::Cancelled, None);
+            return Ok(json!({
+                "id": id,
+                "status": "cancelled",
+                "cancelledAt": now,
+                "notification": notification,
+                "updated": project_goal(&existing),
             }));
         }
-    }
 
-    let now = now_iso();
-    let goal_id = generate_goal_id();
-    let session_ids: Vec<String> = session_id.iter().cloned().collect();
-
-    let goal = Goal {
-        id: goal_id.clone(),
-        title: title.clone(),
-        description,
-        status: GoalStatus::Active,
-        created_at: now.clone(),
-        updated_at: now.clone(),
-        session_ids,
-        progress: None,
-        metadata: None,
-        steps: Vec::new(),
-        idempotency_key,
-        working_directory,
-    };
-
-    store.goals.push(goal);
-
-    save_store(ctx, &store)?;
-
-    Ok(serde_json::json!({
-        "id": goal_id,
-        "title": title,
-        "status": "active",
-        "sessionId": session_id,
-        "createdAt": now,
-        "notification": build_notification(
-            &goal_id,
-            GoalChangeType::Started,
-            GoalStatus::Active,
-            None,
-        ),
-    }))
-}
-
-async fn handle_pause(params: Value, ctx: &ExtensionContext) -> Result<Value, ExtensionError> {
-    auth::check_server_policy(ctx, "goal", "pause")?;
-
-    let id = require_param_str(&params, "id")?;
-
-    let _store_guard = lock_goal_store();
-    let mut store = load_store(ctx)?;
-
-    let goal = store
-        .find_mut(&id)
-        .ok_or_else(|| ExtensionError::not_found(format!("goal '{id}' not found")))?;
-
-    if goal.status != GoalStatus::Active {
-        return Err(ExtensionError::invalid_params(format!(
-            "goal '{id}' is not active (current status: {:?}); only active goals can be paused",
-            goal.status
-        )));
-    }
-
-    goal.status = GoalStatus::Paused;
-    let now = now_iso();
-    goal.updated_at = now.clone();
-
-    let progress = goal.progress.clone();
-
-    save_store(ctx, &store)?;
-    request_runtime_pause(&id);
-
-    Ok(serde_json::json!({
-        "id": id,
-        "status": "paused",
-        "pausedAt": now,
-        "notification": build_notification(
-            &id,
-            GoalChangeType::Paused,
-            GoalStatus::Paused,
-            progress,
-        ),
-    }))
-}
-
-async fn handle_resume(params: Value, ctx: &ExtensionContext) -> Result<Value, ExtensionError> {
-    auth::check_server_policy(ctx, "goal", "resume")?;
-
-    let id = require_param_str(&params, "id")?;
-
-    let _store_guard = lock_goal_store();
-    let mut store = load_store(ctx)?;
-
-    let goal = store
-        .find_mut(&id)
-        .ok_or_else(|| ExtensionError::not_found(format!("goal '{id}' not found")))?;
-
-    if goal.status != GoalStatus::Paused {
-        return Err(ExtensionError::invalid_params(format!(
-            "goal '{id}' is not paused (current status: {:?}); only paused goals can be resumed",
-            goal.status
-        )));
-    }
-
-    let resume_task_id = goal
-        .metadata
-        .as_ref()
-        .and_then(|metadata| metadata.get("taskId"))
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let resume_model = goal
-        .metadata
-        .as_ref()
-        .and_then(|metadata| metadata.get("model"))
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let resume_effort = goal
-        .metadata
-        .as_ref()
-        .and_then(|metadata| metadata.get("effort"))
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let resume_objective = goal.description.clone();
-    let resume_working_directory = goal
-        .working_directory
-        .clone()
-        .or_else(|| ctx.working_directory.as_ref().map(|path| path.to_string_lossy().to_string()));
-
-    goal.status = GoalStatus::Active;
-    let now = now_iso();
-    goal.updated_at = now.clone();
-
-    let progress = goal.progress.clone();
-
-    save_store(ctx, &store)?;
-
-    drop(_store_guard);
-    if let (Some(task_id), Some(working_directory)) =
-        (resume_task_id, resume_working_directory)
-    {
-        let goal_id = id.clone();
-        tokio::spawn(async move {
-            let result = crate::goal_runner::resume_goal(
-                task_id,
-                goal_id.clone(),
-                resume_objective,
-                PathBuf::from(&working_directory),
-                agent::run::ResolvedModelConfig {
-                    model: resume_model,
-                    effort: resume_effort,
-                    ..Default::default()
-                },
-            )
-            .await;
-            if let Err(error) = result {
-                let _ = runtime_set_status(
-                    PathBuf::from(&working_directory).as_path(),
-                    &goal_id,
-                    GoalStatus::Paused,
-                );
-                tracing::error!(goal_id = %goal_id, error = %error, "failed to resume ACP goal");
+        // 广播用快照必须在 clear 前取。
+        let mut snapshot = project_goal(&existing);
+        if let Some(r) = reason {
+            let mut meta = snapshot.metadata.take().unwrap_or(json!({}));
+            if let Some(obj) = meta.as_object_mut() {
+                obj.insert("cancellationReason".to_string(), Value::String(r));
             }
-        });
-    }
+            snapshot.metadata = Some(meta);
+        }
 
-    Ok(serde_json::json!({
-        "id": id,
-        "status": "active",
-        "resumedAt": now,
-        "notification": build_notification(
-            &id,
-            GoalChangeType::Resumed,
-            GoalStatus::Active,
-            progress,
-        ),
-    }))
-}
+        session
+            .service
+            .clear(&thread_id)
+            .await
+            .map_err(|e| Self::map_service_error("cancel", e))?;
+        session.after_clear().await;
+        self.bump_generation();
 
-async fn handle_cancel(params: Value, ctx: &ExtensionContext) -> Result<Value, ExtensionError> {
-    auth::check_server_policy(ctx, "goal", "cancel")?;
-
-    let id = require_param_str(&params, "id")?;
-    let reason = optional_param_str(&params, "reason");
-
-    let _store_guard = lock_goal_store();
-    let mut store = load_store(ctx)?;
-
-    let goal = store
-        .find_mut(&id)
-        .ok_or_else(|| ExtensionError::not_found(format!("goal '{id}' not found")))?;
-
-    if goal.status.is_terminal() {
-        let cancelled_at = goal.updated_at.clone();
-        let progress = goal.progress.clone();
-        let current_status = goal.status.clone();
-        return Ok(serde_json::json!({
+        let notification =
+            build_notification(&id, GoalChangeType::Cancelled, GoalStatus::Cancelled, None);
+        let response = json!({
             "id": id,
-            "status": current_status.clone(),
-            "updatedAt": cancelled_at,
-            "notification": build_notification(
-                &id,
-                GoalChangeType::Cancelled,
-                current_status,
-                progress,
-            ),
-        }));
+            "status": "cancelled",
+            "cancelledAt": now,
+            "notification": notification,
+            "updated": snapshot,
+        });
+        let changed = serde_json::to_value(&notification).unwrap_or(Value::Null);
+        let updated = response["updated"].clone();
+        self.broadcast(changed, updated);
+        Ok(response)
     }
-
-    if let Some(ref r) = reason {
-        let meta = goal
-            .metadata
-            .clone()
-            .unwrap_or(Value::Object(Default::default()));
-        let mut meta_obj = meta.as_object().cloned().unwrap_or_default();
-        meta_obj.insert("cancellationReason".to_string(), Value::String(r.clone()));
-        goal.metadata = Some(Value::Object(meta_obj));
-    }
-
-    goal.status = GoalStatus::Cancelled;
-    let now = now_iso();
-    goal.updated_at = now.clone();
-
-    let progress = goal.progress.clone();
-
-    save_store(ctx, &store)?;
-    request_runtime_cancel(&id);
-
-    Ok(serde_json::json!({
-        "id": id,
-        "status": "cancelled",
-        "cancelledAt": now,
-        "notification": build_notification(
-            &id,
-            GoalChangeType::Cancelled,
-            GoalStatus::Cancelled,
-            progress,
-        ),
-    }))
 }
+
+// ---------------------------------------------------------------------------
+// Cursor（不透明 base64 JSON；generation 使旧游标在 mutation 后失效）
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ListCursor {
+    generation: u64,
+    offset: usize,
+}
+
+fn encode_cursor(generation: u64, offset: usize) -> String {
+    use base64::Engine;
+    let raw = serde_json::to_vec(&ListCursor { generation, offset }).unwrap_or_default();
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw)
+}
+
+fn decode_cursor(cursor: &str) -> Result<usize, ExtensionError> {
+    use base64::Engine;
+    let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(cursor)
+        .map_err(|_| ExtensionError::invalid_params("invalid list cursor"))?;
+    let parsed: ListCursor = serde_json::from_slice(&raw)
+        .map_err(|_| ExtensionError::invalid_params("invalid list cursor"))?;
+    Ok(parsed.offset)
+}
+
+// ---------------------------------------------------------------------------
+// Tests（temp TaskDb 后端；goals.json/recovery 类测试已随旧机制退役）
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -897,9 +856,9 @@ mod tests {
     use crate::client_capabilities::ClientCapabilitiesInfo;
     use std::path::PathBuf;
 
-    fn make_ctx(wd: PathBuf) -> ExtensionContext {
+    fn make_ctx(wd: PathBuf, session_id: Option<&str>) -> ExtensionContext {
         ExtensionContext {
-            session_id: None,
+            session_id: session_id.map(str::to_string),
             principal: "test-user".to_string(),
             connection_id: "test-conn".to_string(),
             working_directory: Some(wd),
@@ -907,297 +866,94 @@ mod tests {
         }
     }
 
-    fn make_ctx_no_principal(wd: PathBuf) -> ExtensionContext {
+    fn make_ctx_no_principal(wd: PathBuf, session_id: Option<&str>) -> ExtensionContext {
         ExtensionContext {
-            session_id: None,
             principal: String::new(),
-            connection_id: "test-conn".to_string(),
-            working_directory: Some(wd),
-            client_capabilities: ClientCapabilitiesInfo::default(),
+            ..make_ctx(wd, session_id)
         }
     }
 
-    #[tokio::test]
-    async fn list_empty_when_no_store() {
+    async fn make_handler() -> (GoalHandler, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
-        let ctx = make_ctx(dir.path().to_path_buf());
-        let handler = GoalHandler::new();
-        let result = handler
-            .handle("list", serde_json::json!({}), &ctx)
+        let db = task_core::TaskDb::open(&dir.path().join("tasks.db"))
             .await
             .unwrap();
+        let handler = GoalHandler::new();
+        handler.bind_store(goal::GoalStore::from_task_db(&db));
+        (handler, dir)
+    }
+
+    async fn start_goal(handler: &GoalHandler, ctx: &ExtensionContext, session: &str, title: &str) -> Value {
+        handler
+            .handle(
+                "start",
+                json!({"title": title, "description": title, "sessionId": session}),
+                ctx,
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn list_empty_when_no_goals() {
+        let (handler, dir) = make_handler().await;
+        let ctx = make_ctx(dir.path().to_path_buf(), None);
+        let result = handler.handle("list", json!({}), &ctx).await.unwrap();
         assert_eq!(result["items"].as_array().unwrap().len(), 0);
         assert_eq!(result["hasMore"], false);
     }
 
     #[tokio::test]
-    async fn runtime_goal_is_visible_and_updates_status() {
+    async fn unbound_handler_degrades_to_empty_list() {
         let dir = tempfile::tempdir().unwrap();
-        let (id, control) = runtime_start(
-            dir.path(),
-            "runtime goal",
-            "do work",
-            "task-1",
-            Some("session-1"),
-            Some("test-model"),
-            Some("medium"),
-        )
-        .unwrap();
-        let ctx = make_ctx(dir.path().to_path_buf());
+        let ctx = make_ctx(dir.path().to_path_buf(), None);
         let handler = GoalHandler::new();
-
-        let listed = handler
-            .handle("list", serde_json::json!({}), &ctx)
-            .await
-            .unwrap();
-        assert_eq!(listed["items"][0]["id"], id);
-        assert_eq!(listed["items"][0]["status"], "active");
-        assert_eq!(listed["items"][0]["sessionIds"][0], "session-1");
-        assert_eq!(listed["items"][0]["metadata"]["taskId"], "task-1");
-
-        runtime_set_status(dir.path(), &id, GoalStatus::Completed).unwrap();
-        let completed = handler
-            .handle("get", serde_json::json!({"id": id}), &ctx)
-            .await
-            .unwrap();
-        assert_eq!(completed["status"], "completed");
-        unregister_runtime_goal(&id, &control);
-    }
-
-    #[test]
-    fn stale_runtime_cleanup_cannot_remove_new_instance() {
-        let id = format!("test-runtime-{}", uuid::Uuid::new_v4());
-        let first = register_runtime_goal(&id);
-        let second = register_runtime_goal(&id);
-
-        unregister_runtime_goal(&id, &first);
-        request_runtime_cancel(&id);
-
-        assert!(!first.token.is_cancelled());
-        assert!(second.token.is_cancelled());
-        unregister_runtime_goal(&id, &second);
-    }
-
-    #[test]
-    fn runtime_recovery_claim_has_single_owner() {
-        let id = format!("test-recovery-{}", uuid::Uuid::new_v4());
-        let first = try_claim_runtime_goal(&id).expect("first claim should win");
-        assert!(try_claim_runtime_goal(&id).is_none());
-        unregister_runtime_goal(&id, &first);
-        assert!(try_claim_runtime_goal(&id).is_some());
-        if let Some(current) = runtime_control(&id) {
-            unregister_runtime_goal(&id, &current);
-        }
-    }
-
-    #[tokio::test]
-    async fn list_with_status_filter() {
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = make_ctx(dir.path().to_path_buf());
-        let handler = GoalHandler::new();
-        handler
-            .handle(
-                "start",
-                serde_json::json!({"title": "A", "description": "desc"}),
-                &ctx,
-            )
-            .await
-            .unwrap();
-        let result = handler
-            .handle("list", serde_json::json!({"status": "active"}), &ctx)
-            .await
-            .unwrap();
-        assert_eq!(result["items"].as_array().unwrap().len(), 1);
-        let result = handler
-            .handle("list", serde_json::json!({"status": "paused"}), &ctx)
-            .await
-            .unwrap();
+        let result = handler.handle("list", json!({}), &ctx).await.unwrap();
         assert_eq!(result["items"].as_array().unwrap().len(), 0);
     }
 
     #[tokio::test]
-    async fn list_status_filter_case_insensitive() {
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = make_ctx(dir.path().to_path_buf());
-        let handler = GoalHandler::new();
-        handler
-            .handle(
-                "start",
-                serde_json::json!({"title": "A", "description": "d"}),
-                &ctx,
-            )
-            .await
-            .unwrap();
-        let result = handler
-            .handle("list", serde_json::json!({"status": "Active"}), &ctx)
-            .await
-            .unwrap();
-        assert_eq!(result["items"].as_array().unwrap().len(), 1);
+    async fn start_persists_to_thread_and_projects_old_shape() {
+        let (handler, dir) = make_handler().await;
+        let ctx = make_ctx(dir.path().to_path_buf(), Some("session-1"));
+        let started = start_goal(&handler, &ctx, "session-1", "do work").await;
+        assert_eq!(started["status"], "active");
+        assert_eq!(started["sessionId"], "session-1");
+        assert!(started["notification"]["change"] == "started");
+        assert!(started["updated"]["id"].is_string());
+
+        let listed = handler.handle("list", json!({}), &ctx).await.unwrap();
+        assert_eq!(listed["items"].as_array().unwrap().len(), 1);
+        assert_eq!(listed["items"][0]["status"], "active");
+        assert_eq!(listed["items"][0]["sessionIds"][0], "session-1");
+        assert_eq!(
+            listed["items"][0]["metadata"]["threadId"], "session-1",
+            "store-bound mode falls back to session id as thread key"
+        );
+        // camelCase wire 形状（FE 兼容）
+        assert!(listed["items"][0].get("created_at").is_none());
+        assert!(listed["items"][0]["createdAt"].is_string());
     }
 
     #[tokio::test]
-    async fn list_pagination() {
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = make_ctx(dir.path().to_path_buf());
-        let handler = GoalHandler::new();
-        for i in 0..3 {
-            handler
-                .handle(
-                    "start",
-                    serde_json::json!({"title": format!("G{i}"), "description": "d"}),
-                    &ctx,
-                )
-                .await
-                .unwrap();
-        }
-        let page1 = handler
-            .handle("list", serde_json::json!({"limit": 1}), &ctx)
-            .await
-            .unwrap();
-        assert_eq!(page1["items"].as_array().unwrap().len(), 1);
-        assert_eq!(page1["hasMore"], true);
-        let cursor = page1["nextCursor"].as_str().unwrap();
-        let page2 = handler
-            .handle(
-                "list",
-                serde_json::json!({"limit": 1, "cursor": cursor}),
-                &ctx,
-            )
-            .await
-            .unwrap();
-        assert_eq!(page2["items"].as_array().unwrap().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn list_items_omit_steps() {
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = make_ctx(dir.path().to_path_buf());
-        let handler = GoalHandler::new();
-        handler
-            .handle(
-                "start",
-                serde_json::json!({"title": "A", "description": "d"}),
-                &ctx,
-            )
-            .await
-            .unwrap();
-        let result = handler
-            .handle("list", serde_json::json!({}), &ctx)
-            .await
-            .unwrap();
-        let item = &result["items"][0];
-        assert!(item.get("steps").is_none() || item["steps"].as_array().is_none());
-    }
-
-    #[tokio::test]
-    async fn get_existing_goal_returns_steps() {
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = make_ctx(dir.path().to_path_buf());
-        let handler = GoalHandler::new();
-        let start_result = handler
-            .handle(
-                "start",
-                serde_json::json!({"title": "A", "description": "d"}),
-                &ctx,
-            )
-            .await
-            .unwrap();
-        let id = start_result["id"].as_str().unwrap();
-        let result = handler
-            .handle("get", serde_json::json!({"id": id}), &ctx)
-            .await
-            .unwrap();
-        assert!(result.get("steps").is_some());
-        assert_eq!(result["steps"].as_array().unwrap().len(), 0);
-    }
-
-    #[tokio::test]
-    async fn get_nonexistent_returns_not_found() {
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = make_ctx(dir.path().to_path_buf());
-        let handler = GoalHandler::new();
+    async fn start_requires_session_id() {
+        let (handler, dir) = make_handler().await;
+        let ctx = make_ctx(dir.path().to_path_buf(), None);
         let err = handler
-            .handle("get", serde_json::json!({"id": "nope"}), &ctx)
-            .await
-            .unwrap_err();
-        assert_eq!(err.code, -32003);
-    }
-
-    #[tokio::test]
-    async fn get_missing_id_returns_invalid_params() {
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = make_ctx(dir.path().to_path_buf());
-        let handler = GoalHandler::new();
-        let err = handler
-            .handle("get", serde_json::json!({}), &ctx)
+            .handle("start", json!({"title": "A", "description": "d"}), &ctx)
             .await
             .unwrap_err();
         assert_eq!(err.code, -32602);
     }
 
     #[tokio::test]
-    async fn get_empty_id_returns_invalid_params() {
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = make_ctx(dir.path().to_path_buf());
-        let handler = GoalHandler::new();
-        let err = handler
-            .handle("get", serde_json::json!({"id": "  "}), &ctx)
-            .await
-            .unwrap_err();
-        assert_eq!(err.code, -32602);
-    }
-
-    #[tokio::test]
-    async fn start_creates_goal() {
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = make_ctx(dir.path().to_path_buf());
-        let handler = GoalHandler::new();
-        let result = handler
-            .handle(
-                "start",
-                serde_json::json!({"title": "Test", "description": "Desc"}),
-                &ctx,
-            )
-            .await
-            .unwrap();
-        assert!(result["id"].as_str().unwrap().starts_with("goal-"));
-        assert_eq!(result["title"], "Test");
-        assert_eq!(result["status"], "active");
-        assert!(result.get("createdAt").is_some());
-        assert!(result.get("notification").is_some());
-    }
-
-    #[tokio::test]
-    async fn start_with_session_id() {
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = make_ctx(dir.path().to_path_buf());
-        let handler = GoalHandler::new();
-        let result = handler
-            .handle(
-                "start",
-                serde_json::json!({"title": "T", "description": "D", "sessionId": "sess-1"}),
-                &ctx,
-            )
-            .await
-            .unwrap();
-        assert_eq!(result["sessionId"], "sess-1");
-        let id = result["id"].as_str().unwrap();
-        let goal = handler
-            .handle("get", serde_json::json!({"id": id}), &ctx)
-            .await
-            .unwrap();
-        assert_eq!(goal["sessionIds"][0], "sess-1");
-    }
-
-    #[tokio::test]
-    async fn start_empty_title_returns_invalid_params() {
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = make_ctx(dir.path().to_path_buf());
-        let handler = GoalHandler::new();
+    async fn start_rejects_empty_title() {
+        let (handler, dir) = make_handler().await;
+        let ctx = make_ctx(dir.path().to_path_buf(), Some("s"));
         let err = handler
             .handle(
                 "start",
-                serde_json::json!({"title": "  ", "description": "D"}),
+                json!({"title": "  ", "description": "d", "sessionId": "s"}),
                 &ctx,
             )
             .await
@@ -1206,16 +962,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn start_empty_description_returns_invalid_params() {
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = make_ctx(dir.path().to_path_buf());
-        let handler = GoalHandler::new();
+    async fn start_rejects_missing_description() {
+        let (handler, dir) = make_handler().await;
+        let ctx = make_ctx(dir.path().to_path_buf(), Some("s"));
         let err = handler
-            .handle(
-                "start",
-                serde_json::json!({"title": "T", "description": ""}),
-                &ctx,
-            )
+            .handle("start", json!({"title": "T", "sessionId": "s"}), &ctx)
             .await
             .unwrap_err();
         assert_eq!(err.code, -32602);
@@ -1223,13 +974,12 @@ mod tests {
 
     #[tokio::test]
     async fn start_no_principal_returns_forbidden() {
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = make_ctx_no_principal(dir.path().to_path_buf());
-        let handler = GoalHandler::new();
+        let (handler, dir) = make_handler().await;
+        let ctx = make_ctx_no_principal(dir.path().to_path_buf(), Some("s"));
         let err = handler
             .handle(
                 "start",
-                serde_json::json!({"title": "T", "description": "D"}),
+                json!({"title": "T", "description": "D", "sessionId": "s"}),
                 &ctx,
             )
             .await
@@ -1238,124 +988,89 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn start_idempotency_dedup() {
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = make_ctx(dir.path().to_path_buf());
-        let handler = GoalHandler::new();
-        let r1 = handler
+    async fn idempotency_key_returns_existing_goal() {
+        let (handler, dir) = make_handler().await;
+        let ctx = make_ctx(dir.path().to_path_buf(), Some("s"));
+        let first = handler
             .handle(
                 "start",
-                serde_json::json!({"title": "T", "description": "D", "idempotencyKey": "k1"}),
+                json!({"title": "A", "description": "d", "sessionId": "s", "idempotencyKey": "k1"}),
                 &ctx,
             )
             .await
             .unwrap();
-        let r2 = handler
+        let second = handler
             .handle(
                 "start",
-                serde_json::json!({"title": "T", "description": "D", "idempotencyKey": "k1"}),
+                json!({"title": "B", "description": "d2", "sessionId": "s", "idempotencyKey": "k1"}),
                 &ctx,
             )
             .await
             .unwrap();
-        assert_eq!(r1["id"], r2["id"]);
-    }
-
-    #[tokio::test]
-    async fn start_different_idempotency_keys_create_separate() {
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = make_ctx(dir.path().to_path_buf());
-        let handler = GoalHandler::new();
-        let r1 = handler
-            .handle(
-                "start",
-                serde_json::json!({"title": "T", "description": "D", "idempotencyKey": "k1"}),
-                &ctx,
-            )
-            .await
-            .unwrap();
-        let r2 = handler
-            .handle(
-                "start",
-                serde_json::json!({"title": "T", "description": "D", "idempotencyKey": "k2"}),
-                &ctx,
-            )
-            .await
-            .unwrap();
-        assert_ne!(r1["id"], r2["id"]);
-    }
-
-    #[tokio::test]
-    async fn concurrent_starts_do_not_drop_updates() {
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = make_ctx(dir.path().to_path_buf());
-        let handler = GoalHandler::new();
-
-        let (first, second) = tokio::join!(
-            handler.handle(
-                "start",
-                serde_json::json!({"title": "first", "description": "d1"}),
-                &ctx,
-            ),
-            handler.handle(
-                "start",
-                serde_json::json!({"title": "second", "description": "d2"}),
-                &ctx,
-            ),
+        assert_eq!(first["id"], second["id"]);
+        assert_eq!(
+            second["title"], "A: d",
+            "幂等重试不得替换 goal（title 为首次合成 objective 的首行投影）"
         );
-
-        assert!(first.is_ok());
-        assert!(second.is_ok());
-
-        let list = handler
-            .handle("list", serde_json::json!({}), &ctx)
-            .await
-            .unwrap();
-        assert_eq!(list["items"].as_array().unwrap().len(), 2);
     }
 
     #[tokio::test]
-    async fn pause_active_goal() {
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = make_ctx(dir.path().to_path_buf());
-        let handler = GoalHandler::new();
-        let start = handler
-            .handle(
-                "start",
-                serde_json::json!({"title": "T", "description": "D"}),
-                &ctx,
-            )
-            .await
-            .unwrap();
-        let id = start["id"].as_str().unwrap();
-        let result = handler
-            .handle("pause", serde_json::json!({"id": id}), &ctx)
-            .await
-            .unwrap();
-        assert_eq!(result["status"], "paused");
-        assert!(result.get("pausedAt").is_some());
+    async fn get_by_goal_id_roundtrip() {
+        let (handler, dir) = make_handler().await;
+        let ctx = make_ctx(dir.path().to_path_buf(), Some("s"));
+        let started = start_goal(&handler, &ctx, "s", "objective text").await;
+        let id = started["id"].as_str().unwrap().to_string();
+        let got = handler.handle("get", json!({"id": id}), &ctx).await.unwrap();
+        assert_eq!(got["id"], id);
+        assert_eq!(got["status"], "active");
+        assert_eq!(got["description"], "objective text");
+        assert!(got["steps"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test]
-    async fn pause_non_active_returns_invalid_params() {
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = make_ctx(dir.path().to_path_buf());
-        let handler = GoalHandler::new();
-        let start = handler
-            .handle(
-                "start",
-                serde_json::json!({"title": "T", "description": "D"}),
-                &ctx,
-            )
-            .await
-            .unwrap();
-        let id = start["id"].as_str().unwrap();
-        handler
-            .handle("pause", serde_json::json!({"id": id}), &ctx)
-            .await
-            .unwrap();
+    async fn get_unknown_goal_is_not_found() {
+        let (handler, dir) = make_handler().await;
+        let ctx = make_ctx(dir.path().to_path_buf(), None);
         let err = handler
-            .handle("pause", serde_json::json!({"id": id}), &ctx)
+            .handle("get", json!({"id": "missing"}), &ctx)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, -32003);
+    }
+
+    #[tokio::test]
+    async fn get_requires_id_param() {
+        let (handler, dir) = make_handler().await;
+        let ctx = make_ctx(dir.path().to_path_buf(), None);
+        let err = handler.handle("get", json!({}), &ctx).await.unwrap_err();
+        assert_eq!(err.code, -32602);
+    }
+
+    #[tokio::test]
+    async fn pause_resume_cycle_maps_to_old_statuses() {
+        let (handler, dir) = make_handler().await;
+        let ctx = make_ctx(dir.path().to_path_buf(), Some("s"));
+        let started = start_goal(&handler, &ctx, "s", "work").await;
+        let id = started["id"].as_str().unwrap().to_string();
+
+        let paused = handler.handle("pause", json!({"id": id}), &ctx).await.unwrap();
+        assert_eq!(paused["status"], "paused");
+        assert!(paused["notification"]["change"] == "paused");
+
+        // 旧 API：非 active 状态 pause 报 invalid_params
+        let err = handler
+            .handle("pause", json!({"id": id}), &ctx)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, -32602);
+
+        let resumed = handler.handle("resume", json!({"id": id}), &ctx).await.unwrap();
+        assert_eq!(resumed["status"], "active");
+        assert!(resumed["resumedAt"].is_string());
+
+        // 旧 API：active 状态 resume 报 invalid_params
+        let err = handler
+            .handle("resume", json!({"id": id}), &ctx)
             .await
             .unwrap_err();
         assert_eq!(err.code, -32602);
@@ -1363,11 +1078,10 @@ mod tests {
 
     #[tokio::test]
     async fn pause_nonexistent_returns_not_found() {
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = make_ctx(dir.path().to_path_buf());
-        let handler = GoalHandler::new();
+        let (handler, dir) = make_handler().await;
+        let ctx = make_ctx(dir.path().to_path_buf(), None);
         let err = handler
-            .handle("pause", serde_json::json!({"id": "nope"}), &ctx)
+            .handle("pause", json!({"id": "nope"}), &ctx)
             .await
             .unwrap_err();
         assert_eq!(err.code, -32003);
@@ -1375,244 +1089,233 @@ mod tests {
 
     #[tokio::test]
     async fn pause_no_principal_returns_forbidden() {
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = make_ctx_no_principal(dir.path().to_path_buf());
-        let handler = GoalHandler::new();
+        let (handler, dir) = make_handler().await;
+        let ctx = make_ctx_no_principal(dir.path().to_path_buf(), None);
         let err = handler
-            .handle("pause", serde_json::json!({"id": "x"}), &ctx)
+            .handle("pause", json!({"id": "x"}), &ctx)
             .await
             .unwrap_err();
         assert_eq!(err.code, -32002);
     }
 
     #[tokio::test]
-    async fn resume_paused_goal() {
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = make_ctx(dir.path().to_path_buf());
-        let handler = GoalHandler::new();
-        let start = handler
-            .handle(
-                "start",
-                serde_json::json!({"title": "T", "description": "D"}),
-                &ctx,
-            )
-            .await
-            .unwrap();
-        let id = start["id"].as_str().unwrap();
-        handler
-            .handle("pause", serde_json::json!({"id": id}), &ctx)
-            .await
-            .unwrap();
-        let result = handler
-            .handle("resume", serde_json::json!({"id": id}), &ctx)
-            .await
-            .unwrap();
-        assert_eq!(result["status"], "active");
-        assert!(result.get("resumedAt").is_some());
-    }
+    async fn cancel_clears_goal_and_reports_reason() {
+        let (handler, dir) = make_handler().await;
+        let ctx = make_ctx(dir.path().to_path_buf(), Some("s"));
+        let started = start_goal(&handler, &ctx, "s", "work").await;
+        let id = started["id"].as_str().unwrap().to_string();
 
-    #[tokio::test]
-    async fn resume_active_returns_invalid_params() {
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = make_ctx(dir.path().to_path_buf());
-        let handler = GoalHandler::new();
-        let start = handler
-            .handle(
-                "start",
-                serde_json::json!({"title": "T", "description": "D"}),
-                &ctx,
-            )
+        let cancelled = handler
+            .handle("cancel", json!({"id": id, "reason": "user asked"}), &ctx)
             .await
             .unwrap();
-        let id = start["id"].as_str().unwrap();
-        let err = handler
-            .handle("resume", serde_json::json!({"id": id}), &ctx)
-            .await
-            .unwrap_err();
-        assert_eq!(err.code, -32602);
-    }
+        assert_eq!(cancelled["status"], "cancelled");
+        assert!(cancelled["cancelledAt"].is_string());
+        assert!(
+            cancelled["updated"]["metadata"]["cancellationReason"]
+                .as_str()
+                .unwrap()
+                .contains("user asked")
+        );
 
-    #[tokio::test]
-    async fn resume_nonexistent_returns_not_found() {
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = make_ctx(dir.path().to_path_buf());
-        let handler = GoalHandler::new();
+        // 新模型 clear 即无行：重复 cancel 视为对不存在 goal 的操作。
         let err = handler
-            .handle("resume", serde_json::json!({"id": "nope"}), &ctx)
+            .handle("cancel", json!({"id": id}), &ctx)
             .await
             .unwrap_err();
         assert_eq!(err.code, -32003);
-    }
 
-    #[tokio::test]
-    async fn cancel_active_goal() {
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = make_ctx(dir.path().to_path_buf());
-        let handler = GoalHandler::new();
-        let start = handler
-            .handle(
-                "start",
-                serde_json::json!({"title": "T", "description": "D"}),
-                &ctx,
-            )
-            .await
-            .unwrap();
-        let id = start["id"].as_str().unwrap();
-        let result = handler
-            .handle("cancel", serde_json::json!({"id": id}), &ctx)
-            .await
-            .unwrap();
-        assert_eq!(result["status"], "cancelled");
-        assert!(result.get("cancelledAt").is_some());
-    }
-
-    #[tokio::test]
-    async fn cancel_idempotent() {
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = make_ctx(dir.path().to_path_buf());
-        let handler = GoalHandler::new();
-        let start = handler
-            .handle(
-                "start",
-                serde_json::json!({"title": "T", "description": "D"}),
-                &ctx,
-            )
-            .await
-            .unwrap();
-        let id = start["id"].as_str().unwrap();
-        handler
-            .handle("cancel", serde_json::json!({"id": id}), &ctx)
-            .await
-            .unwrap();
-        let result = handler
-            .handle("cancel", serde_json::json!({"id": id}), &ctx)
-            .await
-            .unwrap();
-        assert_eq!(result["status"], "cancelled");
-    }
-
-    #[tokio::test]
-    async fn cancel_with_reason_stores_in_metadata() {
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = make_ctx(dir.path().to_path_buf());
-        let handler = GoalHandler::new();
-        let start = handler
-            .handle(
-                "start",
-                serde_json::json!({"title": "T", "description": "D"}),
-                &ctx,
-            )
-            .await
-            .unwrap();
-        let id = start["id"].as_str().unwrap();
-        handler
-            .handle(
-                "cancel",
-                serde_json::json!({"id": id, "reason": "done"}),
-                &ctx,
-            )
-            .await
-            .unwrap();
-        let goal = handler
-            .handle("get", serde_json::json!({"id": id}), &ctx)
-            .await
-            .unwrap();
-        assert_eq!(goal["metadata"]["cancellationReason"], "done");
-    }
-
-    #[tokio::test]
-    async fn cancel_nonexistent_returns_not_found() {
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = make_ctx(dir.path().to_path_buf());
-        let handler = GoalHandler::new();
-        let err = handler
-            .handle("cancel", serde_json::json!({"id": "nope"}), &ctx)
-            .await
-            .unwrap_err();
-        assert_eq!(err.code, -32003);
+        let listed = handler.handle("list", json!({}), &ctx).await.unwrap();
+        assert_eq!(listed["items"].as_array().unwrap().len(), 0);
     }
 
     #[tokio::test]
     async fn cancel_no_principal_returns_forbidden() {
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = make_ctx_no_principal(dir.path().to_path_buf());
-        let handler = GoalHandler::new();
+        let (handler, dir) = make_handler().await;
+        let ctx = make_ctx_no_principal(dir.path().to_path_buf(), None);
         let err = handler
-            .handle("cancel", serde_json::json!({"id": "x"}), &ctx)
+            .handle("cancel", json!({"id": "x"}), &ctx)
             .await
             .unwrap_err();
         assert_eq!(err.code, -32002);
     }
 
     #[tokio::test]
-    async fn state_transitions_persist_across_reload() {
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = make_ctx(dir.path().to_path_buf());
+    async fn cancel_terminal_goal_is_idempotent() {
+        let (handler, dir) = make_handler().await;
+        let ctx = make_ctx(dir.path().to_path_buf(), Some("s"));
+        let started = start_goal(&handler, &ctx, "s", "work").await;
+        let id = started["id"].as_str().unwrap().to_string();
 
-        let handler1 = GoalHandler::new();
-        let start = handler1
-            .handle(
-                "start",
-                serde_json::json!({"title": "T", "description": "D"}),
-                &ctx,
-            )
+        // 直接经 store 推到终态 complete。
+        {
+            let store = handler.store_for_read().await.unwrap();
+            let (thread, g) = store.find_by_goal_id(&id).await.unwrap().unwrap();
+            store.mark_complete(&thread, &g.goal_id).await.unwrap();
+        }
+        let cancelled = handler
+            .handle("cancel", json!({"id": id}), &ctx)
             .await
             .unwrap();
-        let id = start["id"].as_str().unwrap();
-        handler1
-            .handle("pause", serde_json::json!({"id": id}), &ctx)
-            .await
-            .unwrap();
-
-        let handler2 = GoalHandler::new();
-        let goal = handler2
-            .handle("get", serde_json::json!({"id": id}), &ctx)
-            .await
-            .unwrap();
-        assert_eq!(goal["status"], "paused");
+        assert_eq!(cancelled["status"], "cancelled");
+        // 终态行保留：get 仍可读（投影 completed）。
+        let got = handler.handle("get", json!({"id": id}), &ctx).await.unwrap();
+        assert_eq!(got["status"], "completed");
     }
 
     #[tokio::test]
-    async fn start_then_list_shows_goal() {
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = make_ctx(dir.path().to_path_buf());
-        let handler = GoalHandler::new();
-        handler
-            .handle(
-                "start",
-                serde_json::json!({"title": "T", "description": "D"}),
-                &ctx,
-            )
+    async fn list_status_filter_maps_old_to_new() {
+        let (handler, dir) = make_handler().await;
+        let ctx = make_ctx(dir.path().to_path_buf(), Some("s"));
+        start_goal(&handler, &ctx, "s", "A").await;
+
+        let result = handler
+            .handle("list", json!({"status": "active"}), &ctx)
             .await
             .unwrap();
+        assert_eq!(result["items"].as_array().unwrap().len(), 1);
         let result = handler
-            .handle("list", serde_json::json!({}), &ctx)
+            .handle("list", json!({"status": "paused"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(result["items"].as_array().unwrap().len(), 0);
+        let result = handler
+            .handle("list", json!({"status": "cancelled"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(result["items"].as_array().unwrap().len(), 0, "cancelled 永不匹配");
+    }
+
+    #[tokio::test]
+    async fn list_status_filter_case_insensitive() {
+        let (handler, dir) = make_handler().await;
+        let ctx = make_ctx(dir.path().to_path_buf(), Some("s"));
+        start_goal(&handler, &ctx, "s", "A").await;
+        let result = handler
+            .handle("list", json!({"status": "Active"}), &ctx)
             .await
             .unwrap();
         assert_eq!(result["items"].as_array().unwrap().len(), 1);
     }
 
     #[tokio::test]
-    async fn capabilities() {
-        let handler = GoalHandler::new();
-        let caps = handler.capabilities();
-        assert_eq!(caps["list"], true);
-        assert_eq!(caps["get"], true);
-        assert_eq!(caps["start"], true);
-        assert_eq!(caps["pause"], true);
-        assert_eq!(caps["resume"], true);
-        assert_eq!(caps["cancel"], true);
+    async fn list_pagination_no_duplicates() {
+        let (handler, dir) = make_handler().await;
+        let ctx = make_ctx(dir.path().to_path_buf(), None);
+        for i in 0..3 {
+            let ctx_i = make_ctx(dir.path().to_path_buf(), Some(&format!("s{i}")));
+            handler
+                .handle(
+                    "start",
+                    json!({"title": format!("G{i}"), "description": "d", "sessionId": format!("s{i}")}),
+                    &ctx_i,
+                )
+                .await
+                .unwrap();
+        }
+        let page1 = handler.handle("list", json!({"limit": 1}), &ctx).await.unwrap();
+        assert_eq!(page1["items"].as_array().unwrap().len(), 1);
+        assert_eq!(page1["hasMore"], true);
+        let cursor = page1["nextCursor"].as_str().unwrap().to_string();
+
+        let page2 = handler
+            .handle("list", json!({"limit": 1, "cursor": cursor}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(page2["items"].as_array().unwrap().len(), 1);
+        let id1 = page1["items"][0]["id"].as_str().unwrap();
+        let id2 = page2["items"][0]["id"].as_str().unwrap();
+        assert_ne!(id1, id2, "分页不得重复");
+    }
+
+    #[tokio::test]
+    async fn invalid_cursor_is_rejected() {
+        let (handler, dir) = make_handler().await;
+        let ctx = make_ctx(dir.path().to_path_buf(), None);
+        let err = handler
+            .handle("list", json!({"cursor": "not-base64!!"}), &ctx)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, -32602);
     }
 
     #[tokio::test]
     async fn unknown_method_returns_method_not_found() {
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = make_ctx(dir.path().to_path_buf());
-        let handler = GoalHandler::new();
+        let (handler, dir) = make_handler().await;
+        let ctx = make_ctx(dir.path().to_path_buf(), None);
         let err = handler
-            .handle("unknown", serde_json::json!({}), &ctx)
+            .handle("frobnicate", json!({}), &ctx)
             .await
             .unwrap_err();
         assert_eq!(err.code, -32601);
+    }
+
+    #[tokio::test]
+    async fn capabilities_keep_legacy_flat_shape() {
+        let handler = GoalHandler::new();
+        let caps = handler.capabilities();
+        for m in ["list", "get", "start", "pause", "resume", "cancel"] {
+            assert_eq!(caps[m], true, "capability {m}");
+        }
+    }
+
+    #[tokio::test]
+    async fn state_persists_across_handler_rebuild() {
+        // 新后端下「重建 handler」仍可见同一 goal（DB 持久，替代旧
+        // goals.json reload 语义）。
+        let (handler, dir) = make_handler().await;
+        let ctx = make_ctx(dir.path().to_path_buf(), Some("s"));
+        let started = start_goal(&handler, &ctx, "s", "T").await;
+        let id = started["id"].as_str().unwrap().to_string();
+        handler
+            .handle("pause", json!({"id": id}), &ctx)
+            .await
+            .unwrap();
+
+        // 从同一 db 构造新 handler（模拟进程重启）。
+        let db = task_core::TaskDb::open(&dir.path().join("tasks.db"))
+            .await
+            .unwrap();
+        let handler2 = GoalHandler::new();
+        handler2.bind_store(goal::GoalStore::from_task_db(&db));
+        let goal = handler2.handle("get", json!({"id": id}), &ctx).await.unwrap();
+        assert_eq!(goal["status"], "paused");
+    }
+
+    #[test]
+    fn status_projection_matrix() {
+        use goal::GoalStatus as S;
+        assert_eq!(project_status(S::Active), GoalStatus::Active);
+        assert_eq!(project_status(S::Paused), GoalStatus::Paused);
+        assert_eq!(project_status(S::UsageLimited), GoalStatus::Paused);
+        assert_eq!(project_status(S::Blocked), GoalStatus::Failed);
+        assert_eq!(project_status(S::BudgetLimited), GoalStatus::Failed);
+        assert_eq!(project_status(S::Complete), GoalStatus::Completed);
+    }
+
+    #[test]
+    fn goal_wire_shape_is_camel_case() {
+        let g = goal::Goal {
+            thread_id: "t1".into(),
+            goal_id: "g1".into(),
+            objective: "Fix the login bug\nmore context".into(),
+            status: goal::GoalStatus::Active,
+            token_budget: Some(1000),
+            tokens_used: 100,
+            time_used_seconds: 42,
+            verify_command: None,
+            status_reason: None,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        };
+        let projected = project_goal(&g);
+        let v = serde_json::to_value(&projected).unwrap();
+        assert!(v.get("sessionId").is_some() || v.get("sessionIds").is_some());
+        assert!(v["created_at"].is_null() || v.get("created_at").is_none());
+        assert_eq!(v["createdAt"], "1970-01-01T00:00:00.000Z");
+        assert_eq!(v["title"], "Fix the login bug");
+        assert_eq!(v["metadata"]["threadId"], "t1");
+        assert_eq!(v["metadata"]["tokenBudget"], 1000);
+        assert!(v.get("steps").is_none(), "list 投影不带 steps");
     }
 }

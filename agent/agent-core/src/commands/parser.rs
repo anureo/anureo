@@ -1,6 +1,6 @@
 //! Slash command parser: user text -> Option<Command>.
 
-use crate::commands::command::Command;
+use crate::commands::command::{Command, GoalSubcommand};
 
 pub fn parse(text: &str) -> Option<Command> {
     let trimmed = text.trim();
@@ -38,11 +38,59 @@ pub fn parse(text: &str) -> Option<Command> {
             Some(Command::Model { model_id: id })
         }
         "/goal" => {
-            let description = trimmed
+            let rest = trimmed
                 .strip_prefix("/goal")
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty());
-            description.map(|desc| Command::Goal { description: desc })
+                .map(|s| s.trim())
+                .unwrap_or("");
+            if rest.is_empty() {
+                // Bare `/goal` reads as "show me the current goal".
+                Some(Command::Goal {
+                    subcommand: GoalSubcommand::Show,
+                })
+            } else {
+                let (head, tail) = match rest.split_once(' ') {
+                    Some((head, tail)) => (head, tail.trim()),
+                    None => (rest, ""),
+                };
+                match head {
+                    "set" | "edit" => {
+                        if tail.is_empty() {
+                            // `/goal set` / `/goal edit` without a description
+                            // is malformed; drop to normal message handling.
+                            None
+                        } else {
+                            let subcommand = if head == "set" {
+                                GoalSubcommand::Set {
+                                    description: tail.to_string(),
+                                }
+                            } else {
+                                GoalSubcommand::Edit {
+                                    description: tail.to_string(),
+                                }
+                            };
+                            Some(Command::Goal { subcommand })
+                        }
+                    }
+                    "show" => Some(Command::Goal {
+                        subcommand: GoalSubcommand::Show,
+                    }),
+                    "pause" => Some(Command::Goal {
+                        subcommand: GoalSubcommand::Pause,
+                    }),
+                    "resume" => Some(Command::Goal {
+                        subcommand: GoalSubcommand::Resume,
+                    }),
+                    "clear" => Some(Command::Goal {
+                        subcommand: GoalSubcommand::Clear,
+                    }),
+                    // Compatibility: bare `/goal <description>` still arms a goal.
+                    _ => Some(Command::Goal {
+                        subcommand: GoalSubcommand::Set {
+                            description: rest.to_string(),
+                        },
+                    }),
+                }
+            }
         }
         "/review-skill" | "/review-skills" | "/rs" => {
             let scope = trimmed
@@ -136,25 +184,89 @@ mod tests {
     }
 
     #[test]
-    fn parse_goal_with_description() {
+    fn parse_goal_subcommands() {
         assert_eq!(
-            parse("/goal fix the login bug"),
+            parse("/goal set fix the login bug"),
             Some(Command::Goal {
-                description: "fix the login bug".into()
+                subcommand: GoalSubcommand::Set {
+                    description: "fix the login bug".into()
+                }
             })
         );
         assert_eq!(
-            parse("/goal  migrate to Pydantic v2  "),
+            parse("/goal edit  migrate to Pydantic v2  "),
             Some(Command::Goal {
-                description: "migrate to Pydantic v2".into()
+                subcommand: GoalSubcommand::Edit {
+                    description: "migrate to Pydantic v2".into()
+                }
+            })
+        );
+        assert_eq!(
+            parse("/goal show"),
+            Some(Command::Goal {
+                subcommand: GoalSubcommand::Show
+            })
+        );
+        assert_eq!(
+            parse("/goal pause"),
+            Some(Command::Goal {
+                subcommand: GoalSubcommand::Pause
+            })
+        );
+        assert_eq!(
+            parse("/goal resume"),
+            Some(Command::Goal {
+                subcommand: GoalSubcommand::Resume
+            })
+        );
+        assert_eq!(
+            parse("/goal clear"),
+            Some(Command::Goal {
+                subcommand: GoalSubcommand::Clear
             })
         );
     }
 
     #[test]
-    fn parse_goal_without_description_returns_none() {
-        assert_eq!(parse("/goal"), None);
-        assert_eq!(parse("/goal   "), None);
+    fn parse_goal_bare_compatibility() {
+        // Bare `/goal` → Show (previously returned None).
+        assert_eq!(
+            parse("/goal"),
+            Some(Command::Goal {
+                subcommand: GoalSubcommand::Show
+            })
+        );
+        assert_eq!(
+            parse("  /goal   "),
+            Some(Command::Goal {
+                subcommand: GoalSubcommand::Show
+            })
+        );
+        // Bare `/goal <description>` (no subcommand keyword) → Set.
+        assert_eq!(
+            parse("/goal fix the login bug"),
+            Some(Command::Goal {
+                subcommand: GoalSubcommand::Set {
+                    description: "fix the login bug".into()
+                }
+            })
+        );
+        // A description that merely starts with a keyword-like word stays Set.
+        assert_eq!(
+            parse("/goal settle the migration"),
+            Some(Command::Goal {
+                subcommand: GoalSubcommand::Set {
+                    description: "settle the migration".into()
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn parse_goal_set_edit_require_description() {
+        assert_eq!(parse("/goal set"), None);
+        assert_eq!(parse("/goal edit"), None);
+        assert_eq!(parse("/goal set   "), None);
     }
 
     #[test]

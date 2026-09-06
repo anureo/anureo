@@ -114,6 +114,10 @@ impl AcpRuntime {
             Some(updates_tx.clone()),
             db_path.into(),
         )?);
+        // Goal wiring (P5): hand the agent a weak self-reference so goal
+        // runtime drivers can route idle continuation prompts back through
+        // `prompt`. Must run immediately after the `Arc` wrap.
+        agent.register_goal_self();
         let session_update_log = Arc::new(SessionUpdateLog::new(
             connections.clone(),
             bindings.clone(),
@@ -122,6 +126,9 @@ impl AcpRuntime {
         extension_handles.session_history.bind(&agent);
         let session_list_handler = extension_handles.session_list.clone();
         session_list_handler.bind(&agent);
+        // P5b：goal 扩展后端接线（session→thread 解析 + runtime 钩子 +
+        // goal/changed|updated 广播）。
+        extension_handles.goal.bind(&agent);
         global_bus.bind_registry(connections.clone());
         let notification_router = Arc::new(NotificationRouter::new(
             bindings.clone(),

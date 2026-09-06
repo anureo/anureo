@@ -14,7 +14,7 @@ pub enum Command {
         model_id: String,
     },
     Goal {
-        description: String,
+        subcommand: GoalSubcommand,
     },
     /// Trigger a background review of the current session to extract skills and memory.
     ReviewSkill {
@@ -48,6 +48,27 @@ pub enum Command {
     },
     /// `/exit` — leave the REPL cleanly.
     Exit,
+}
+
+/// `/goal` subcommands (goal-codex-alignment P5 / R3): user-facing goal
+/// lifecycle control over the session-integrated goal runtime.
+///
+/// Parser compatibility: bare `/goal <description>` maps to
+/// [`GoalSubcommand::Set`]; bare `/goal` maps to [`GoalSubcommand::Show`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GoalSubcommand {
+    /// `/goal set <description>` — arm (or replace) the thread goal.
+    Set { description: String },
+    /// `/goal show` — render the current goal snapshot.
+    Show,
+    /// `/goal pause` — active → paused.
+    Pause,
+    /// `/goal resume` — paused/blocked/usage_limited → active.
+    Resume,
+    /// `/goal clear` — drop the goal regardless of state.
+    Clear,
+    /// `/goal edit <description>` — replace the objective on an unfinished goal.
+    Edit { description: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
