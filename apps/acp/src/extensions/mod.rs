@@ -193,6 +193,9 @@ pub trait ExtensionHandler: Send + Sync {
 
 pub struct ExtensionRegistry {
     handlers: HashMap<String, Arc<dyn ExtensionHandler>>,
+    /// 中立方法全名 → 规范扩展方法全名（如 `_session/goal` →
+    /// `_anureo.dev/goal/session_control`），见 [`Self::register_alias`]。
+    aliases: HashMap<String, String>,
     capabilities: RwLock<Value>,
 }
 
@@ -200,6 +203,7 @@ impl ExtensionRegistry {
     pub fn new() -> Self {
         Self {
             handlers: HashMap::new(),
+            aliases: HashMap::new(),
             capabilities: RwLock::new(Value::Object(Default::default())),
         }
     }
@@ -208,6 +212,15 @@ impl ExtensionRegistry {
         let _caps = handler.capabilities();
         tracing::info!(domain, "Registered extension handler");
         self.handlers.insert(domain.to_string(), handler);
+    }
+
+    /// Register a neutral (non-`_anureo.dev/`) method alias that routes to a
+    /// canonical extension method (P8：中立 goal 扩展 `_session/goal` →
+    /// `_anureo.dev/goal/session_control`）。Alias 不出现在能力快照中
+    /// （中立面经 initialize `_meta.goal` 单独广播）。
+    pub fn register_alias(&mut self, alias: &str, canonical: &str) {
+        tracing::info!(alias, canonical, "Registered extension method alias");
+        self.aliases.insert(alias.to_string(), canonical.to_string());
     }
 
     pub fn build_capability_snapshot(&self) -> Value {
@@ -237,6 +250,15 @@ impl ExtensionRegistry {
         params: Value,
         ctx: &ExtensionContext,
     ) -> Result<Value, ExtensionError> {
+        // 中立别名（如 `_session/goal`）先解析为规范扩展方法再走前缀路由。
+        let canonical;
+        let method = match self.aliases.get(method) {
+            Some(target) => {
+                canonical = target.clone();
+                canonical.as_str()
+            }
+            None => method,
+        };
         let stripped = method
             .strip_prefix(EXTENSION_PREFIX)
             .ok_or_else(|| ExtensionError {

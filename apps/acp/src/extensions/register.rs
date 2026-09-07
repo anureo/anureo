@@ -47,6 +47,10 @@ pub fn register_default_extensions(
     };
     let goal_handler = Arc::new(goal_handler);
     registry.register("goal", goal_handler.clone());
+    // P8：中立 goal 控制方法（alignment 附录 C）——`_session/goal` 路由到
+    // goal 域 session_control；能力广告走 initialize `_meta.goal`（registry
+    // 别名不进能力快照）。
+    registry.register_alias("_session/goal", "_anureo.dev/goal/session_control");
     registry.register(
         "scheduled-task",
         Arc::new(super::scheduled_task::ScheduledTaskHandler),

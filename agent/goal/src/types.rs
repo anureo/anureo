@@ -118,6 +118,12 @@ pub struct Goal {
     pub status_reason: Option<String>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
+    /// P7 objective 文件化：DB `objective` 列存 `@file:<name>` 标记，
+    /// 文本在 `<goals_dir>/<name>`（非持久标志，由 goal_from_row 按前缀派生；
+    /// serde skip——投影/序列化面用 [`crate::objective_file] 判定）。文本消费方
+    /// （steering/REPL/legacy get）需经 `resolve_objective` 取全文。
+    #[serde(skip)]
+    pub objective_file: bool,
 }
 
 impl Goal {
@@ -127,7 +133,8 @@ impl Goal {
     }
 }
 
-/// objective 长度上限（超过走 Phase 7 objective 文件化，本 crate 拒绝）。
+/// objective 内联长度上限（字节，与 Codex 对齐）；超过走 P7 objective 文件化
+/// （DB 存 `@file:` 标记，文本落 `<goals_dir>/<thread>.md`）。
 pub const MAX_OBJECTIVE_LEN: usize = 4000;
 
 /// `max_goal_token_budget` 护栏（盲审 A1：全仓此前不存在）。
@@ -308,6 +315,7 @@ mod tests {
             status_reason: None,
             created_at_ms: 0,
             updated_at_ms: 0,
+            objective_file: false,
         }
     }
 }

@@ -7,6 +7,10 @@
 //! 依赖方向约束：`apps/* → goal → task-core`；本 crate **不依赖 agent-core**。
 
 pub mod accounting;
+#[cfg(feature = "otel")]
+pub mod otel;
+pub mod metrics;
+pub mod objective_file;
 pub mod runtime;
 pub mod service;
 pub mod steering;
@@ -15,6 +19,8 @@ pub mod tools;
 pub mod types;
 
 pub use accounting::{goal_token_delta, GoalAccounting, TokenTotals, LOCK_TIMEOUT};
+pub use metrics::{GoalMetrics, GoalMetricsSnapshot};
+pub use objective_file::{objective_exceeds_limit, OBJECTIVE_INLINE_LIMIT_CHARS};
 pub use runtime::{GoalRuntimeHandle, TurnDriver};
 pub use service::{GoalService, GoalServiceError, GoalStateLock};
 pub use steering::{budget_limit, continuation, escape_xml_text, objective_updated};

@@ -343,11 +343,14 @@ impl Tool for UpdateGoalTool {
                         format!("Goal {} is not in active state; cannot mark blocked.", goal.goal_id),
                     )),
                     Err(e) => Err(ToolSourceError::ToolError(e.to_string())),
-                    Ok(g) => Ok(ToolCallContent::text(format!(
-                        "Goal {} marked blocked. Surface the blocker to the user clearly; \
-                         do not keep retrying the same failing approach.",
-                        g.goal_id
-                    ))),
+                    Ok(g) => {
+                        crate::metrics::global().record_blocked(&thread);
+                        Ok(ToolCallContent::text(format!(
+                            "Goal {} marked blocked. Surface the blocker to the user clearly; \
+                             do not keep retrying the same failing approach.",
+                            g.goal_id
+                        )))
+                    }
                 }
             }
             "complete" => {
@@ -376,6 +379,7 @@ impl Tool for UpdateGoalTool {
                     )),
                     Err(e) => Err(ToolSourceError::ToolError(e.to_string())),
                     Ok(g) => {
+                        crate::metrics::global().record_complete(&thread);
                         let mut text = format!("Goal {} marked complete.", g.goal_id);
                         if !report.is_empty() {
                             text.push_str(&format!("\nCompletion report:\n{report}"));

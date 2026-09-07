@@ -81,16 +81,31 @@ pub(crate) async fn run_goal_subcommand(
     let service = runtime.service();
     match subcommand {
         GoalSubcommand::Set { description } => {
-            match service.set_with_verify(thread_id, &description, None, None).await {
-                Ok(goal) => {
-                    runtime.note_goal_armed(&goal.goal_id).await;
+            match service
+                .set_with_verify_outcome(thread_id, &description, None, None)
+                .await
+            {
+                Ok(outcome) => {
+                    runtime.note_goal_armed(&outcome.goal.goal_id).await;
+                    if outcome.replaced_existing {
+                        // §6.6 快照替换：用户刚介入，idle 续跑推迟到下一 turn 边界。
+                        if let Err(e) = runtime.defer_continuation().await {
+                            tracing::warn!(error = %e, "/goal set: defer after replace failed");
+                        }
+                    }
+                    // 文件化 goal 还原全文用于回执展示。
+                    let goal = service.resolve_objective(outcome.goal).await;
                     format!("Goal armed: {}", goal.objective)
                 }
                 Err(e) => format!("Goal set failed: {e}"),
             }
         }
         GoalSubcommand::Show => match service.show(thread_id).await {
-            Ok(Some(goal)) => goal::render_goal_snapshot(&goal),
+            Ok(Some(goal)) => {
+                // P7 文件化：还原全文展示（REPL 可读全文）。
+                let goal = service.resolve_objective(goal).await;
+                goal::render_goal_snapshot(&goal)
+            }
             Ok(None) => "No goal set.".to_string(),
             Err(e) => format!("Goal show failed: {e}"),
         },
@@ -126,6 +141,7 @@ pub(crate) async fn run_goal_subcommand(
                 // Objective changes are picked up by the runtime's
                 // turn-boundary refresh (`on_turn_start` reloads the store
                 // snapshot), so no in-memory hook is needed here.
+                let goal = service.resolve_objective(goal).await;
                 format!("Goal objective updated: {}", goal.objective)
             }
             Err(e) => format!("Goal edit failed: {e}"),

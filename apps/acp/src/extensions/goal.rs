@@ -4,6 +4,18 @@
 //! 旧的 goals.json 文件后端与重启恢复预约机制已随 P5b 退役（遗留 detached
 //! runner 所需的 JSON 存取搬至 `crate::goal_runner`，随 P7 一并移除）。
 //!
+//! ## P8：中立 goal 扩展对齐（alignment 附录 C）
+//!
+//! - 本域六方法（`_anureo.dev/goal/*`）降级为**不广播的 legacy alias**
+//!   （对标 codex-acp 对 `_codex/session/goal_control` 的同款策略）：保留可用、
+//!   不进任何能力广告；中立面经 initialize `_meta.goal` 广播。
+//! - 中立控制方法 `_session/goal`（注册为别名 → 本域 `session_control`）：
+//!   `{sessionId, action ∈ set|pause|resume|clear}`；响应携带中立快照
+//!   （`{goal: {...}}`；clear 为 `{cleared: bool}`）。
+//! - 快照发布：goal 变更后经 `SessionInfoUpdate._meta.goal` 携带全量快照
+//!   （清除时 `goal: null`）；与 `/goal` 命令路径共用
+//!   [`publish_neutral_goal_meta`]。
+//!
 //! ## 兼容层（FE 在外部仓依赖，见 docs/acp-spec/extensions/14-*.md）
 //!
 //! - 方法名/参数/响应形状保持旧 API（`start/pause/resume/cancel/get/list`）；
@@ -17,6 +29,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
 
+use agent_client_protocol::schema::v1::Meta;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -25,6 +38,7 @@ use serde_json::{json, Value};
 use crate::agent::AnureoAcpAgent;
 use crate::connection_registry::ConnectionRegistry;
 use crate::extensions::{auth, ExtensionContext, ExtensionError, ExtensionHandler};
+use crate::stream_bridge::{SessionNotifier, SessionUpdateEnvelope};
 
 // ---------------------------------------------------------------------------
 // Wire DTOs（旧 API 形状，保持 FE 兼容；serde 形状与 P5b 前逐字段一致）
@@ -236,6 +250,83 @@ fn internal_error(msg: impl Into<String>) -> ExtensionError {
 }
 
 // ---------------------------------------------------------------------------
+// 中立 goal 面（P8，alignment 附录 C）：_session/goal + _meta.goal 快照
+// ---------------------------------------------------------------------------
+
+/// 中立控制方法名（initialize `_meta.goal.controlMethod` 同名）。
+pub const NEUTRAL_GOAL_CONTROL_METHOD: &str = "_session/goal";
+
+/// `_meta.goal.actions` 广播子集（本实现四项全支持）。
+pub const NEUTRAL_GOAL_ACTIONS: [&str; 4] = ["set", "pause", "resume", "clear"];
+
+/// initialize 响应 `_meta.goal` 能力块（静态广告，不依赖 session）。
+pub fn neutral_goal_capability() -> Value {
+    json!({
+        "version": 1,
+        "controlMethod": NEUTRAL_GOAL_CONTROL_METHOD,
+        "actions": NEUTRAL_GOAL_ACTIONS,
+    })
+}
+
+/// 内部 6 态 → 中立 5 态（附录 C.2）：`usage_limited` 与 `budget_limited`
+/// 归并为 `limited`（真值经可选 `statusReason` 透出）；其余直译。
+fn neutral_status(status: goal::GoalStatus) -> &'static str {
+    match status {
+        goal::GoalStatus::Active => "active",
+        goal::GoalStatus::Paused => "paused",
+        goal::GoalStatus::Blocked => "blocked",
+        goal::GoalStatus::UsageLimited | goal::GoalStatus::BudgetLimited => "limited",
+        goal::GoalStatus::Complete => "complete",
+    }
+}
+
+/// 中立快照（camelCase，Unix **毫秒**；不暴露 goalId）。
+/// 可选字段 `iterationCount`、`lastContinuationReason` 暂不填
+/// （TODO(P8+)：runtime 侧迭代计数与续跑原因落库后补）。
+///
+/// P7 objective 文件化：DB 行存 `@file:` 标记时投影 `objectiveFile: true`
+/// 代替全文（FE 按 `<anureo_home>/goals/<sessionId>.md` 另拉）。
+fn neutral_goal_snapshot(goal: &goal::Goal) -> Value {
+    let mut snapshot = json!({
+        "status": neutral_status(goal.status),
+        "createdAt": goal.created_at_ms,
+        "updatedAt": goal.updated_at_ms,
+        "tokenBudget": goal.token_budget,
+        "tokensUsed": goal.tokens_used,
+        "timeUsedSeconds": goal.time_used_seconds,
+        "controlMethod": NEUTRAL_GOAL_CONTROL_METHOD,
+    });
+    if goal::objective_file::is_file_backed(&goal.objective) {
+        snapshot["objectiveFile"] = json!(true);
+    } else {
+        snapshot["objective"] = json!(goal.objective);
+    }
+    // 可选扩展字段（规范允许）：真值透出，供 FE 区分 limited 的两种成因。
+    if let Some(reason) = &goal.status_reason {
+        snapshot["statusReason"] = json!(reason);
+    }
+    snapshot
+}
+
+/// 中立快照发布（与 `/goal` 命令路径、`_session/goal` 控制路径共用）：
+/// 经 `SessionInfoUpdate._meta.goal` 携带全量快照；`goal: None` 发
+/// `_meta.goal: null`（清除语义，附录 C.1）。无 update 通道时 no-op。
+pub fn publish_neutral_goal_meta(
+    tx: Option<&tokio::sync::mpsc::UnboundedSender<SessionUpdateEnvelope>>,
+    session_id: &agent_client_protocol::schema::v1::SessionId,
+    goal: Option<&goal::Goal>,
+) {
+    let Some(tx) = tx else { return };
+    let mut meta = Meta::new();
+    meta.insert(
+        "goal".to_string(),
+        goal.map(neutral_goal_snapshot)
+            .unwrap_or(Value::Null),
+    );
+    SessionNotifier::new(tx.clone(), session_id.clone()).try_send_session_meta(meta);
+}
+
+// ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 
@@ -368,6 +459,130 @@ impl GoalHandler {
         });
     }
 
+    // ── _session/goal（P8 中立控制面，经 registry 别名路由）────────────
+
+    /// `_session/goal`：`{sessionId, action}`；action ∈ set|pause|resume|clear。
+    ///
+    /// 与 `/goal` 命令路径共用后端（GoalService + runtime 钩子）与
+    /// [`publish_neutral_goal_meta`] 发布；响应始终携带中立快照
+    /// （clear 为 `{cleared: bool}`）。
+    async fn handle_session_control(
+        &self,
+        params: Value,
+        ctx: &ExtensionContext,
+    ) -> Result<Value, ExtensionError> {
+        let session_id = Self::require_param_str(&params, "sessionId")?;
+        let action = Self::require_param_str(&params, "action")?;
+        // 未知/未广播 action 拒绝（客户端不得推断未广播的能力，附录 C.1）。
+        if !NEUTRAL_GOAL_ACTIONS.contains(&action.as_str()) {
+            return Err(ExtensionError::invalid_params(format!(
+                "unknown or unsupported goal action '{action}'; supported: {NEUTRAL_GOAL_ACTIONS:?}"
+            )));
+        }
+        auth::check_server_policy(ctx, "goal", &format!("session_control_{action}"))?;
+
+        let thread_id = self.resolve_thread_key(&session_id);
+        let (service, runtime) = self.open(&thread_id).await?;
+        let session = GoalSession {
+            service,
+            runtime,
+        };
+
+        match action.as_str() {
+            "set" => {
+                let objective = Self::require_param_str(&params, "objective")?;
+                let token_budget = params
+                    .get("tokenBudget")
+                    .and_then(|v| v.as_i64())
+                    .filter(|b| *b > 0);
+                let outcome = session
+                    .service
+                    .set_with_verify_outcome(&thread_id, &objective, token_budget, None)
+                    .await
+                    .map_err(|e| Self::map_service_error("set", e))?;
+                session.after_start(&outcome.goal.goal_id).await;
+                if outcome.replaced_existing {
+                    // §6.6 快照替换：推迟 idle 续跑到下一 turn 边界。
+                    session.after_replace().await;
+                }
+                self.bump_generation();
+                self.publish_via_connections(Some(&outcome.goal));
+                self.publish_neutral(&session_id, Some(&outcome.goal));
+                Ok(json!({ "goal": neutral_goal_snapshot(&outcome.goal) }))
+            }
+            "pause" => {
+                let paused = session
+                    .service
+                    .pause(&thread_id)
+                    .await
+                    .map_err(|e| Self::map_service_error("pause", e))?;
+                session.after_pause().await;
+                self.bump_generation();
+                self.publish_via_connections(Some(&paused));
+                self.publish_neutral(&session_id, Some(&paused));
+                Ok(json!({ "goal": neutral_goal_snapshot(&paused) }))
+            }
+            "resume" => {
+                let resumed = session
+                    .service
+                    .resume(&thread_id)
+                    .await
+                    .map_err(|e| Self::map_service_error("resume", e))?;
+                session.after_resume().await;
+                self.bump_generation();
+                self.publish_via_connections(Some(&resumed));
+                self.publish_neutral(&session_id, Some(&resumed));
+                Ok(json!({ "goal": neutral_goal_snapshot(&resumed) }))
+            }
+            "clear" => {
+                let cleared = session
+                    .service
+                    .clear(&thread_id)
+                    .await
+                    .map_err(|e| Self::map_service_error("clear", e))?;
+                session.after_clear().await;
+                self.bump_generation();
+                self.publish_via_connections(None);
+                self.publish_neutral(&session_id, None);
+                Ok(json!({ "cleared": cleared }))
+            }
+            _ => unreachable!("validated above"),
+        }
+    }
+
+    /// 中立快照经 `session_info_update._meta.goal` 发布（P8 `_session/goal`
+    /// 控制面；与 `/goal` 命令路径、turn 钩子共用同一发布函数）。仅
+    /// Agent 后端可达会话级 update 通道；Store/Unbound（嵌入式/测试）为 no-op。
+    fn publish_neutral(&self, session_id: &str, goal: Option<&goal::Goal>) {
+        let GoalBackend::Agent(weak) = self.backend() else {
+            return;
+        };
+        let Some(agent) = weak.upgrade() else {
+            return;
+        };
+        agent.publish_goal_snapshot(
+            &agent_client_protocol::schema::v1::SessionId::new(session_id.to_string()),
+            goal,
+        );
+    }
+
+    /// 中立快照广播（`_anureo.dev/goal/updated` 携带中立形状；`goal: null` 表清除）。
+    /// 全连接广播（goal/updated 通知本身不带 session 定向）。
+    fn publish_via_connections(&self, goal: Option<&goal::Goal>) {
+        let Some(connections) = self.connections.clone() else {
+            return;
+        };
+        let params = match goal {
+            Some(g) => neutral_goal_snapshot(g),
+            None => Value::Null,
+        };
+        tokio::spawn(async move {
+            connections
+                .broadcast_extension_notification("_anureo.dev/goal/updated", params)
+                .await;
+        });
+    }
+
     fn require_param_str(params: &Value, key: &str) -> Result<String, ExtensionError> {
         match params.get(key) {
             Some(Value::String(s)) if !s.trim().is_empty() => Ok(s.trim().to_string()),
@@ -460,6 +675,17 @@ impl GoalSession {
             rt.on_goal_replaced(None, goal::TokenTotals::default()).await;
         }
     }
+
+    /// 快照替换 deferral（§6.6「goal 快照替换」）：set 覆盖既有 goal 后写
+    /// deferral——用户刚介入，idle 续跑推迟到下一次 turn 边界
+    /// （`on_turn_start` 清除）。无 runtime（测试/嵌入式）为 no-op。
+    async fn after_replace(&self) {
+        if let Some(rt) = &self.runtime {
+            if let Err(e) = rt.defer_continuation().await {
+                tracing::warn!(error = %e, "goal extension: defer after snapshot replace failed");
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -477,20 +703,17 @@ impl ExtensionHandler for GoalHandler {
             "pause" => self.handle_pause(params, ctx).await,
             "resume" => self.handle_resume(params, ctx).await,
             "cancel" => self.handle_cancel(params, ctx).await,
+            // P8：中立控制面（经 registry 别名 `_session/goal` 路由进来）。
+            "session_control" => self.handle_session_control(params, ctx).await,
             _ => Err(ExtensionError::method_not_found()),
         }
     }
 
     fn capabilities(&self) -> Value {
-        // 旧扁平形状（FE 依赖），保持逐字段一致。
-        json!({
-            "list": true,
-            "get": true,
-            "start": true,
-            "pause": true,
-            "resume": true,
-            "cancel": true,
-        })
+        // P8：本域降级为不广播的 legacy alias（对标 codex-acp 对
+        // `_codex/session/goal_control` 的做法）：能力快照中不再宣传六方法，
+        // 中立面经 initialize `_meta.goal` 单独广播。方法本身保留可用。
+        json!({})
     }
 }
 
@@ -524,11 +747,19 @@ impl GoalHandler {
             .list_all()
             .await
             .map_err(|e| internal_error(format!("goal list failed: {e}")))?;
-        let filtered: Vec<goal::Goal> = all
+        let mut filtered: Vec<goal::Goal> = all
             .into_iter()
             .filter(|(_, g)| allowed.as_ref().is_none_or(|a| a.contains(&g.status)))
             .map(|(_, g)| g)
             .collect();
+        // P7：文件化 goal 还原全文（旧 face description 为全文）。
+        filtered = {
+            let mut resolved = Vec::with_capacity(filtered.len());
+            for g in filtered {
+                resolved.push(store.resolve_objective(g).await);
+            }
+            resolved
+        };
 
         let total = filtered.len();
         let end = (cursor_offset + limit).min(total);
@@ -565,6 +796,8 @@ impl GoalHandler {
             .await
             .map_err(|e| internal_error(format!("goal get failed: {e}")))?
             .ok_or_else(|| ExtensionError::not_found(format!("goal '{id}' not found")))?;
+        // P7：文件化 goal 还原全文。
+        let goal = store.resolve_objective(goal).await;
         let mut projected =
             serde_json::to_value(project_goal(&goal)).unwrap_or(Value::Null);
         // 旧 get 响应含 steps（新后端无 step 跟踪，恒空数组）。
@@ -639,19 +872,24 @@ impl GoalHandler {
 
         let created = session
             .service
-            .set_with_verify(&thread_id, &objective, None, None)
+            .set_with_verify_outcome(&thread_id, &objective, None, None)
             .await
             .map_err(|e| Self::map_service_error("start", e))?;
-        session.after_start(&created.goal_id).await;
+        session.after_start(&created.goal.goal_id).await;
+        if created.replaced_existing {
+            session.after_replace().await;
+        }
         self.bump_generation();
         if let Some(key) = &idempotency_key {
             self.idempotency
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .insert(key.clone(), created.goal_id.clone());
+                .insert(key.clone(), created.goal.goal_id.clone());
         }
 
-        let projected = project_goal(&created);
+        // P7：文件化 goal 还原全文（旧 face description 为全文）。
+        let created_goal = session.service.resolve_objective(created.goal).await;
+        let projected = project_goal(&created_goal);
         let notification =
             build_notification(&projected.id, GoalChangeType::Started, projected.status, None);
         let response = json!({
@@ -713,6 +951,8 @@ impl GoalHandler {
         session.after_pause().await;
         self.bump_generation();
 
+        // P7：文件化 goal 还原全文。
+        let paused = session.service.resolve_objective(paused).await;
         let projected = project_goal(&paused);
         let notification =
             build_notification(&id, GoalChangeType::Paused, projected.status, None);
@@ -746,6 +986,8 @@ impl GoalHandler {
         session.after_resume().await;
         self.bump_generation();
 
+        // P7：文件化 goal 还原全文。
+        let resumed = session.service.resolve_objective(resumed).await;
         let projected = project_goal(&resumed);
         let notification =
             build_notification(&id, GoalChangeType::Resumed, projected.status, None);
@@ -777,6 +1019,8 @@ impl GoalHandler {
         if existing.status.is_terminal() {
             let notification =
                 build_notification(&id, GoalChangeType::Cancelled, GoalStatus::Cancelled, None);
+            // P7：文件化 goal 还原全文。
+            let existing = session.service.resolve_objective(existing).await;
             return Ok(json!({
                 "id": id,
                 "status": "cancelled",
@@ -786,7 +1030,8 @@ impl GoalHandler {
             }));
         }
 
-        // 广播用快照必须在 clear 前取。
+        // 广播用快照必须在 clear 前取；P7 文件化 goal 还原全文。
+        let existing = session.service.resolve_objective(existing).await;
         let mut snapshot = project_goal(&existing);
         if let Some(r) = reason {
             let mut meta = snapshot.metadata.take().unwrap_or(json!({}));
@@ -1251,12 +1496,373 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn capabilities_keep_legacy_flat_shape() {
+    async fn capabilities_no_longer_advertises_legacy_methods() {
+        // P8：旧六方法降级为不广播的 legacy alias（能力快照为空），
+        // 但方法本身仍可用（下方 legacy_alias_still_works 回归）。
         let handler = GoalHandler::new();
         let caps = handler.capabilities();
-        for m in ["list", "get", "start", "pause", "resume", "cancel"] {
-            assert_eq!(caps[m], true, "capability {m}");
+        assert!(
+            caps.as_object().is_some_and(|o| o.is_empty()),
+            "legacy goal methods must not be advertised: {caps}"
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_alias_still_works() {
+        // P8 回归：不广播 ≠ 不可用。
+        let (handler, dir) = make_handler().await;
+        let ctx = make_ctx(dir.path().to_path_buf(), Some("s"));
+        let started = start_goal(&handler, &ctx, "s", "legacy").await;
+        assert_eq!(started["status"], "active");
+    }
+
+    #[test]
+    fn neutral_capability_shape() {
+        let caps = neutral_goal_capability();
+        assert_eq!(caps["version"], 1);
+        assert_eq!(caps["controlMethod"], "_session/goal");
+        assert_eq!(
+            caps["actions"],
+            json!(["set", "pause", "resume", "clear"])
+        );
+    }
+
+    #[tokio::test]
+    async fn session_control_set_returns_neutral_snapshot() {
+        let (handler, dir) = make_handler().await;
+        let ctx = make_ctx(dir.path().to_path_buf(), Some("s"));
+        let result = handler
+            .handle(
+                "session_control",
+                json!({"sessionId": "s", "action": "set", "objective": "fix login", "tokenBudget": 5000}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let goal = &result["goal"];
+        assert_eq!(goal["status"], "active");
+        assert_eq!(goal["objective"], "fix login");
+        assert_eq!(goal["tokenBudget"], 5000);
+        assert_eq!(goal["controlMethod"], "_session/goal");
+        assert!(goal["createdAt"].as_i64().unwrap() > 1_000_000_000_000, "Unix 毫秒");
+        assert!(goal["updatedAt"].as_i64().unwrap() > 1_000_000_000_000, "Unix 毫秒");
+        assert!(goal.get("goalId").is_none(), "不暴露 goalId");
+        assert!(goal.get("id").is_none(), "不暴露 id");
+    }
+
+    #[tokio::test]
+    async fn session_control_set_rejects_empty_objective() {
+        let (handler, dir) = make_handler().await;
+        let ctx = make_ctx(dir.path().to_path_buf(), Some("s"));
+        let err = handler
+            .handle(
+                "session_control",
+                json!({"sessionId": "s", "action": "set", "objective": "  "}),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, -32602);
+        let err = handler
+            .handle(
+                "session_control",
+                json!({"sessionId": "s", "action": "set"}),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, -32602);
+    }
+
+    #[tokio::test]
+    async fn session_control_pause_resume_clear_cycle() {
+        let (handler, dir) = make_handler().await;
+        let ctx = make_ctx(dir.path().to_path_buf(), Some("s"));
+        handler
+            .handle(
+                "session_control",
+                json!({"sessionId": "s", "action": "set", "objective": "work"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let paused = handler
+            .handle(
+                "session_control",
+                json!({"sessionId": "s", "action": "pause"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(paused["goal"]["status"], "paused");
+
+        let resumed = handler
+            .handle(
+                "session_control",
+                json!({"sessionId": "s", "action": "resume"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(resumed["goal"]["status"], "active");
+
+        let cleared = handler
+            .handle(
+                "session_control",
+                json!({"sessionId": "s", "action": "clear"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(cleared["cleared"], true);
+
+        // clear 后 set 再 clear：第二次 clear 对无 goal 报 not found 语义？——
+        // 中立面 clear 幂等语义：cleared:false（服务端 clear 返回 bool）。
+        handler
+            .handle(
+                "session_control",
+                json!({"sessionId": "s", "action": "set", "objective": "again"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let cleared_again = handler
+            .handle(
+                "session_control",
+                json!({"sessionId": "s", "action": "clear"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(cleared_again["cleared"], true);
+    }
+
+    #[tokio::test]
+    async fn session_control_rejects_unknown_action() {
+        let (handler, dir) = make_handler().await;
+        let ctx = make_ctx(dir.path().to_path_buf(), Some("s"));
+        for bad in ["edit", "show", "cancel", "frobnicate"] {
+            let err = handler
+                .handle(
+                    "session_control",
+                    json!({"sessionId": "s", "action": bad}),
+                    &ctx,
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(err.code, -32602, "action={bad}");
         }
+    }
+
+    #[tokio::test]
+    async fn session_control_requires_session_id() {
+        let (handler, dir) = make_handler().await;
+        let ctx = make_ctx(dir.path().to_path_buf(), None);
+        let err = handler
+            .handle(
+                "session_control",
+                json!({"action": "set", "objective": "x"}),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, -32602);
+    }
+
+    #[tokio::test]
+    async fn session_control_maps_limited_status() {
+        // usage_limited/budget_limited → limited（附录 C.2 归并）。
+        let (handler, dir) = make_handler().await;
+        let ctx = make_ctx(dir.path().to_path_buf(), Some("s"));
+        handler
+            .handle(
+                "session_control",
+                json!({"sessionId": "s", "action": "set", "objective": "work"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        // 直接经 store 推到 usage_limited。
+        {
+            let store = handler.store_for_read().await.unwrap();
+            let (thread, g) = store
+                .read("s")
+                .await
+                .unwrap()
+                .map(|goal| ("s".to_string(), goal))
+                .unwrap();
+            store
+                .mark_usage_limited(&thread, &g.goal_id, "provider quota")
+                .await
+                .unwrap();
+        }
+        let paused = handler
+            .handle(
+                "session_control",
+                json!({"sessionId": "s", "action": "pause"}),
+                &ctx,
+            )
+            .await;
+        // usage_limited 不可 pause（invalid_params）——用 resume 恢复后验证投影。
+        assert!(paused.is_err());
+        let resumed = handler
+            .handle(
+                "session_control",
+                json!({"sessionId": "s", "action": "resume"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(resumed["goal"]["status"], "active");
+
+        // 直接验证 neutral_status 映射矩阵（快照层）。
+        assert_eq!(neutral_status(goal::GoalStatus::UsageLimited), "limited");
+        assert_eq!(neutral_status(goal::GoalStatus::BudgetLimited), "limited");
+        assert_eq!(neutral_status(goal::GoalStatus::Blocked), "blocked");
+        assert_eq!(neutral_status(goal::GoalStatus::Complete), "complete");
+    }
+
+    #[tokio::test]
+    async fn session_control_no_principal_forbidden() {
+        let (handler, dir) = make_handler().await;
+        let ctx = make_ctx_no_principal(dir.path().to_path_buf(), Some("s"));
+        let err = handler
+            .handle(
+                "session_control",
+                json!({"sessionId": "s", "action": "set", "objective": "x"}),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, -32002);
+    }
+
+    #[tokio::test]
+    async fn registry_alias_routes_session_goal() {
+        // `_session/goal` 别名 → goal 域 session_control。
+        use crate::extensions::ExtensionRegistry;
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = task_core::TaskDb::open(&dir.path().join("tasks.db"))
+            .await
+            .unwrap();
+        let handler = Arc::new(GoalHandler::new());
+        handler.bind_store(goal::GoalStore::from_task_db(&db));
+
+        let mut registry = ExtensionRegistry::new();
+        registry.register("goal", handler);
+        registry.register_alias("_session/goal", "_anureo.dev/goal/session_control");
+
+        let ctx = make_ctx(dir.path().to_path_buf(), Some("s"));
+        let result = registry
+            .dispatch(
+                "_session/goal",
+                json!({"sessionId": "s", "action": "set", "objective": "via alias"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result["goal"]["objective"], "via alias");
+        assert_eq!(result["goal"]["controlMethod"], "_session/goal");
+
+        // 未注册别名的其他 `_session/*` 方法仍 method_not_found。
+        let err = registry
+            .dispatch("_session/other", json!({}), &ctx)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, -32601);
+    }
+
+    #[tokio::test]
+    async fn publish_neutral_goal_meta_emits_session_info_with_goal() {
+        use agent_client_protocol::schema::v1::{SessionId, SessionUpdate};
+        use tokio::sync::mpsc;
+
+        // 类型化断言：从 envelope 提取 SessionInfoUpdate._meta.goal，
+        // 不依赖 SessionUpdate 的内部 wire 形状。
+        fn extract_goal_meta(envelope: SessionUpdateEnvelope) -> Value {
+            let SessionUpdateEnvelope::Session(notif) = envelope else {
+                panic!("expected Session envelope");
+            };
+            match notif.update {
+                SessionUpdate::SessionInfoUpdate(info) => {
+                    let m = info.meta.expect("_meta must be present");
+                    m.get("goal").cloned().expect("_meta.goal")
+                }
+                other => panic!("expected SessionInfoUpdate, got {other:?}"),
+            }
+        }
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let session_id = SessionId::new("s-neutral");
+
+        // 无 goal → _meta.goal = null（清除语义）。
+        publish_neutral_goal_meta(Some(&tx), &session_id, None);
+        let goal_meta = extract_goal_meta(rx.try_recv().unwrap());
+        assert!(goal_meta.is_null());
+
+        // 有 goal → _meta.goal = 中立快照。
+        let g = goal::Goal {
+            thread_id: "t1".into(),
+            goal_id: "secret-id".into(),
+            objective: "fix login".into(),
+            status: goal::GoalStatus::UsageLimited,
+            token_budget: Some(4000),
+            tokens_used: 4200,
+            time_used_seconds: 33,
+            verify_command: None,
+            status_reason: Some("provider quota exhausted".into()),
+            created_at_ms: 1_700_000_000_123,
+            updated_at_ms: 1_700_000_999_456,
+            objective_file: false,
+        };
+        publish_neutral_goal_meta(Some(&tx), &session_id, Some(&g));
+        let meta = extract_goal_meta(rx.try_recv().unwrap());
+        let meta = &meta;
+        assert_eq!(meta["status"], "limited", "usage_limited → limited 归并");
+        assert_eq!(meta["objective"], "fix login");
+        assert_eq!(meta["createdAt"].as_i64(), Some(1_700_000_000_123));
+        assert_eq!(meta["updatedAt"].as_i64(), Some(1_700_000_999_456));
+        assert_eq!(meta["tokenBudget"], 4000);
+        assert_eq!(meta["tokensUsed"], 4200);
+        assert_eq!(meta["timeUsedSeconds"], 33);
+        assert_eq!(meta["controlMethod"], "_session/goal");
+        assert_eq!(meta["statusReason"], "provider quota exhausted");
+        assert!(meta.get("goalId").is_none() && meta.get("id").is_none(), "不暴露 id");
+
+        // 无通道 → no-op（不 panic）。
+        publish_neutral_goal_meta(None, &session_id, Some(&g));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn neutral_snapshot_projects_objective_file_backed() {
+        // P7 objective 文件化：DB 行存 @file: 标记 → 投影 objectiveFile: true
+        // 代替全文。
+        let mut g = goal::Goal {
+            thread_id: "t1".into(),
+            goal_id: "g1".into(),
+            objective: "@file:t1.md".into(),
+            status: goal::GoalStatus::Active,
+            token_budget: None,
+            tokens_used: 0,
+            time_used_seconds: 0,
+            verify_command: None,
+            status_reason: None,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+            objective_file: true,
+        };
+        let snapshot = neutral_goal_snapshot(&g);
+        assert_eq!(snapshot["objectiveFile"], true);
+        assert!(snapshot.get("objective").is_none(), "标记不得泄漏到快照");
+
+        g.objective = "inline objective".into();
+        g.objective_file = false;
+        let snapshot = neutral_goal_snapshot(&g);
+        assert_eq!(snapshot["objective"], "inline objective");
+        assert!(snapshot.get("objectiveFile").is_none());
     }
 
     #[tokio::test]
@@ -1307,6 +1913,7 @@ mod tests {
             status_reason: None,
             created_at_ms: 0,
             updated_at_ms: 0,
+            objective_file: false,
         };
         let projected = project_goal(&g);
         let v = serde_json::to_value(&projected).unwrap();

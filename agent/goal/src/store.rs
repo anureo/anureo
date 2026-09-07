@@ -9,6 +9,8 @@
 //! 单连接池（TaskDb `max_connections(1)`）+ 语句级原子性即满足 §6.2 的
 //! 「read-modify-write 不落地」要求；交叉写路径（fork/替换）走显式事务。
 
+use std::path::{Path, PathBuf};
+
 use sqlx::sqlite::SqlitePool;
 use sqlx::Row;
 
@@ -48,10 +50,12 @@ fn goal_from_row(row: &sqlx::sqlite::SqliteRow) -> sqlx::Result<Goal> {
             index: "status".to_string(),
             source: format!("unknown goal status: {status_str}").into(),
         })?;
+    let objective: String = row.try_get("objective")?;
     Ok(Goal {
         thread_id: row.try_get("thread_id")?,
         goal_id: row.try_get("goal_id")?,
-        objective: row.try_get("objective")?,
+        objective_file: crate::objective_file::is_file_backed(&objective),
+        objective,
         status,
         token_budget: row.try_get("token_budget")?,
         tokens_used: row.try_get("tokens_used")?,
@@ -67,16 +71,65 @@ fn goal_from_row(row: &sqlx::sqlite::SqliteRow) -> sqlx::Result<Goal> {
 #[derive(Clone)]
 pub struct GoalStore {
     pool: SqlitePool,
+    /// objective 文件化目录（P7；`<home>/goals`）。`None` 时文件化 no-op
+    /// （测试/嵌入式：DB 全文仍是唯一事实源）。
+    goals_dir: Option<PathBuf>,
 }
 
 impl GoalStore {
     pub fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+        Self { pool, goals_dir: None }
     }
 
     /// 复用 TaskDb 连接池（同库多池会有写锁竞争，必须共享）。
+    /// 仅标准布局 `<home>/tasks/tasks.db` 推导 `goals_dir = <home>/goals`；
+    /// 其他布局（tests 直接放 tempdir、嵌入式）→ `None`（文件化 no-op，
+    /// 超长 objective 落回 DB 内联校验拒绝）。
     pub fn from_task_db(db: &task_core::TaskDb) -> Self {
-        Self::new(db.pool().clone())
+        let goals_dir = db
+            .path()
+            .parent()
+            .filter(|p| p.file_name() == Some(std::ffi::OsStr::new("tasks")))
+            .and_then(Path::parent)
+            .map(|home| home.join("goals"));
+        Self { pool: db.pool().clone(), goals_dir }
+    }
+
+    /// 显式覆盖 objective 文件化目录（P7）。
+    pub fn with_goals_dir(mut self, dir: PathBuf) -> Self {
+        self.goals_dir = Some(dir);
+        self
+    }
+
+    /// objective 文件化目录（P7；未配置为 `None`）。
+    pub fn goals_dir(&self) -> Option<&Path> {
+        self.goals_dir.as_deref()
+    }
+
+    /// 文件化 goal 的文本还原：`@file:` 标记 → 读 `<goals_dir>/<name>` 全文。
+    /// 非标记 / 无 goals_dir / 读文件失败时原样返回（降级，只记日志）。
+    pub async fn resolve_objective(&self, mut goal: crate::types::Goal) -> crate::types::Goal {
+        if !goal.objective_file {
+            return goal;
+        }
+        let Some(dir) = &self.goals_dir else {
+            return goal;
+        };
+        let Some(name) = crate::objective_file::marker_file_name(&goal.objective) else {
+            return goal;
+        };
+        match tokio::fs::read_to_string(dir.join(name)).await {
+            Ok(text) => goal.objective = text,
+            Err(e) => {
+                tracing::warn!(
+                    thread_id = %goal.thread_id,
+                    file = %name,
+                    error = %e,
+                    "objective file read failed; marker text leaked to consumer"
+                );
+            }
+        }
+        goal
     }
 
     // ── create / replace ────────────────────────────────────────────────

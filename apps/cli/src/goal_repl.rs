@@ -27,12 +27,16 @@ pub(crate) async fn run_goal_subcommand(subcommand: GoalSubcommand, thread_id: &
     match subcommand {
         GoalSubcommand::Set { description } => {
             match service.set_with_verify(thread_id, &description, None, None).await {
-                Ok(goal) => format!("Goal armed: {}", goal.objective),
+                // P7：文件化 goal 还原全文展示。
+                Ok(goal) => format!("Goal armed: {}", service.resolve_objective(goal).await.objective),
                 Err(e) => format!("Goal set failed: {e}"),
             }
         }
         GoalSubcommand::Show => match service.show(thread_id).await {
-            Ok(Some(goal)) => goal::render_goal_snapshot(&goal),
+            Ok(Some(goal)) => {
+                // P7 文件化：还原全文展示（REPL 可读全文）。
+                goal::render_goal_snapshot(&service.resolve_objective(goal).await)
+            }
             Ok(None) => "No goal set.".to_string(),
             Err(e) => format!("Goal show failed: {e}"),
         },
@@ -50,7 +54,9 @@ pub(crate) async fn run_goal_subcommand(subcommand: GoalSubcommand, thread_id: &
             Err(e) => format!("Goal clear failed: {e}"),
         },
         GoalSubcommand::Edit { description } => match service.edit(thread_id, &description).await {
-            Ok(goal) => format!("Goal objective updated: {}", goal.objective),
+            Ok(goal) => {
+                format!("Goal objective updated: {}", service.resolve_objective(goal).await.objective)
+            }
             Err(e) => format!("Goal edit failed: {e}"),
         },
     }

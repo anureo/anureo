@@ -19,6 +19,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::accounting::{GoalAccounting, TokenTotals};
+use crate::metrics;
 use crate::service::{GoalService, GoalServiceError, GoalStateLock};
 use crate::steering;
 use crate::store::{GoalStore, GoalStoreError};
@@ -112,10 +113,14 @@ impl GoalRuntimeHandle {
     ) -> Result<Option<String>, GoalStoreError> {
         let outcome = self.accounting.stop_abnormal(totals).await?;
         if let Ok(Some(goal)) = self.store.read(&self.thread_id).await {
-            let _ = self
+            if self
                 .store
                 .mark_blocked(&self.thread_id, &goal.goal_id, reason)
-                .await;
+                .await
+                .is_ok()
+            {
+                metrics::global().record_blocked(&self.thread_id);
+            }
         }
         self.inject_budget_steering_if_flipped(outcome).await
     }
@@ -124,10 +129,14 @@ impl GoalRuntimeHandle {
     /// active → `usage_limited`（系统置位，非 runner 失败）。
     pub async fn on_provider_quota_exhausted(&self, reason: &str) -> Result<(), GoalStoreError> {
         if let Ok(Some(goal)) = self.store.read(&self.thread_id).await {
-            let _ = self
+            if self
                 .store
                 .mark_usage_limited(&self.thread_id, &goal.goal_id, reason)
-                .await;
+                .await
+                .is_ok()
+            {
+                metrics::global().record_usage_limited(&self.thread_id);
+            }
         }
         Ok(())
     }
@@ -141,6 +150,7 @@ impl GoalRuntimeHandle {
         };
         // 2. 有 deferral → 本轮不续跑
         if self.store.has_continuation_deferral(&self.thread_id).await? {
+            metrics::global().record_continuation_deferred(&self.thread_id);
             return Ok(false);
         }
         // 3. 读表：无 goal / 非 active → 不续跑（budget_limited 等终态在此拦截）
@@ -150,19 +160,30 @@ impl GoalRuntimeHandle {
         if goal.status != GoalStatus::Active {
             return Ok(false);
         }
-        // 4. 渲染 continuation → 幂等二道门
+        // 4. 渲染 continuation → 幂等二道门（文件化 goal 先还原全文）
+        let goal = self.store.resolve_objective(goal).await;
         let text = steering::continuation(&goal, None);
-        Ok(self
+        let started = self
             .driver
             .start_turn_if_idle(&self.thread_id, &text)
             .await
-            .unwrap_or(false))
+            .unwrap_or(false);
+        if started {
+            metrics::global().record_continuation_started(&self.thread_id);
+        }
+        Ok(started)
     }
 
     /// fork / 外部 mutation 保护：写入 deferral（§6.6）。下次 `on_turn_start`
     /// 或 `continue_if_idle` 视其存在而跳过一次续跑。
     pub async fn defer_continuation(&self) -> Result<bool, GoalStoreError> {
         self.store.defer_continuation(&self.thread_id).await
+    }
+
+    /// 保护窗结束（session fork 完成 / 保护性 mutation 收尾）：清除 deferral
+    /// 并返回是否确有 deferral 被清（宿主可据此立刻 [`Self::continue_if_idle`] 恢复）。
+    pub async fn clear_deferral(&self) -> Result<bool, GoalStoreError> {
+        self.store.clear_continuation_deferral(&self.thread_id).await
     }
 
     /// 用户 set/clear 之后由宿主调用：基线重置。
@@ -199,6 +220,7 @@ impl GoalRuntimeHandle {
         let Some(text) = self.accounting.take_budget_steering_if_flipped(&outcome).await? else {
             return Ok(None);
         };
+        metrics::global().record_budget_limited(&self.thread_id);
         // R1 降级：不打断当前 turn（已结束），经二道门注入一次收尾 turn
         let _ = self.driver.start_turn_if_idle(&self.thread_id, &text).await;
         Ok(Some(text))

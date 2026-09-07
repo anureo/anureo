@@ -213,6 +213,8 @@ impl GoalAccounting {
             return Ok(None);
         }
         *reported = Some(goal.goal_id.clone());
+        // P7：文件化 goal 先还原全文再渲染 steering。
+        let goal = self.store.resolve_objective(goal).await;
         Ok(Some(steering::budget_limit(&goal)))
     }
 

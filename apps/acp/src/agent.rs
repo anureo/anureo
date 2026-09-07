@@ -374,6 +374,18 @@ impl AnureoAcpAgent {
         Some(handle)
     }
 
+    /// P8：中立 goal 快照发布（`session_info_update._meta.goal`）。
+    /// `_session/goal` 控制面（extensions/goal.rs）经 Agent 后端调用；
+    /// `/goal` 命令与 turn 钩子走各自的发布点，共用底层
+    /// [`crate::extensions::goal::publish_neutral_goal_meta`]。
+    pub fn publish_goal_snapshot(&self, session_id: &SessionId, goal: Option<&goal::Goal>) {
+        crate::extensions::goal::publish_neutral_goal_meta(
+            self.session_update_tx.as_ref(),
+            session_id,
+            goal,
+        );
+    }
+
     pub fn with_session_update_tx(
         tx: mpsc::UnboundedSender<SessionUpdateEnvelope>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
@@ -672,6 +684,13 @@ impl AnureoAcpAgent {
                 }),
             );
         }
+        // P8：中立 goal 能力块（alignment 附录 C.1）——静态广告，不依赖
+        // session；FE 以 version===1 && controlMethod==="_session/goal" 判定
+        // 支持并渲染 goal 面。旧 `_anureo.dev/goal/*` 不再出现在能力快照。
+        extension_meta.insert(
+            "goal".to_string(),
+            crate::extensions::goal::neutral_goal_capability(),
+        );
         let agent_caps = AgentCapabilities::new()
             .load_session(true)
             .mcp_capabilities(mcp)
@@ -685,7 +704,18 @@ impl AnureoAcpAgent {
                 "anureo",
                 env!("CARGO_PKG_VERSION"),
             ))
-            .agent_capabilities(agent_caps);
+            .agent_capabilities(agent_caps)
+            // P8：响应顶层 `_meta.goal` —— codex-acp/FE（cowork
+            // `goalCapabilitiesFromInitialize`）按顶层 `_meta.goal` 识别；
+            // agentCapabilities._meta.goal 同步保留，两处同形。
+            .meta({
+                let mut top = serde_json::Map::new();
+                top.insert(
+                    "goal".to_string(),
+                    crate::extensions::goal::neutral_goal_capability(),
+                );
+                top
+            });
 
         tracing::info!("initialize completed");
         Ok(response)
@@ -1080,25 +1110,46 @@ impl AnureoAcpAgent {
             source_entry.owner_principal.clone(),
         );
         let new_session_id = SessionId::new(new_our_id.as_str().to_string());
+
+        // §6.6「session fork」deferral 保护窗：fork 期间推迟源会话的 idle
+        // 续跑（fork 结束后恢复）。fork 后新 session 不携带 goal（FK 按
+        // thread_id，盲审 C2），无需对新 session 做 goal 处理。
+        let goal_rt = self.goal_runtime_for(&source_entry.thread_id).await;
+        if let Some(rt) = &goal_rt {
+            if let Err(e) = rt.defer_continuation().await {
+                tracing::warn!(
+                    error = %e,
+                    thread_id = %source_entry.thread_id,
+                    "fork: goal continuation deferral failed (continuing fork)"
+                );
+            }
+        }
         let new_entry = self.sessions.get(&new_our_id).ok_or_else(|| {
             agent_client_protocol::Error::internal_error()
                 .data("forked session missing after creation")
         })?;
-        self.session_repository
-            .insert(
-                new_our_id.as_str(),
-                &new_entry.thread_id,
-                &new_entry.owner_principal,
-                new_entry.working_directory.as_ref().ok_or_else(|| {
-                    agent_client_protocol::Error::internal_error()
-                        .data("forked session cwd missing")
-                })?,
-            )
-            .map_err(|error| {
-                self.sessions.delete(&new_our_id);
+        if let Err(error) = self.session_repository.insert(
+            new_our_id.as_str(),
+            &new_entry.thread_id,
+            &new_entry.owner_principal,
+            new_entry.working_directory.as_ref().ok_or_else(|| {
                 agent_client_protocol::Error::internal_error()
-                    .data(format!("failed to persist forked session: {error}"))
-            })?;
+                    .data("forked session cwd missing")
+            })?,
+        ) {
+            self.sessions.delete(&new_our_id);
+            // fork 失败路径：清掉保护窗 deferral，恢复源会话 goal loop。
+            if let Some(rt) = &goal_rt {
+                if let Err(e) = rt.clear_deferral().await {
+                    tracing::warn!(
+                        error = %e,
+                        "fork: clear goal deferral failed (insert error path)"
+                    );
+                }
+            }
+            return Err(agent_client_protocol::Error::internal_error()
+                .data(format!("failed to persist forked session: {error}")));
+        }
 
         // Copy source session config (model, mode) to the new session
         self.sessions.update_session_config(&new_our_id, |c| {
@@ -1161,6 +1212,24 @@ impl AnureoAcpAgent {
             model_reasoning_efforts.as_deref(),
         )
         .map_err(|e| agent_client_protocol::Error::internal_error().data(e.to_string()))?;
+
+        // 保护窗结束：清除 deferral 并立即尝试恢复 idle 续跑
+        // （fork 不杀 goal loop；下一 turn 完成后钩子继续驱动）。
+        if let Some(rt) = goal_rt {
+            match rt.clear_deferral().await {
+                Ok(_) => {
+                    let cont = rt.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = cont.continue_if_idle().await {
+                            tracing::warn!(error = %e, "fork: resume idle continuation failed");
+                        }
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "fork: clear goal deferral failed");
+                }
+            }
+        }
 
         Ok(ForkSessionResponse::new(new_session_id)
             .modes(self.agent_registry.to_session_mode_state(&current_mode))
@@ -1257,12 +1326,30 @@ impl AnureoAcpAgent {
                                     .data("goal runtime unavailable"),
                             );
                         };
+                        // P8：状态变更类动作（set/pause/resume/clear）后发布
+                        // 中立快照（与 `_session/goal` 控制路径共用发布函数；
+                        // clear 后 show=None 自然发布 goal:null）。
+                        let publishes_snapshot = matches!(
+                            &subcommand,
+                            agent::commands::GoalSubcommand::Set { .. }
+                                | agent::commands::GoalSubcommand::Pause
+                                | agent::commands::GoalSubcommand::Resume
+                                | agent::commands::GoalSubcommand::Clear
+                        );
                         let receipt = crate::goal_runtime::run_goal_subcommand(
                             &goal_rt,
                             &entry.thread_id,
                             subcommand,
                         )
                         .await;
+                        if publishes_snapshot {
+                            let snapshot = goal_rt.service().show(&entry.thread_id).await.ok().flatten();
+                            crate::extensions::goal::publish_neutral_goal_meta(
+                                self.session_update_tx.as_ref(),
+                                &args.session_id,
+                                snapshot.as_ref(),
+                            );
+                        }
                         send_goal_receipt(
                             self.session_update_tx.as_ref(),
                             &args.session_id,
@@ -1567,16 +1654,21 @@ impl AnureoAcpAgent {
                     }
                 }
             }
-            let cont = goal_rt.clone();
-            tokio::spawn(async move {
-                if let Err(e) = cont.continue_if_idle().await {
-                    tracing::warn!(
-                        thread_id = %cont.thread_id(),
-                        error = %e,
-                        "goal idle continuation failed"
-                    );
-                }
-            });
+            // P8：turn 结束后 goal 状态可能翻转（预算软停 blocked/limited、
+            // verify 完成 complete）——发布当前中立快照（有 goal 时）。
+            if let Some(current) = goal_rt.service().show(goal_rt.thread_id()).await.ok().flatten() {
+                crate::extensions::goal::publish_neutral_goal_meta(
+                    self.session_update_tx.as_ref(),
+                    &args.session_id,
+                    Some(&current),
+                );
+            }
+                    let cont = goal_rt.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = cont.continue_if_idle().await {
+                            tracing::warn!(error = %e, "goal idle continuation failed");
+                        }
+                    });
         }
 
         match result {
@@ -3381,6 +3473,44 @@ mod tests {
         assert!(session.resume.is_some());
         assert!(session.close.is_some());
         assert!(session.delete.is_some());
+    }
+
+    #[tokio::test]
+    async fn initialize_advertises_neutral_goal_meta() {
+        // P8（alignment 附录 C.1）：initialize `_meta.goal` 静态能力块。
+        // 两处广播：响应顶层 `_meta.goal`（codex-acp / cowork
+        // `goalCapabilitiesFromInitialize` 的识别位置）+
+        // `agentCapabilities._meta.goal`（同形保留）。
+        let agent = AnureoAcpAgent::new().expect("agent");
+        let resp = agent
+            .initialize(InitializeRequest::new(1.into()))
+            .await
+            .expect("initialize");
+        let assert_goal_shape = |goal: &serde_json::Value| {
+            assert_eq!(goal["version"], 1, "version 必须为 1：{goal}");
+            assert_eq!(goal["controlMethod"], "_session/goal", "{goal}");
+            assert_eq!(
+                goal["actions"],
+                serde_json::json!(["set", "pause", "resume", "clear"]),
+                "actions 为实际支持子集：{goal}"
+            );
+        };
+        let top_meta = resp.meta.as_ref().expect("response top-level _meta");
+        let top_goal = top_meta.get("goal").expect("_meta.goal").clone();
+        assert_goal_shape(&top_goal);
+        let meta = resp
+            .agent_capabilities
+            .meta
+            .as_ref()
+            .expect("agentCapabilities._meta");
+        let goal = meta.get("goal").expect("_meta.goal").clone();
+        assert_goal_shape(&goal);
+        // 旧 legacy 六方法不得再出现在能力快照里。
+        let anureo = meta.get("anureo.dev").expect("_meta[anureo.dev]");
+        assert!(
+            anureo.get("goal").and_then(|g| g.as_object()).is_none_or(|g| g.is_empty()),
+            "legacy goal 方法已从能力广告移除：{anureo}"
+        );
     }
 
     fn tool_msg(id: &str) -> Message {

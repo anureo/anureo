@@ -3,7 +3,14 @@ name = "goal"
 version.workspace = true
 edition.workspace = true
 
+[features]
+# OTel 指标导出（P7）：仅暴露 Observable Counter；宿主装了全局 MeterProvider
+# 即导出，未装为 no-op。SDK/导出器依赖由宿主自选，不强制。
+otel = ["dep:opentelemetry"]
+
 [dependencies]
+opentelemetry = { version = "0.32", optional = true, default-features = false, features = ["metrics"] }
+tracing = { workspace = true }
 task-core = { path = "../../experimental/task/task-core" }
 tool-core = { path = "../tool/tool-core" }
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
