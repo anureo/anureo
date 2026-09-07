@@ -47,8 +47,9 @@ pub fn register_file_tools(
     let path = working_folder.as_ref();
     let canonical = path.canonicalize().map_err(|e| {
         ToolSourceError::InvalidInput(format!(
-            "working folder not found or not a directory: {}",
-            e
+            "working folder not found or not a directory: {} (path: {})",
+            e,
+            path.display()
         ))
     })?;
     if !canonical.is_dir() {
