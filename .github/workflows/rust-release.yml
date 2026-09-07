@@ -133,6 +133,10 @@ jobs:
           files: dist/*
           generate_release_notes: true
           overwrite_files: true
+          # Tags with a pre-release suffix (e.g. v0.6.0-beta, v0.7.0-rc.1) are
+          # published as GitHub pre-releases so they never become "latest";
+          # the installers only reach them via --beta / ANUREO_BETA.
+          prerelease: ${{ contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -176,4 +180,20 @@ jobs:
         run: |
           $installDir = Join-Path $env:RUNNER_TEMP 'anureo-bin'
           & .\scripts\install.ps1 -Version "${{ github.ref_name }}" -InstallDir $installDir
+          & (Join-Path $installDir 'anureo.exe') --help
+
+      - name: Verify Unix installer beta channel
+        if: matrix.os == 'ubuntu-latest' && contains(github.ref_name, '-beta')
+        shell: bash
+        run: |
+          install_dir="$RUNNER_TEMP/anureo-beta-bin"
+          sh scripts/install.sh --beta --install-dir "$install_dir"
+          "$install_dir/anureo" --help
+
+      - name: Verify Windows installer beta channel
+        if: matrix.os == 'windows-latest' && contains(github.ref_name, '-beta')
+        shell: pwsh
+        run: |
+          $installDir = Join-Path $env:RUNNER_TEMP 'anureo-beta-bin'
+          & .\scripts\install.ps1 -Beta -InstallDir $installDir
           & (Join-Path $installDir 'anureo.exe') --help

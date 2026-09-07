@@ -13,34 +13,46 @@ anureo's goal is not to replace code review or let agents modify systems unatten
 Linux (x86_64):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/anureo/anureo/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/anureo/anureo/dev/scripts/install.sh | sh
 ```
 
 macOS (Intel / Apple Silicon):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/anureo/anureo/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/anureo/anureo/dev/scripts/install.sh | sh
 ```
 
 The macOS installer detects Intel versus Apple Silicon automatically. To install a specific release on Linux or macOS:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/anureo/anureo/main/scripts/install.sh | sh -s -- --version VERSION
+curl -fsSL https://raw.githubusercontent.com/anureo/anureo/dev/scripts/install.sh | sh -s -- --version VERSION
+```
+
+To try the latest beta (pre-release) instead:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/anureo/anureo/dev/scripts/install.sh | sh -s -- --beta
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/anureo/anureo/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/anureo/anureo/dev/scripts/install.ps1 | iex
 ```
 
 To install a specific Windows release:
 
 ```powershell
-$env:ANUREO_VERSION = "VERSION"; irm https://raw.githubusercontent.com/anureo/anureo/main/scripts/install.ps1 | iex
+$env:ANUREO_VERSION = "VERSION"; irm https://raw.githubusercontent.com/anureo/anureo/dev/scripts/install.ps1 | iex
 ```
 
-The installers use a user-level directory and do not require administrator privileges. Set `ANUREO_VERSION`, `ANUREO_REPO`, or `ANUREO_INSTALL_DIR` to override the release, repository, or destination.
+To install the latest Windows beta release:
+
+```powershell
+$env:ANUREO_BETA = "1"; irm https://raw.githubusercontent.com/anureo/anureo/dev/scripts/install.ps1 | iex
+```
+
+The installers use a user-level directory and do not require administrator privileges. Set `ANUREO_VERSION`, `ANUREO_REPO`, or `ANUREO_INSTALL_DIR` to override the release, repository, or destination. Pass `--beta` (or set `ANUREO_BETA=1`) to install the latest pre-release build (tags like `v0.7.3-beta`); rerun the installer without it to go back to the latest stable.
 
 ### 1. Configure Your Model
 
