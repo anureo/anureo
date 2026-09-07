@@ -28,6 +28,12 @@ The macOS installer detects Intel versus Apple Silicon automatically. To install
 curl -fsSL https://raw.githubusercontent.com/anureo/anureo/main/scripts/install.sh | sh -s -- --version VERSION
 ```
 
+To try the latest beta (pre-release) instead:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/anureo/anureo/main/scripts/install.sh | sh -s -- --beta
+```
+
 Windows PowerShell:
 
 ```powershell
@@ -40,7 +46,13 @@ To install a specific Windows release:
 $env:ANUREO_VERSION = "VERSION"; irm https://raw.githubusercontent.com/anureo/anureo/main/scripts/install.ps1 | iex
 ```
 
-The installers use a user-level directory and do not require administrator privileges. Set `ANUREO_VERSION`, `ANUREO_REPO`, or `ANUREO_INSTALL_DIR` to override the release, repository, or destination.
+To install the latest Windows beta release:
+
+```powershell
+$env:ANUREO_BETA = "1"; irm https://raw.githubusercontent.com/anureo/anureo/main/scripts/install.ps1 | iex
+```
+
+The installers use a user-level directory and do not require administrator privileges. Set `ANUREO_VERSION`, `ANUREO_REPO`, or `ANUREO_INSTALL_DIR` to override the release, repository, or destination. Pass `--beta` (or set `ANUREO_BETA=1`) to install the latest pre-release build (tags like `v0.6.0-beta`); rerun the installer without it to go back to the latest stable.
 
 ### 1. Configure Your Model
 

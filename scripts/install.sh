@@ -4,15 +4,20 @@ set -eu
 REPOSITORY="${ANUREO_REPO:-anureo/anureo}"
 VERSION="${ANUREO_VERSION:-latest}"
 INSTALL_DIR="${ANUREO_INSTALL_DIR:-$HOME/.local/bin}"
+BETA="${ANUREO_BETA:-}"
 
 usage() {
     cat <<'EOF'
 Install anureo from GitHub Releases.
 
 Usage:
-  ./install.sh [--version VERSION] [--install-dir DIR] [--repo OWNER/REPO]
+  ./install.sh [--beta] [--version VERSION] [--install-dir DIR] [--repo OWNER/REPO]
+
+Options:
+  --beta               Install the latest beta (pre-release) instead of the latest stable
 
 Environment variables:
+  ANUREO_BETA          Set to 1 to install the latest beta release (same as --beta)
   ANUREO_VERSION       Release tag without the leading v (default: latest)
   ANUREO_INSTALL_DIR   Installation directory (default: ~/.local/bin)
   ANUREO_REPO          GitHub repository (default: anureo/anureo)
@@ -35,6 +40,10 @@ while [ "$#" -gt 0 ]; do
             [ "$#" -ge 2 ] || { echo "missing value for --repo" >&2; exit 2; }
             REPOSITORY="$2"
             shift 2
+            ;;
+        --beta)
+            BETA=1
+            shift
             ;;
         -h|--help)
             usage
@@ -68,6 +77,21 @@ command -v tar >/dev/null 2>&1 || {
     echo "tar is required to install anureo" >&2
     exit 1
 }
+
+if [ "$VERSION" = "latest" ] && [ -n "$BETA" ]; then
+    # Beta releases are published as GitHub pre-releases, which the plain
+    # "latest" resolution below never selects. List releases and take the
+    # newest tag carrying a pre-release suffix (e.g. v0.6.0-beta).
+    echo "Looking up the latest anureo beta release..."
+    RELEASES_JSON="$(curl -fsSL "https://api.github.com/repos/$REPOSITORY/releases?per_page=100")" || {
+        echo "could not list releases from GitHub" >&2
+        exit 1
+    }
+    TAG="$(printf '%s\n' "$RELEASES_JSON" | sed -n 's/.*"tag_name": *"\(v[0-9][0-9.]*-[^"]*\)".*/\1/p' | head -n 1)"
+    [ -n "$TAG" ] || { echo "no anureo beta release found" >&2; exit 1; }
+    VERSION="${TAG#v}"
+    echo "Installing anureo pre-release $VERSION"
+fi
 
 if [ "$VERSION" = "latest" ]; then
     RELEASE_URL="https://github.com/$REPOSITORY/releases/latest/download"
