@@ -46,7 +46,8 @@ const profiles = {
       args: "server --port 3051 --home .anureo-home-local --pid-file .anureo-home-local/anureo-server.pid",
       cwd: root,
       env: {
-        ANUREO_ACP_ALLOWED_ORIGINS: "https://loom.getxagent.com",
+        ANUREO_ACP_ALLOWED_ORIGINS:
+          "https://loom.getxagent.com,http://localhost:3151,http://127.0.0.1:3151",
         ANUREO_DATA_DIR: localHome,
         ANUREO_UI_PASSWORD: localUiPassword,
         LOOMDESK_DATA_DIR: path.join(root, ".anureo-home-local", "loomdesk-data"),
