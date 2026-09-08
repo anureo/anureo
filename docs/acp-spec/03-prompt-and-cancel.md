@@ -12,7 +12,7 @@
 |---|---|
 | 方向 | Client → Agent request |
 | 能力 | session 必须已 new/load/resume |
-| Loom 状态 | ✅ 已实现 |
+| anureo 状态 | ✅ 已实现 |
 
 ### Request
 
@@ -39,7 +39,7 @@
 
 ### Content Block 类型
 
-| Content block | Loom 支持 | 说明 |
+| Content block | anureo 支持 | 说明 |
 |---|---|---|
 | `text` | ✅ | 按顺序拼接为 user content |
 | `resource_link` | ✅ | 转换为资源引用文本 |
@@ -139,7 +139,7 @@ async fn prompt_with_capabilities(
 | 项目 | 内容 |
 |---|---|
 | 方向 | Client → Agent **notification**（无 response） |
-| Loom 状态 | ✅ 已实现 |
+| anureo 状态 | ✅ 已实现 |
 
 ### Notification
 
@@ -189,7 +189,7 @@ fn cancel_all(&self)  // 取消所有 session（用于 shutdown）
 
 ### Error
 
-cancel 是 notification，不返回 JSON-RPC response。如 session 不存在，Loom 静默忽略。
+cancel 是 notification，不返回 JSON-RPC response。如 session 不存在，anureo 静默忽略。
 
 ---
 

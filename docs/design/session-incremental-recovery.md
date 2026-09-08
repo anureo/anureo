@@ -1,9 +1,9 @@
-# Loom Desk 会话 IndexedDB 缓存与断线增量恢复设计
+# anureo Desk 会话 IndexedDB 缓存与断线增量恢复设计
 
 > **状态**: Implemented（v1；reset 使用标准 `session/load` fallback）
 > **日期**: 2026-08-22
-> **涉及仓库**: `loom`（本仓库，ACP server/agent）/ `../openchamber-feat-dev`（Loom Desk 前端）
-> **相关代码**: `apps/acp/src/session_sync.rs`、`apps/acp/src/extensions/session_sync.rs`、`apps/acp/src/runtime.rs`、`apps/acp/src/stdio_loop.rs`、`../openchamber-feat-dev/packages/ui/src/lib/acp/acp-session-cache.ts`、`../openchamber-feat-dev/packages/ui/src/lib/acp/acp-session-sync.ts`、`../openchamber-feat-dev/packages/ui/src/lib/acp/acp-runtime.ts`
+> **涉及仓库**: `anureo`（本仓库，ACP server/agent）/ `../anureo-feat-dev`（anureo Desk 前端）
+> **相关代码**: `apps/acp/src/session_sync.rs`、`apps/acp/src/extensions/session_sync.rs`、`apps/acp/src/runtime.rs`、`apps/acp/src/stdio_loop.rs`、`../anureo-feat-dev/packages/ui/src/lib/acp/acp-session-cache.ts`、`../anureo-feat-dev/packages/ui/src/lib/acp/acp-session-sync.ts`、`../anureo-feat-dev/packages/ui/src/lib/acp/acp-runtime.ts`
 > **交叉参考**: [ACP WebSocket 持久化实现方案](./acp-websocket-persistent-implementation.md)、[标准 ACP 单 Server 多 Session 实现方案](./acp-single-server-multi-session.md)、[session-history 扩展](../acp-spec/extensions/36-session-history.md)、[session 生命周期](../acp-spec/02-session-lifecycle.md)
 
 ---
@@ -12,11 +12,11 @@
 
 v1 已落地以下闭环：
 
-- Loom 在 checkpoint SQLite 中持久化 per-session `streamId`、`nextSeq` 和有界 event window；
+- anureo 在 checkpoint SQLite 中持久化 per-session `streamId`、`nextSeq` 和有界 event window；
 - event insert、sequence allocation 与窗口裁剪使用同一事务，服务重启后游标连续；
 - prompt task 归 runtime 所有，transport drop 不再隐式取消 run；client bridge 和待回答 question 可随 session binding 切换到新连接；
 - history replay message identity 由 `sessionId + messageIndex` 稳定派生；
-- Loom Desk 使用 runtime/principal/cwd/session namespace 的 IndexedDB record 原子保存 projection 与 cursor；
+- anureo Desk 使用 runtime/principal/cwd/session namespace 的 IndexedDB record 原子保存 projection 与 cursor；
 - 页面恢复优先执行 session-sync delta，缺少/失效 cursor 时才执行标准 `session/load`；
 - WebSocket supervisor 捕获真实 close/error，执行带 jitter 的重连、重新 initialize，并在标记 connected 前恢复 active sync sessions；
 - `/acp` 通过 `openRuntimeWebSocket`，并加入 relay dispatcher 与 URL-token auth 双 allowlist。
@@ -29,7 +29,7 @@ reset response 只给出原因与 high-water mark，authoritative projection 由
 
 尚未作为 v1 发布门禁的增强项包括多 tab 写入仲裁、10k event 独立 benchmark 与浏览器自动化的
 IndexedDB quota 压测；核心事务、quota eviction、restart、gap、真实 WebSocket 断线增量恢复和 relay
-allowlist 均已有自动化测试。真实浏览器链路的运行方式见 Loom Desk
+allowlist 均已有自动化测试。真实浏览器链路的运行方式见 anureo Desk
 `docs/E2E_TESTING.md` 的“会话增量恢复 E2E”。
 
 第 2–16 节保留实现前的源码基线、完整目标架构和分阶段提案，便于追溯设计取舍；其中描述的
@@ -41,9 +41,9 @@ allowlist 均已有自动化测试。真实浏览器链路的运行方式见 Loo
 
 ## 1. 背景与问题
 
-Loom Desk 当前可以在重新打开页面后，通过标准 ACP `session/load` 从 Loom 的
+anureo Desk 当前可以在重新打开页面后，通过标准 ACP `session/load` 从 anureo 的
 SQLite checkpoint 恢复会话历史。长会话默认只 replay 最近 50 条原始消息，更早
-内容再通过 `_loomdesk.dev/session-history/page` 向前分页。
+内容再通过 `_anureo.dev/session-history/page` 向前分页。
 
 这条链路解决了“服务端有持久历史，可以重新打开”的问题，但没有满足以下产品要求：
 
@@ -53,21 +53,21 @@ SQLite checkpoint 恢复会话历史。长会话默认只 replay 最近 50 条�
 4. 增量 replay 与后续 live stream 之间不能丢消息、重复消息或改变顺序；
 5. 正在运行的 prompt 不应仅因 UI transport 断开而被隐式终止。
 
-本设计增加一个 Loom 扩展协议完成可靠增量同步。标准 ACP v1
+本设计增加一个 anureo 扩展协议完成可靠增量同步。标准 ACP v1
 `session/load` / `session/resume` 保持不变，作为旧 client 和不支持扩展时的兼容路径。
 
 ---
 
 ## 2. 当前源码事实（2026-08-22）
 
-### 2.1 Loom Desk 只持久化会话列表，不持久化消息正文
+### 2.1 anureo Desk 只持久化会话列表，不持久化消息正文
 
 `packages/ui/src/sync/persist-cache.ts` 当前通过 `localStorage` 保存 VCS、project
 metadata、icon 和最多 50 条 session list record。消息、part、tool call 和 ACP native
 session projection 只存在 Zustand 内存 store 中。
 
 `acpSessionLoad()` 在调用 `session/load` 前执行 `resetSession(sessionId)`，随后依赖
-服务端重新发送 `_loomdesk.dev/session-history/batch` 或逐条 `session/update` 来重建会话。
+服务端重新发送 `_anureo.dev/session-history/batch` 或逐条 `session/update` 来重建会话。
 
 结果是：
 
@@ -87,7 +87,7 @@ initialize 后将 runtime status 设为 `connected`。runtime status 只有在�
 为 ACP v1 reconnect 创建新 stream，并说明断线期间的 in-flight transport message 不会
 自动 replay。
 
-### 2.3 Loom 已移除 connection-level replay
+### 2.3 anureo 已移除 connection-level replay
 
 `apps/server/src/acp_hub.rs` 仍保留 `EventCursor`、`replay_capacity` 和
 `attach_with(..., resume_from)` 的兼容形状，但 `resume_from` 当前被忽略，注释明确说明
@@ -122,7 +122,7 @@ connection 绑定到运行中的 session。
 | --- | --- | --- |
 | 服务端历史持久化 | SQLite checkpoint | 已有，可复用 |
 | `session/load` 尾部 replay | 默认最近 50 条原始消息 | 已有，但不是增量恢复 |
-| 更早历史分页 | `_loomdesk.dev/session-history/page` | 已有，可保留 |
+| 更早历史分页 | `_anureo.dev/session-history/page` | 已有，可保留 |
 | 浏览器完整消息缓存 | 无 | 需新增 IndexedDB |
 | 浏览器自动 WebSocket 重连 | 无可靠实现 | 需新增 transport supervisor |
 | session event sequence | 无 | 需新增 |
@@ -137,8 +137,8 @@ connection 绑定到运行中的 session。
 
 ### 3.1 目标
 
-1. Loom Desk 在 IndexedDB 中保存已物化会话的 canonical projection。
-2. 页面刷新后先本地恢复 UI，再异步与 Loom 校准。
+1. anureo Desk 在 IndexedDB 中保存已物化会话的 canonical projection。
+2. 页面刷新后先本地恢复 UI，再异步与 anureo 校准。
 3. 每个 session update 具有稳定、严格单调的 sequence。
 4. client 使用已提交的 `lastSeq` 请求增量，不重复下载完整历史。
 5. replay 与 live stream 原子交接，提供无 gap 的 at-least-once delivery。
@@ -165,7 +165,7 @@ connection 绑定到运行中的 session。
 
 | 维度 | 决定 | 原因 |
 | --- | --- | --- |
-| 协议位置 | 新增 `_loomdesk.dev/session-sync/*` 扩展 | 不改变标准 ACP v1，旧 client 可继续 load |
+| 协议位置 | 新增 `_anureo.dev/session-sync/*` 扩展 | 不改变标准 ACP v1，旧 client 可继续 load |
 | 增量标识 | 每 session 独立 `{streamId, seq}` | connection cursor 无法表达多 session；streamId 可检测数据代际变化 |
 | 投递语义 | at-least-once + client 幂等 | 比 exactly-once 可实现、可恢复；sequence 足以去重 |
 | 本地缓存 | IndexedDB 保存 projection + cursor | 容量、事务和异步 IO 均优于 localStorage |
@@ -174,7 +174,7 @@ connection 绑定到运行中的 session。
 | running attach | 独立 `open`，不执行 `begin_restore` | running prompt 必须允许新 transport 订阅 |
 | message identity | 服务端 canonical stable ID | 当前 replay UUID 无法稳定 merge |
 | prompt 生命周期 | run 由 session runtime 拥有，不由 ACP connection task 拥有 | transport 断开不应隐式终止 run |
-| 降级 | `-32601` 或 capability 缺失时走现有 `session/load` | 向后兼容旧 Loom/旧 client |
+| 降级 | `-32601` 或 capability 缺失时走现有 `session/load` | 向后兼容旧 anureo/旧 client |
 | reset | 明确返回 `mode: "reset"`，不把失败伪装成空增量 | 防止 silent data loss |
 
 ---
@@ -182,7 +182,7 @@ connection 绑定到运行中的 session。
 ## 5. 总体架构
 
 ```text
-Loom Desk
+anureo Desk
 ┌──────────────────────────────────────────────────────────────┐
 │ React / Zustand projection                                   │
 │          ▲                         │                         │
@@ -196,7 +196,7 @@ Loom Desk
 └──────────────────────────────────┼───────────────────────────┘
                                    │
                                    ▼
-Loom server
+anureo server
 ┌──────────────────────────────────────────────────────────────┐
 │ SessionSyncRegistry                                         │
 │   attach running session / capture high-watermark           │
@@ -210,7 +210,7 @@ Loom server
 └──────────────────────────────────────────────────────────────┘
 ```
 
-恢复时，IndexedDB 是 UI 的快速本地副本，Loom 始终是 authoritative source。client 不因
+恢复时，IndexedDB 是 UI 的快速本地副本，anureo 始终是 authoritative source。client 不因
 本地已有内容而跳过校准；它只把“全量 `session/load`”替换为“带 cursor 的 sync open”。
 
 ---
@@ -340,16 +340,16 @@ response 可继续等待最终结果；如果原 connection 消失，response �
 
 ---
 
-## 7. `_loomdesk.dev/session-sync` 协议
+## 7. `_anureo.dev/session-sync` 协议
 
 ### 7.1 Capability
 
-Loom 在 initialize response 的扩展 capability 中声明：
+anureo 在 initialize response 的扩展 capability 中声明：
 
 ```json
 {
   "_meta": {
-    "loomdesk.dev": {
+    "anureo.dev": {
       "sessionSync": {
         "open": true,
         "version": 1,
@@ -364,12 +364,12 @@ client 未看到 capability 时不得探测性依赖该协议；直接使用现�
 
 ### 7.2 Open request
 
-方法：`_loomdesk.dev/session-sync/open`
+方法：`_anureo.dev/session-sync/open`
 
 ```jsonc
 {
   "sessionId": "session-abc",
-  "cwd": "C:\\Users\\heycj\\dev\\loom",
+  "cwd": "C:\\Users\\heycj\\dev\\anureo",
   "cursor": {
     "streamId": "67b8d393-...",
     "seq": 4182
@@ -418,7 +418,7 @@ JSON-RPC error 表达，不能返回空增量伪装成功。
 
 - response 返回当前 page 的 `throughSeq`、`hasMore: true` 和 opaque `nextCursor`；
 - server 已为该 subscription 暂停 live delivery；
-- client 继续调用 `_loomdesk.dev/session-sync/continue`；
+- client 继续调用 `_anureo.dev/session-sync/continue`；
 - catch-up 完成后再进入 live 状态。
 
 ### 7.4 Reset response
@@ -457,7 +457,7 @@ transaction 中替换 projection 和 cursor，不能先清空旧 UI 再等待 sn
 
 ### 7.5 Live notification
 
-方法：`_loomdesk.dev/session-sync/update`
+方法：`_anureo.dev/session-sync/update`
 
 ```jsonc
 {
@@ -509,7 +509,7 @@ response.throughSeq = N
 
 ### 7.7 Close
 
-方法：`_loomdesk.dev/session-sync/close`
+方法：`_anureo.dev/session-sync/close`
 
 ```json
 { "sessionId": "session-abc" }
@@ -520,11 +520,11 @@ session、不取消 prompt、不删除 IndexedDB cache。WebSocket 关闭时 ser
 
 ---
 
-## 8. Loom Desk IndexedDB 设计
+## 8. anureo Desk IndexedDB 设计
 
 ### 8.1 Database 与 key scope
 
-数据库名建议：`loomdesk-session-cache-v1`。
+数据库名建议：`anureo-session-cache-v1`。
 
 所有 key 必须包含：
 
@@ -534,7 +534,7 @@ runtimeKey + ownerScope + sessionId
 
 - `runtimeKey`：规范化 ACP endpoint/runtime identity，防止切换实例后串缓存；
 - `ownerScope`：principal 的不可逆 hash 或服务端返回的稳定非敏感 owner ID；
-- `sessionId`：Loom canonical session ID。
+- `sessionId`：anureo canonical session ID。
 
 只用 `sessionId` 做 key 会把不同 server 或不同登录主体的同名 session 混在一起，禁止。
 
@@ -655,7 +655,7 @@ session，再重试一次。仍失败则继续使用内存态并显式记录 cac
 
 ### 9.1 Transport supervisor
 
-Loom Desk 新增 process-wide ACP transport supervisor，职责是：
+anureo Desk 新增 process-wide ACP transport supervisor，职责是：
 
 1. 监听底层 WebSocket `close` / `error` 和 SDK connection future 结束；
 2. 原子更新 runtime status：`connected -> reconnecting -> connected|auth_required`；
@@ -683,7 +683,7 @@ subscribe。这会阻塞当前会话恢复并扩大 server fanout。
 ### 9.3 时序图
 
 ```text
-Browser                         Loom
+Browser                         anureo
    |                              |
    |-- live seq=4182 committed -->|  (normal state)
    X        WebSocket lost        |
@@ -722,7 +722,7 @@ Browser                         Loom
 
 | 场景 | 行为 |
 | --- | --- |
-| Loom 不声明 sessionSync capability | 使用现有 `session/load` + history page |
+| anureo 不声明 sessionSync capability | 使用现有 `session/load` + history page |
 | 方法返回 `-32601` | 记录兼容 fallback，当前 runtime 生命周期内不再重试扩展 |
 | IndexedDB 不可用 | 使用内存 store；恢复走 reset/load，不阻断聊天 |
 | cursor 正常 | delta catch-up |
@@ -744,7 +744,7 @@ IndexedDB/Zustand projection，并显示 stale/reconnecting，不把现有内容
 
 ## 11. 两端实现落点
 
-### 11.1 Loom
+### 11.1 anureo
 
 | 文件 | 改动类型 | 说明 |
 | --- | --- | --- |
@@ -765,7 +765,7 @@ IndexedDB/Zustand projection，并显示 stale/reconnecting，不把现有内容
 文件名与 module 拆分可在实现阶段按 crate 边界微调，但不能把 stream/event persistence
 重新塞进 `handlers/acp.rs`；HTTP/WS handler 只拥有 transport 生命周期。
 
-### 11.2 Loom Desk
+### 11.2 anureo Desk
 
 | 文件 | 改动类型 | 说明 |
 | --- | --- | --- |
@@ -781,7 +781,7 @@ IndexedDB/Zustand projection，并显示 stale/reconnecting，不把现有内容
 | `packages/ui/src/lib/runtime-switch.ts` | 修改 | runtime namespace 与旧 generation 隔离 |
 | `packages/ui/src/stores/DOCUMENTATION.md` | 修改 | 记录 IndexedDB cache ownership 与非事实源边界 |
 
-实现涉及共享 ACP transport 和 WebSocket，Loom Desk 开发时必须同时遵循其
+实现涉及共享 ACP transport 和 WebSocket，anureo Desk 开发时必须同时遵循其
 `ui-api-decoupling` 与 `relay-transport` 项目技能，验证 direct、Relay、Electron、Web 和
 VS Code runtime 的一致性。
 
@@ -819,7 +819,7 @@ VS Code runtime 的一致性。
 验收：prompt streaming 中断开 WS，run 继续完成；新 WS 在 active run 期间 open 成功并收到
 连续增量或最终状态。
 
-### Phase 3 — Loom Desk IndexedDB
+### Phase 3 — anureo Desk IndexedDB
 
 1. IndexedDB schema、runtime/owner namespace、migration 和 quota/LRU。
 2. native projection hydrate/atomic commit。
@@ -848,7 +848,7 @@ injection 后 cursor 与 projection 不分裂。
 建议短期 feature flag：
 
 ```text
-LOOM_ACP_SESSION_SYNC=0|1
+ANUREO_ACP_SESSION_SYNC=0|1
 VITE_EXPERIMENTAL_ACP_SESSION_SYNC=0|1
 ```
 
@@ -859,7 +859,7 @@ flag 只用于灰度和回滚；协议稳定并完成两个版本兼容验证后
 
 ## 13. 测试矩阵
 
-### 13.1 Loom unit/integration
+### 13.1 anureo unit/integration
 
 | 用例 | 断言 |
 | --- | --- |
@@ -880,7 +880,7 @@ flag 只用于灰度和回滚；协议稳定并完成两个版本兼容验证后
 | restart | durable stream head 不倒退；窗口不足时 reset |
 | cross-owner open | 不泄露 session 是否存在或内容 |
 
-### 13.2 Loom Desk unit
+### 13.2 anureo Desk unit
 
 | 用例 | 断言 |
 | --- | --- |
@@ -925,8 +925,8 @@ Feature: session content survives refresh and reconnects incrementally
     Then the server returns an authoritative reset snapshot
     And the browser atomically replaces its projection and cursor
 
-  Scenario: an old Loom server remains compatible
-    Given Loom does not advertise sessionSync
+  Scenario: an old anureo server remains compatible
+    Given anureo does not advertise sessionSync
     When the browser opens an existing session
     Then the browser restores it through session/load
 ```
@@ -954,7 +954,7 @@ Feature: session content survives refresh and reconnects incrementally
 
 ### 14.2 Metrics
 
-Loom 增加：
+anureo 增加：
 
 | 指标 | 类型 | 说明 |
 | --- | --- | --- |
@@ -969,7 +969,7 @@ Loom 增加：
 不得把 sessionId、principal、prompt、token 或 cwd 放进 metric label。结构化日志可以带
 connectionId、streamId 前缀、seq 范围和 principal hash，但不记录正文。
 
-Loom Desk 仅在 debug/telemetry policy 允许时记录：hydrate duration、cache bytes、delta
+anureo Desk 仅在 debug/telemetry policy 允许时记录：hydrate duration、cache bytes、delta
 count、reset reason、reconnect attempts 和 IndexedDB failure kind，不记录消息内容。
 
 ---
@@ -981,7 +981,7 @@ count、reset reason、reconnect attempts 和 IndexedDB failure kind，不记录
 - 标准 ACP initialize/session 方法不变；
 - session-sync 仅在 capability 协商后使用；
 - old client 继续 `session/load`；
-- new client 连接 old Loom 时自动 fallback；
+- new client 连接 old anureo 时自动 fallback；
 - live `session/update` 可在兼容窗口继续发送给未开启 session-sync 的 connection；开启
   session-sync 的 connection 对同一 session 只消费一种 canonical content stream，避免双写。
 
@@ -996,8 +996,8 @@ count、reset reason、reconnect attempts 和 IndexedDB failure kind，不记录
 
 关闭 feature flag 后：
 
-1. Loom 停止声明 sessionSync capability；
-2. Loom Desk 自动走 `session/load`；
+1. anureo 停止声明 sessionSync capability；
+2. anureo Desk 自动走 `session/load`；
 3. IndexedDB cache 可暂时保留但不作为 render source，避免来回灰度反复下载；
 4. event log schema 保留，禁止紧急回滚直接 drop table；
 5. 确认旧 client 的 load/history page/cancel/permission 全部正常后再发布。
@@ -1031,7 +1031,7 @@ count、reset reason、reconnect attempts 和 IndexedDB failure kind，不记录
 
 v1 已验收：
 
-- [x] Loom Desk 将物化后的会话正文与 cursor 原子写入 IndexedDB，不再只缓存 session list。
+- [x] anureo Desk 将物化后的会话正文与 cursor 原子写入 IndexedDB，不再只缓存 session list。
 - [x] 页面恢复先 hydrate IndexedDB，再用 cursor 请求增量；缺失或失效时才 `session/load`。
 - [x] 每个 session 有 durable `streamId` 和严格递增 `seq`；事务失败不消耗 sequence。
 - [x] history replay 使用由 `sessionId + messageIndex` 派生的稳定 message identity。
@@ -1040,7 +1040,7 @@ v1 已验收：
 - [x] WebSocket 异常关闭后创建全新 transport、重新 initialize，并在 connected 前补齐增量。
 - [x] prompt task 与 transport 生命周期解耦；running session 可由 replacement connection attach。
 - [x] pending question 与 filesystem/terminal client bridge 可重新绑定到当前 connection，不自动批准。
-- [x] capability 缺失或 `-32601` 时兼容旧 Loom，标准 ACP client 不受扩展影响。
+- [x] capability 缺失或 `-32601` 时兼容旧 anureo，标准 ACP client 不受扩展影响。
 - [x] runtime/principal/cwd/session namespace 隔离；quota eviction 与事务 abort 已测试。
 - [x] `/acp` 同时进入 relay WebSocket 与 URL-token auth allowlist。
 
@@ -1053,12 +1053,12 @@ v1 已验收：
 
 ## 18. 最终结论
 
-`session/load` 适合标准 ACP client 的 authoritative history replay，但不适合作为 Loom Desk
+`session/load` 适合标准 ACP client 的 authoritative history replay，但不适合作为 anureo Desk
 每次刷新和短断线后的高效恢复协议。目标架构应把三件事明确分层：
 
-1. Loom checkpoint 是长期 authoritative history；
+1. anureo checkpoint 是长期 authoritative history；
 2. session event stream 是短期、连续、可按 cursor 恢复的实时事实；
-3. Loom Desk IndexedDB 是按 runtime/owner 隔离的本地 projection cache。
+3. anureo Desk IndexedDB 是按 runtime/owner 隔离的本地 projection cache。
 
 只有同时具备 stable identity、durable sequence、原子 replay/live handoff、真正的 transport
 supervisor，以及 connection-independent run lifecycle，才能实现“刷新只收增量”和“断线

@@ -1,6 +1,6 @@
 # Tunnel（第三方隧道管理）
 
-> 命名空间: `_loomdesk.dev/tunnel/*`
+> 命名空间: `_anureo.dev/tunnel/*`
 > Capability key: `tunnel`
 
 ## Capability
@@ -18,13 +18,13 @@
 
 - 声明 `tunnel` capability 后，client 可以列出、创建、删除第三方隧道并执行诊断。
 - 未声明 `tunnel.create` 时，UI 隐藏创建入口；调用返回 `capability_not_supported`。
-- Tunnel capability 可在运行时变化（如 provider 凭据被撤销），通过 `_loomdesk.dev/capability_changed` 通知。
+- Tunnel capability 可在运行时变化（如 provider 凭据被撤销），通过 `_anureo.dev/capability_changed` 通知。
 
 ### 与 Relay 的区别
 
-| 维度 | `_loomdesk.dev/relay/*` | `_loomdesk.dev/tunnel/*` |
+| 维度 | `_anureo.dev/relay/*` | `_anureo.dev/tunnel/*` |
 |---|---|---|
-| 传输层 | LoomDesk 自有 E2EE tunnel transport | 第三方 provider（Cloudflare Tunnel、Ngrok 等） |
+| 传输层 | Anureo 自有 E2EE tunnel transport | 第三方 provider（Cloudflare Tunnel、Ngrok 等） |
 | 认证 | 内置 pairing / client-auth | Provider API token / 自动配置 |
 | 协议影响 | 改变连接可达性，不扩大 ACP capability | 改变连接可达性，**不扩大 ACP capability** |
 | 管理面 | `relay/status` 只读 | `tunnel/list`、`create`、`delete`、`doctor` 读写 |
@@ -35,7 +35,7 @@
 
 ## Methods
 
-### `_loomdesk.dev/tunnel/list`
+### `_anureo.dev/tunnel/list`
 
 | 项目 | 内容 |
 |---|---|
@@ -138,14 +138,14 @@ pub struct TunnelListResponse {
 
 ---
 
-### `_loomdesk.dev/tunnel/create`
+### `_anureo.dev/tunnel/create`
 
 | 项目 | 内容 |
 |---|---|
 | 方向 | Client → Server request |
 | 能力 | `tunnel.create` |
 | 权限 | Server-side authorization（需要写权限 scope） |
-| 进度 | 长时操作，支持 `_loomdesk.dev/tunnel/progress` notification（`08-cross-cutting-patterns.md` §3） |
+| 进度 | 长时操作，支持 `_anureo.dev/tunnel/progress` notification（`08-cross-cutting-patterns.md` §3） |
 | 幂等 | 支持 `idempotencyKey`，相同 key 返回已有 tunnel |
 
 **Request:**
@@ -237,7 +237,7 @@ pub struct TunnelCreateResponse {
 ```json
 {
   "jsonrpc": "2.0",
-  "method": "_loomdesk.dev/tunnel/progress",
+  "method": "_anureo.dev/tunnel/progress",
   "params": {
     "operationId": "tun_abc123",
     "progress": 50,
@@ -250,7 +250,7 @@ pub struct TunnelCreateResponse {
 
 ---
 
-### `_loomdesk.dev/tunnel/delete`
+### `_anureo.dev/tunnel/delete`
 
 | 项目 | 内容 |
 |---|---|
@@ -307,7 +307,7 @@ pub struct TunnelDeleteResponse {
 
 ---
 
-### `_loomdesk.dev/tunnel/doctor`
+### `_anureo.dev/tunnel/doctor`
 
 | 项目 | 内容 |
 |---|---|
@@ -403,7 +403,7 @@ pub struct TunnelCheck {
 
 ## Notifications
 
-### `_loomdesk.dev/tunnel/changed`
+### `_anureo.dev/tunnel/changed`
 
 | 项目 | 内容 |
 |---|---|
@@ -413,7 +413,7 @@ pub struct TunnelCheck {
 ```json
 {
   "jsonrpc": "2.0",
-  "method": "_loomdesk.dev/tunnel/changed",
+  "method": "_anureo.dev/tunnel/changed",
   "params": {
     "change": "status",
     "id": "tun_abc123",

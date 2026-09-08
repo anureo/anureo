@@ -1,6 +1,6 @@
 ---
 acp-version: 1
-loom-extension-domain: session-history
+anureo-extension-domain: session-history
 methods:
   - info
   - page
@@ -12,7 +12,7 @@ implementations:
 
 # 36 — session-history：会话历史按需分页加载
 
-> 状态：已实现。方法名 `_loomdesk.dev/session-history/info` 与 `_loomdesk.dev/session-history/page`。
+> 状态：已实现。方法名 `_anureo.dev/session-history/info` 与 `_anureo.dev/session-history/page`。
 
 ## 目标
 
@@ -23,9 +23,9 @@ implementations:
 本扩展把 replay 改为：
 
 1. **`session/load` 只 replay 尾部**（默认最近 50 条原始消息，见
-   `LOOM_ACP_LOAD_HISTORY_TAIL`，0 = 全量），大幅减少通知数量；
+   `ANUREO_ACP_LOAD_HISTORY_TAIL`，0 = 全量），大幅减少通知数量；
 2. **更早的历史按需分页拉取**：前端在用户滚动到顶/点击"加载更早"时调用
-   `_loomdesk.dev/session-history/page`，一次请求取回一整段消息（同一响应内批量），
+   `_anureo.dev/session-history/page`，一次请求取回一整段消息（同一响应内批量），
    前端批量渲染，不再逐条通知。
 
 ## 决策记录
@@ -33,20 +33,20 @@ implementations:
 | 决策 | 理由 |
 |---|---|
 | replay 尾部而非全量 | 加载延迟随历史长度线性增长；绝大多数会话打开时只关心最近上下文 |
-| 尾部 replay 合并为单条 `_loomdesk.dev/session-history/batch` 通知 | 50 条原始消息 ≈ 100+ 条 `session/update` JSON-RPC 帧；一条批量通知 + 前端单次 commit 应用，网络帧数与投影重渲从 O(N) 降到 O(1)（`LOOM_ACP_LOAD_HISTORY_BATCH=0` 回退逐条） |
+| 尾部 replay 合并为单条 `_anureo.dev/session-history/batch` 通知 | 50 条原始消息 ≈ 100+ 条 `session/update` JSON-RPC 帧；一条批量通知 + 前端单次 commit 应用，网络帧数与投影重渲从 O(N) 降到 O(1)（`ANUREO_ACP_LOAD_HISTORY_BATCH=0` 回退逐条） |
 | 分页返回 ACP `SessionUpdate` 数组而非原始 LLM 消息 | 前端复用 `session/update` 的 reducer/渲染逻辑，零新渲染代码 |
 | 服务端游标（每 session）而非前端传 `before` | 前端不需要理解原始消息索引；load 后游标即锚点，多连接重放自动归位 |
 | 游标存在 `SessionEntry.history_cursor`（`Arc<AtomicUsize>` 共享） | entry clone 共享同一游标，`sessions.get()` 拿到的副本读写一致 |
 | Tool 消息不允许作为截断/分页首条 | replay 从 ToolCallUpdate 开始会导致前端出现孤立工具结果；向前扩展到拥有它的 Assistant |
 
-## 批量通知：`_loomdesk.dev/session-history/batch`
+## 批量通知：`_anureo.dev/session-history/batch`
 
-`session/load` 尾部 replay 的线上形态（默认启用，`LOOM_ACP_LOAD_HISTORY_BATCH=0` 回退为逐条 `session/update`）：
+`session/load` 尾部 replay 的线上形态（默认启用，`ANUREO_ACP_LOAD_HISTORY_BATCH=0` 回退为逐条 `session/update`）：
 
 ```json
 {
   "jsonrpc": "2.0",
-  "method": "_loomdesk.dev/session-history/batch",
+  "method": "_anureo.dev/session-history/batch",
   "params": {
     "sessionId": "…",
     "updates": [ /* SessionUpdate[]，顺序同逐条 replay（BEGIN marker 与 END marker 之间的全部内容） */ ]
@@ -56,8 +56,8 @@ implementations:
 
 - 复用 marker 语义：通知流仍是 `BEGIN marker → batch → END marker`（marker 不外发，仅 agent 内部抑制 `session.updated` 广播）；
 - updates 元素与 `session/update` 的 update 对象同构，客户端批量 apply 时逐元素走同一 reducer；
-- 路由：`NotificationRouter::send_history_batch` 经 `ConnectionOutbound::GlobalNotification` 发到绑定连接（同 `_loomdesk.dev/global/update` 通道）；
-- 前端（OpenChamber）：`AcpRuntime.subscribeHistoryBatch` → `applyHistoryBatch`（单次 zustand commit，投影只重渲一次）。
+- 路由：`NotificationRouter::send_history_batch` 经 `ConnectionOutbound::GlobalNotification` 发到绑定连接（同 `_anureo.dev/global/update` 通道）；
+- 前端（anureo）：`AcpRuntime.subscribeHistoryBatch` → `applyHistoryBatch`（单次 zustand commit，投影只重渲一次）。
 
 ## 方法
 

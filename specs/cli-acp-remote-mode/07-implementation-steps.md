@@ -39,7 +39,7 @@ S7: 交互式 REPL                ← 增强，手动验证
    pub mod server_bootstrap;
    ```
 3. 在 `apps/acp/src/ws_bridge.rs` 中：
-   - 删除：`parse_host_port`, `health_url`, `probe_client`, `probe_server`, `resolve_loom_binary`, `spawn_server`, `spawn_reaper`, `ensure_server_ready`, `build_ws_request`
+   - 删除：`parse_host_port`, `health_url`, `probe_client`, `probe_server`, `resolve_anureo_binary`, `spawn_server`, `spawn_reaper`, `ensure_server_ready`, `build_ws_request`
    - 删除：`DEFAULT_WS_URL`, `SERVER_READY_TIMEOUT`, `PROBE_INTERVAL`, `RECONNECT_INITIAL_BACKOFF`, `RECONNECT_MAX_BACKOFF`, `CONNECT_TIMEOUT` 常量
    - 添加：`use crate::server_bootstrap::{...};` 导入所需函数
    - 迁移测试到 `server_bootstrap.rs` 的 `#[cfg(test)] mod tests`
@@ -49,17 +49,17 @@ S7: 交互式 REPL                ← 增强，手动验证
 
 ```bash
 # 编译
-cargo build -p loom-acp
+cargo build -p anureo-acp
 
 # 单元测试（迁移的测试）
-cargo test -p loom-acp server_bootstrap
+cargo test -p anureo-acp server_bootstrap
 
 # ws_bridge 仍然正常工作
-cargo test -p loom-acp ws_bridge
+cargo test -p anureo-acp ws_bridge
 
 # 确认 IDE 集成不受影响
-cargo build -p loom
-loom acp --help
+cargo build -p anureo
+anureo acp --help
 ```
 
 ---
@@ -92,12 +92,12 @@ loom acp --help
 
 ```bash
 # 编译
-cargo build -p loom
+cargo build -p anureo
 
 # 单元测试
-cargo test -p loom acp_client::tests::test_parse_agent_message_chunk
-cargo test -p loom acp_client::tests::test_parse_tool_call_started
-cargo test -p loom acp_client::tests::test_parse_usage_update
+cargo test -p anureo acp_client::tests::test_parse_agent_message_chunk
+cargo test -p anureo acp_client::tests::test_parse_tool_call_started
+cargo test -p anureo acp_client::tests::test_parse_usage_update
 ```
 
 ---
@@ -127,11 +127,11 @@ cargo test -p loom acp_client::tests::test_parse_usage_update
 
 ```bash
 # 编译
-cargo build -p loom
+cargo build -p anureo
 
-# 手动测试（需要 loom-server 运行）
-loom server &
-cargo test -p loom acp_client -- --ignored
+# 手动测试（需要 anureo-server 运行）
+anureo server &
+cargo test -p anureo acp_client -- --ignored
 ```
 
 ---
@@ -161,10 +161,10 @@ cargo test -p loom acp_client -- --ignored
 
 ```bash
 # 编译
-cargo build -p loom
+cargo build -p anureo
 
 # 确认现有 display 层未被破坏
-cargo test -p loom display
+cargo test -p anureo display
 ```
 
 ---
@@ -192,13 +192,13 @@ cargo test -p loom display
 
 ```bash
 # 编译
-cargo build -p loom
+cargo build -p anureo
 
 # 手动端到端测试
-loom server &
+anureo server &
 sleep 2
 # 通过环境变量临时启用（或直接调用函数）
-cargo test -p loom run_acp_mode -- --ignored
+cargo test -p anureo run_acp_mode -- --ignored
 ```
 
 ---
@@ -224,18 +224,18 @@ cargo test -p loom run_acp_mode -- --ignored
 
 ```bash
 # 编译
-cargo build -p loom
+cargo build -p anureo
 
 # 参数解析测试
-cargo test -p loom args::tests::remote
+cargo test -p anureo args::tests::remote
 
 # 帮助文本
-loom --help | grep remote
+anureo --help | grep remote
 
 # 端到端测试
-loom server &
+anureo server &
 sleep 2
-loom --remote "hello, what can you do?"
+anureo --remote "hello, what can you do?"
 # 应看到流式输出和工具调用展示
 ```
 
@@ -262,12 +262,12 @@ loom --remote "hello, what can you do?"
 
 ```bash
 # 编译
-cargo build -p loom
+cargo build -p anureo
 
 # 手动测试
-loom server &
+anureo server &
 sleep 2
-loom --remote -i
+anureo --remote -i
 # 在 REPL 中：
 # › hello
 # › what tools do you have?
@@ -307,4 +307,4 @@ loom --remote -i
 | `session/update` 的 `kind` 字段命名与预期不同 | 低 | S2 中用真实 server 测试 `parse_session_update` |
 | WS writer task 与 reader task 的生命周期管理 | 中 | S2 中确保 `shutdown()` 正确等待 reader 退出 |
 | display 层的 `create_stdio_event_callback` 签名不匹配 | 中 | S4 前检查签名，必要时适配 |
-| `agent_client_protocol` 不在 CLI 依赖中 | 低 | S1 前检查 Cargo.toml，通过 `loom_acp` re-export |
+| `agent_client_protocol` 不在 CLI 依赖中 | 低 | S1 前检查 Cargo.toml，通过 `anureo_acp` re-export |

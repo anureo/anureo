@@ -1,11 +1,11 @@
-# Loom Agent 执行模型
+# anureo Agent 执行模型
 
 > **状态**：基于当前源码的贡献者说明
 > **相关代码**：[`agent/agent-core/src/lib.rs`](../../agent/agent-core/src/lib.rs)、[`agent/agent-core/src/run`](../../agent/agent-core/src/run)、[`agent/agent-core/src/agent`](../../agent/agent-core/src/agent)
 
-本文所有源码路径均以 Loom 仓库根为基准；例如 `agent/agent-core/src/state.rs` 可直接从仓库根打开。链接目标使用本文所在目录 `docs/contributors/` 回到仓库根的相对链接。
+本文所有源码路径均以 anureo 仓库根为基准；例如 `agent/agent-core/src/state.rs` 可直接从仓库根打开。链接目标使用本文所在目录 `docs/contributors/` 回到仓库根的相对链接。
 
-本文面向 Loom 贡献者，说明一次 Agent run 如何从配置进入 graph、如何在 graph 中执行 LLM 与 Tool、如何通过 checkpoint/stream/cancellation 完成运行，以及 ReAct、DUP、ToT、GoT 的边界。结论只依据本文列出的当前源码；未在源码中出现的 API、命令或行为不视为已实现能力。
+本文面向 anureo 贡献者，说明一次 Agent run 如何从配置进入 graph、如何在 graph 中执行 LLM 与 Tool、如何通过 checkpoint/stream/cancellation 完成运行，以及 ReAct、DUP、ToT、GoT 的边界。结论只依据本文列出的当前源码；未在源码中出现的 API、命令或行为不视为已实现能力。
 
 ### 继续阅读
 
@@ -60,7 +60,7 @@ RunOptions
 
 `build_react_config` 的关键顺序是：先加载 profile，复制 [`RunOptions`](../../agent/agent-core/src/run/types.rs)，做 model/provider 解析，再把 profile 补入未显式设置的值；随后从环境构造 `ReactBuildConfig`。显式 `base_url`/`api_key` 覆盖 config 中对应字段；显式 `tier` 能解析时设置 `model_tier`，解析失败只记录 warning。profile 的 model tier 仅在没有显式 model 且没有更高优先级 tier 时应用。
 
-skills 是此阶段的一部分：extra tools 的 `builtin_skill()` 必须在 skill registry finalize 前注入，否则工具自身的 builtin skill 不会进入 LLM prompt。`load_memory_prompt()` 从 `env_config::home::loom_home()/data/memory` 读取 snapshot；prompt 最后由 role、AGENTS.md、skills、memory、`EnvContext` 和 working folder 组装。
+skills 是此阶段的一部分：extra tools 的 `builtin_skill()` 必须在 skill registry finalize 前注入，否则工具自身的 builtin skill 不会进入 LLM prompt。`load_memory_prompt()` 从 `env_config::home::anureo_home()/data/memory` 读取 snapshot；prompt 最后由 role、AGENTS.md、skills、memory、`EnvContext` 和 working folder 组装。
 
 `run_agent_from_config` 最终只返回 `RunCompletion::Finished(AgentRunResult)` 或 `RunCompletion::Cancelled`。React/DUP/ToT 从 final state 取 `last_assistant_reply()` 和 reasoning；GoT 使用 `summary_result()`，reasoning 为 `None`。失败返回 `RunError`，不会被伪装成 Finished。
 
@@ -169,19 +169,19 @@ GoT 使用 `GotState` 的 task DAG。`ExecuteGraphNode` 找到 ready node，一�
 
 ### 7.1 安全前置与范围
 
-以下命令涉及两种范围：`cargo test -p agent` 从 Loom 仓库根执行；若要同时隔离测试的 working folder，则使用下面的 manifest 形式，从临时目录调用同一个 package。首次验证先把 Loom home 和当前 working folder 隔离到临时目录，并确保没有把真实 API key 或网络 provider 注入测试进程：
+以下命令涉及两种范围：`cargo test -p agent` 从 anureo 仓库根执行；若要同时隔离测试的 working folder，则使用下面的 manifest 形式，从临时目录调用同一个 package。首次验证先把 anureo home 和当前 working folder 隔离到临时目录，并确保没有把真实 API key 或网络 provider 注入测试进程：
 
 ```powershell
 $repoRoot = (Get-Location).Path
-$testHome = Join-Path $env:TEMP ("loom-agent-test-" + [guid]::NewGuid())
-$testWorkdir = Join-Path $env:TEMP ("loom-agent-workdir-" + [guid]::NewGuid())
+$testHome = Join-Path $env:TEMP ("anureo-agent-test-" + [guid]::NewGuid())
+$testWorkdir = Join-Path $env:TEMP ("anureo-agent-workdir-" + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $testHome | Out-Null
 New-Item -ItemType Directory -Path $testWorkdir | Out-Null
-$previousLoomHome = $env:LOOM_HOME
-$isolatedVars = @("OPENAI_API_KEY", "OPENAI_BASE_URL", "MCP_GITHUB_URL", "GITHUB_TOKEN", "LOOM_MCP_CONFIG_PATH")
+$previousanureoHome = $env:ANUREO_HOME
+$isolatedVars = @("OPENAI_API_KEY", "OPENAI_BASE_URL", "MCP_GITHUB_URL", "GITHUB_TOKEN", "ANUREO_MCP_CONFIG_PATH")
 $previousVars = @{}
 try {
-    $env:LOOM_HOME = $testHome
+    $env:ANUREO_HOME = $testHome
     foreach ($name in $isolatedVars) {
         $previousVars[$name] = [System.Environment]::GetEnvironmentVariable($name)
         Remove-Item "Env:$name" -ErrorAction SilentlyContinue
@@ -190,8 +190,8 @@ try {
     cargo test --manifest-path (Join-Path $repoRoot "agent/agent-core/Cargo.toml")
 } finally {
     Pop-Location
-    if ($null -eq $previousLoomHome) { Remove-Item Env:LOOM_HOME -ErrorAction SilentlyContinue }
-    else { $env:LOOM_HOME = $previousLoomHome }
+    if ($null -eq $previousanureoHome) { Remove-Item Env:ANUREO_HOME -ErrorAction SilentlyContinue }
+    else { $env:ANUREO_HOME = $previousanureoHome }
     foreach ($name in $isolatedVars) {
         if ($null -eq $previousVars[$name]) { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
         else { Set-Item "Env:$name" $previousVars[$name] }
@@ -201,7 +201,7 @@ try {
 }
 ```
 
-上述脚本暂时清除常见 API key、provider endpoint、MCP 配置路径并在退出时恢复；仍应在没有其他凭据注入的 shell 中运行。涉及 provider 的测试应使用源码已有 `MockLlm` 或本地 TCP fixture。`LOOM_HOME` 会影响 [`agent/agent-core/src/run/config_builder.rs`](../../agent/agent-core/src/run/config_builder.rs) 读取的 memory/profile 等用户数据；临时 working folder 则避免测试把项目级 `AGENTS.md`、skills 或相对路径数据当作输入。[`agent/agent-core/src/test_support.rs`](../../agent/agent-core/src/test_support.rs) 的 `with_env()`/`env_lock()` 只为 agent crate 内测试提供进程级环境变量锁和恢复，不会自动保护其他 crate 的测试。
+上述脚本暂时清除常见 API key、provider endpoint、MCP 配置路径并在退出时恢复；仍应在没有其他凭据注入的 shell 中运行。涉及 provider 的测试应使用源码已有 `MockLlm` 或本地 TCP fixture。`ANUREO_HOME` 会影响 [`agent/agent-core/src/run/config_builder.rs`](../../agent/agent-core/src/run/config_builder.rs) 读取的 memory/profile 等用户数据；临时 working folder 则避免测试把项目级 `AGENTS.md`、skills 或相对路径数据当作输入。[`agent/agent-core/src/test_support.rs`](../../agent/agent-core/src/test_support.rs) 的 `with_env()`/`env_lock()` 只为 agent crate 内测试提供进程级环境变量锁和恢复，不会自动保护其他 crate 的测试。
 
 `cargo test -p agent` 是本 crate 的直接验证；`cargo test --manifest-path agent/agent-core/Cargo.toml` 是等价的 manifest 形式。package 名是 `agent`，目录名是 `agent-core`，不能写成 `cargo test -p agent-core`。`cargo test --workspace` 是扩大范围的可选验证，不是本页最小命令；它可能运行访问文件系统、启动子进程或依赖本机服务的集成测试，例如 workflow resume、`apps/acp/tests/e2e` 和其他应用测试。需要运行这些目标时，应按 [测试、调试与可观测性](./09-testing-debugging-and-observability.md) 的 fixture、临时目录和日志说明单独隔离。
 
@@ -238,5 +238,5 @@ pattern 或 stream 改动至少应补充 `MockLlm`、tool registry、取消、ch
 2. 沿 `RunOptions → config_builder → run/runner → pattern runner → runner_common → graph node` 追踪数据和错误；对应仓库根相对路径分别从 `agent/agent-core/src` 下定位。
 3. 先为 state transition、graph routing、checkpoint/resume、stream completion 或 cancellation 写针对性测试。
 4. 新增工具时同时验证 `ToolCallContext`、output normalization、storage reference 和 event adapter。
-5. 在隔离的 `LOOM_HOME` 下运行 `cargo test -p agent apply_think` 或 `cargo test -p agent`，再运行 `cargo check --workspace`；按需运行扩大范围的 `cargo test --workspace`。
+5. 在隔离的 `ANUREO_HOME` 下运行 `cargo test -p agent apply_think` 或 `cargo test -p agent`，再运行 `cargo check --workspace`；按需运行扩大范围的 `cargo test --workspace`。
 6. 修改后重新核对本文件中的路径、命令、配置字段和“实验性”标签是否仍与源码一致。

@@ -1,4 +1,4 @@
-# Loom Workflow Guide
+# anureo Workflow Guide
 
 Workflows are suited for tasks that require multiple agents, parallel execution, or long-running repeated operations. They use Lua for task orchestration and save each execution's state, events, reports, and source snapshots as an **instance**.
 
@@ -6,7 +6,7 @@ Workflows are suited for tasks that require multiple agents, parallel execution,
 
 ## Creating a Workflow
 
-Place `.lua` files in your project's `.loom/workflows/`. The workflow DSL, agent parameters, and examples are in the built-in skill/reference under `agent/tool/tool-workflow/src/`; confirm discoverable definitions via Loom's workflow file list before writing.
+Place `.lua` files in your project's `.anureo/workflows/`. The workflow DSL, agent parameters, and examples are in the built-in skill/reference under `agent/tool/tool-workflow/src/`; confirm discoverable definitions via anureo's workflow file list before writing.
 
 Workflows should:
 
@@ -50,6 +50,6 @@ workflow_list(status_filter="failed")
 
 ## Instance Artifacts and Cleanup
 
-Instances typically live in `.loom/instances/<instance-dir>/`, containing a summary, checkpoint, events, source snapshot, and optional large reports/agent outputs. They are useful for auditing and troubleshooting but also consume disk space.
+Instances typically live in `.anureo/instances/<instance-dir>/`, containing a summary, checkpoint, events, source snapshot, and optional large reports/agent outputs. They are useful for auditing and troubleshooting but also consume disk space.
 
-Before cleanup, confirm that the instance is no longer needed for recovery or diagnostics. During the compatibility period, old `.luft/runs/` records can be read and should be marked as `legacy`; new instances use `.loom/`.
+Before cleanup, confirm that the instance is no longer needed for recovery or diagnostics. During the compatibility period, old `.luft/runs/` records can be read and should be marked as `legacy`; new instances use `.anureo/`.

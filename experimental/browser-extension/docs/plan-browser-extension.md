@@ -1,6 +1,6 @@
-# Loom Browser Extension — 集成方案
+# anureo Browser Extension — 集成方案
 
-> 基于 [noemica-io/open-claude-in-chrome](https://github.com/noemica-io/open-claude-in-chrome)，用 Loom 替换 Claude Code 作为 Agent 层。
+> 基于 [noemica-io/open-claude-in-chrome](https://github.com/noemica-io/open-claude-in-chrome)，用 anureo 替换 Claude Code 作为 Agent 层。
 
 ---
 
@@ -22,13 +22,13 @@ Claude Code ←stdio MCP→ mcp-server.js ←TCP 18765→ native-host.js ←Nati
 
 ### 1.2 目标
 
-将 Agent 层从 Claude Code 替换为 Loom，保留浏览器插件的全部能力。
+将 Agent 层从 Claude Code 替换为 anureo，保留浏览器插件的全部能力。
 
 ### 1.3 约束
 
 - 不修改 `extension/` 目录的任何代码（经过验证的稳定实现）
 - 不修改 `host/` 目录的任何代码（通信协议已完善）
-- 只需做 Loom 侧的配置集成
+- 只需做 anureo 侧的配置集成
 
 ---
 
@@ -36,12 +36,12 @@ Claude Code ←stdio MCP→ mcp-server.js ←TCP 18765→ native-host.js ←Nati
 
 ### 2.1 核心思路
 
-原项目的 `mcp-server.js` 本身就是一个标准的 MCP Server，通过 stdio 通信。Loom 原生支持 MCP Server 注册。**只需将 `mcp-server.js` 注册为 Loom 的 MCP 工具源即可。**
+原项目的 `mcp-server.js` 本身就是一个标准的 MCP Server，通过 stdio 通信。anureo 原生支持 MCP Server 注册。**只需将 `mcp-server.js` 注册为 anureo 的 MCP 工具源即可。**
 
 ```
-Loom Agent ←stdio MCP→ mcp-server.js ←TCP 18765→ native-host.js ←Native Messaging→ Chrome Extension
+anureo Agent ←stdio MCP→ mcp-server.js ←TCP 18765→ native-host.js ←Native Messaging→ Chrome Extension
                   ↑
-              这一层不变，只是调用者从 Claude Code 换成 Loom
+              这一层不变，只是调用者从 Claude Code 换成 anureo
 ```
 
 ### 2.2 改动范围
@@ -49,14 +49,14 @@ Loom Agent ←stdio MCP→ mcp-server.js ←TCP 18765→ native-host.js ←Nativ
 仅 1 个文件：
 
 ```
-.loom/mcp.json    ← 新增，注册 MCP Server
+.anureo/mcp.json    ← 新增，注册 MCP Server
 ```
 
 无需改动任何现有代码。
 
 ### 2.3 配置
 
-`.loom/mcp.json`：
+`.anureo/mcp.json`：
 
 ```json
 {
@@ -121,15 +121,15 @@ chmod +x install.sh
 
 关闭所有窗口后重新打开。浏览器在启动时读取 native messaging 配置。
 
-### 3.5 配置 Loom
+### 3.5 配置 anureo
 
-确保 `.loom/mcp.json` 已按 2.3 节配置。Loom 启动时会自动启动 MCP Server。
+确保 `.anureo/mcp.json` 已按 2.3 节配置。anureo 启动时会自动启动 MCP Server。
 
 ---
 
 ## 4. 可用工具清单
 
-Loom 注册成功后，Agent 可使用以下 18 个 MCP 工具：
+anureo 注册成功后，Agent 可使用以下 18 个 MCP 工具：
 
 | 工具 | 功能 | 参数 |
 |---|---|---|
@@ -178,11 +178,11 @@ Loom 注册成功后，Agent 可使用以下 18 个 MCP 工具：
    → 点击按钮
 ```
 
-### 5.2 与 Loom 内置工具的关系
+### 5.2 与 anureo 内置工具的关系
 
-Loom 已有内置的浏览器控制工具（`take_snapshot`, `click`, `navigate_page` 等），通过 CDP 直接操作浏览器。MCP 工具提供了额外能力：
+anureo 已有内置的浏览器控制工具（`take_snapshot`, `click`, `navigate_page` 等），通过 CDP 直接操作浏览器。MCP 工具提供了额外能力：
 
-| 能力 | Loom 内置 | MCP 工具 | 建议使用 |
+| 能力 | anureo 内置 | MCP 工具 | 建议使用 |
 |---|---|---|---|
 | 页面导航 | `navigate_page` | `navigate` | 内置（更直接） |
 | 截图 | `take_screenshot` | `computer(screenshot)` | 内置（更直接） |
@@ -197,7 +197,7 @@ Loom 已有内置的浏览器控制工具（`take_snapshot`, `click`, `navigate_
 | *正文提取* | — | `get_page_text` | 仅 MCP |
 | *Tab 分组* | — | `tabs_context_mcp` | 仅 MCP |
 
-**建议**：基础操作用 Loom 内置工具（更快），需要 ref 引用、shadow DOM 穿透、正文提取时用 MCP 工具。
+**建议**：基础操作用 anureo 内置工具（更快），需要 ref 引用、shadow DOM 穿透、正文提取时用 MCP 工具。
 
 ---
 
@@ -205,7 +205,7 @@ Loom 已有内置的浏览器控制工具（`take_snapshot`, `click`, `navigate_
 
 `mcp-server.js` 内置了 PRIMARY / CLIENT 模式：
 
-- 第一个 Loom 会话成为 PRIMARY，拥有 TCP 端口
+- 第一个 anureo 会话成为 PRIMARY，拥有 TCP 端口
 - 后续会话自动以 CLIENT 模式连接到 PRIMARY
 - 所有会话共享同一个浏览器扩展
 
@@ -242,7 +242,7 @@ mkdir -p ~/.config/open-claude-in-chrome
 echo '{"port": 19000}' > ~/.config/open-claude-in-chrome/config.json
 ```
 
-重启浏览器和 Loom。
+重启浏览器和 anureo。
 
 ### 7.4 清理残留进程
 
@@ -259,12 +259,12 @@ taskkill /F /FI "WINDOWTITLE eq mcp-server*"
 ## 8. 优化方向（实施状态）
 
 1. ~~**Windows 安装脚本**~~ — ✅ 已实现 `install.ps1`，支持 Chrome/Edge/Brave 注册
-2. ~~**Agent Profile**~~ — ✅ 已创建 `.loom/agents/browser/profile.md`
-3. ~~**Skill**~~ — ✅ 已创建 `.loom/skills/browser-automation.md`
+2. ~~**Agent Profile**~~ — ✅ 已创建 `.anureo/agents/browser/profile.md`
+3. ~~**Skill**~~ — ✅ 已创建 `.anureo/skills/browser-automation.md`
 4. **WebSocket 方案** — 待定，当前 Native Messaging 方案可工作
 5. ~~**GIF 录制**~~ — ✅ 已实现 `gif_creator` 工具（start/stop/export/clear）
 6. ~~**图片上传**~~ — ✅ 已实现 `upload_image`（支持 ref 和 coordinate 两种方式）
-7. ~~**品牌重命名**~~ — ✅ 从 "Open Claude in Chrome" 重命名为 "Loom Browser"
+7. ~~**品牌重命名**~~ — ✅ 从 "Open Claude in Chrome" 重命名为 "anureo Browser"
 
 ---
 
@@ -277,7 +277,7 @@ Native Messaging 需要系统级注册（写文件/注册表），安装步骤�
 ### 架构
 
 ```
-Loom Agent ←stdio MCP→ browser-mcp-server.js ←WebSocket→ Extension background.js → content.js
+anureo Agent ←stdio MCP→ browser-mcp-server.js ←WebSocket→ Extension background.js → content.js
 ```
 
 ### 需要改动的文件

@@ -1,8 +1,8 @@
-# Background Review Prompt: Loom vs Hermes 对齐分析
+# Background Review Prompt: anureo vs Hermes 对齐分析
 
 ## 涉及文件
 
-| 角色 | Hermes (Python) | Loom (Rust) |
+| 角色 | Hermes (Python) | anureo (Rust) |
 |------|-----------------|-------------|
 | Prompt 定义 | `agent/background_review.py:160-360` | `experimental/curator/src/prompts.rs:7-226` |
 | Runtime guard | `agent/background_review.py:786-790` | `experimental/curator/src/review.rs:23-29` |
@@ -28,7 +28,7 @@ _MEMORY_REVIEW_PROMPT = (
 )
 ```
 
-**Loom** (`prompts.rs:7-17`):
+**anureo** (`prompts.rs:7-17`):
 ```rust
 pub const MEMORY_REVIEW_PROMPT: &str = "\
 Review the conversation above and consider saving to memory if appropriate.\n\
@@ -44,7 +44,7 @@ If nothing is worth saving, just say 'Nothing to save.' and stop.";
 ```
 
 **差异**:
-- `-` → `—` (em dash)：Hermes 用 ASCII 连字符 `-`，Loom 用 Unicode em dash `—`。全文统一。
+- `-` → `—` (em dash)：Hermes 用 ASCII 连字符 `-`，anureo 用 Unicode em dash `—`。全文统一。
 - 句末 `.` vs `.`：语义相同，句号位置一致。
 - **语义：完全对齐。**
 
@@ -54,17 +54,17 @@ If nothing is worth saving, just say 'Nothing to save.' and stop.";
 
 **差异逐项**:
 
-| # | 位置 | Hermes | Loom | 类型 |
+| # | 位置 | Hermes | anureo | 类型 |
 |---|------|--------|------|------|
 | 1 | 分隔符 | `-` (ASCII) | `—` (em dash) | 标点 |
 | 2 | `skill_list` vs `skills_list` | `UPDATE AN EXISTING UMBRELLA (via skills_list + skill_view)` | `UPDATE AN EXISTING UMBRELLA (via skill_list + skill_view)` | 工具名 |
-| 3 | Protected skills 示例 | `e.g. 'hermes-agent'` | `e.g. 'hermes-agent'` | 应改为 Loom 等价物 |
-| 4 | Hub-installed | `'hermes skills install'` | `'hermes skills install'` | 应改为 Loom 等价物 |
-| 5 | Pin 命令 | `'hermes curator pin'` | `'hermes curator pin'` | 应改为 Loom 等价物 |
+| 3 | Protected skills 示例 | `e.g. 'hermes-agent'` | `e.g. 'hermes-agent'` | 应改为 anureo 等价物 |
+| 4 | Hub-installed | `'hermes skills install'` | `'hermes skills install'` | 应改为 anureo 等价物 |
+| 5 | Pin 命令 | `'hermes curator pin'` | `'hermes curator pin'` | 应改为 anureo 等价物 |
 
 - 差异 1：全文 `—` vs `-`，与 MEMORY_REVIEW_PROMPT 相同的模式。
-- 差异 2：Hermes 用 `skills_list`（复数），Loom 用 `skill_list`（单数）。**Loom 是正确的**——Loom 注册的工具名就叫 `skill_list`（无 s）。Hermes 这里可能是笔误。
-- 差异 3-5：Hermes 专有示例（`'hermes-agent'` skill, `'hermes skills install'`, `'hermes curator pin'`）原样保留在 Loom 中，应改为 Loom 对应物。
+- 差异 2：Hermes 用 `skills_list`（复数），anureo 用 `skill_list`（单数）。**anureo 是正确的**——anureo 注册的工具名就叫 `skill_list`（无 s）。Hermes 这里可能是笔误。
+- 差异 3-5：Hermes 专有示例（`'hermes-agent'` skill, `'hermes skills install'`, `'hermes curator pin'`）原样保留在 anureo 中，应改为 anureo 对应物。
 - **语义：对齐，仅有标点和项目名差异。**
 
 ---
@@ -93,7 +93,7 @@ user_message=(
 - 用 `-` (ASCII)
 - 没有包装在 `<background_review>` 标签中
 
-### Loom (`review.rs:23-29` + `review.rs:287-289`)
+### anureo (`review.rs:23-29` + `review.rs:287-289`)
 
 ```rust
 pub const REVIEW_INSTRUCTION: &str = "<background_review>
@@ -120,7 +120,7 @@ format!(
 
 ### 差异汇总
 
-| 维度 | Hermes | Loom | 影响 |
+| 维度 | Hermes | anureo | 影响 |
 |------|--------|------|------|
 | 包装方式 | 无标签，纯文本 | `<background_review>` XML 标签 | 结构差异 |
 | 额外内容 | 无 | "extract durable knowledge"、memory/skill 用法提示 | 语义差异 |
@@ -149,7 +149,7 @@ review_agent.run_conversation(
 
 结构：`{prompt}\n\n{guard_text}`
 
-### Loom
+### anureo
 
 ```rust
 // review.rs:284-289
@@ -165,7 +165,7 @@ Some(format!(
 
 ### 差异
 
-| 维度 | Hermes | Loom |
+| 维度 | Hermes | anureo |
 |------|--------|------|
 | 对话内容传递 | `conversation_history` 参数（API 级 history） | 拼在 user message 里（文本级 inline） |
 | Guard 位置 | prompt 之后 `\n\n` 直接拼接 | prompt 之后 `\n\n` + `REVIEW_INSTRUCTION`（包装在 XML 标签中） |
@@ -201,11 +201,11 @@ You can only call memory and skill management tools. Other tools will be denied 
 
 ### 4.3 项目名替换（`prompts.rs`）
 
-| Hermes 原文 | Loom 替换 |
+| Hermes 原文 | anureo 替换 |
 |-------------|-----------|
-| `e.g. 'hermes-agent'` | `e.g. 'loom-development'` 或删除示例 |
-| `'hermes skills install'` | `'loom skills install'` 或删除 |
-| `'hermes curator pin'` | `'loom curator pin'` |
+| `e.g. 'hermes-agent'` | `e.g. 'anureo-development'` 或删除示例 |
+| `'hermes skills install'` | `'anureo skills install'` 或删除 |
+| `'hermes curator pin'` | `'anureo curator pin'` |
 
 ### 4.4 测试更新
 
@@ -216,6 +216,6 @@ You can only call memory and skill management tools. Other tools will be denied 
 ## 5. 不需要改动的部分
 
 - `select_review_prompt()` 逻辑 — 已对齐
-- `build_review_user_message()` 结构 — Loom 的 `---` 分隔 + inline session 方式是 Rust 侧架构决定（没有 API-level conversation_history），与 prompt 内容无关
+- `build_review_user_message()` 结构 — anureo 的 `---` 分隔 + inline session 方式是 Rust 侧架构决定（没有 API-level conversation_history），与 prompt 内容无关
 - `ReviewToolGate` — runtime 级工具白名单，与 prompt 无关
 - `CURATOR_REVIEW_PROMPT` — curator LLM pass 用，不是 background review

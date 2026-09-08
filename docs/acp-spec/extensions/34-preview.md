@@ -1,6 +1,6 @@
 # Preview（开发服务器预览代理）
 
-> 命名空间: `_loomdesk.dev/preview/*`
+> 命名空间: `_anureo.dev/preview/*`
 > Capability key: `preview`
 
 ## Capability
@@ -48,7 +48,7 @@ Client (browser)
 
 ## Methods
 
-### `_loomdesk.dev/preview/proxy`
+### `_anureo.dev/preview/proxy`
 
 | 项目 | 内容 |
 |---|---|

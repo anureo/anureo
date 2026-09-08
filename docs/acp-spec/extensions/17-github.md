@@ -1,6 +1,6 @@
 # GitHub 扩展
 
-> 命名空间: `_loomdesk.dev/github/*`
+> 命名空间: `_anureo.dev/github/*`
 > Capability key: `github`
 > 实现状态: ❌ 未实现
 
@@ -49,7 +49,7 @@ GitHub OAuth device flow、token 刷新和 Octokit client 属于 server 实现�
 
 ---
 
-### `_loomdesk.dev/github/auth_status`
+### `_anureo.dev/github/auth_status`
 
 | 项目 | 内容 |
 |---|---|
@@ -65,7 +65,7 @@ GitHub OAuth device flow、token 刷新和 Octokit client 属于 server 实现�
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "_loomdesk.dev/github/auth_status",
+  "method": "_anureo.dev/github/auth_status",
   "params": {}
 }
 ```
@@ -163,7 +163,7 @@ pub struct GithubAuthStatusResponse {
 
 ---
 
-### `_loomdesk.dev/github/auth_start`
+### `_anureo.dev/github/auth_start`
 
 | 项目 | 内容 |
 |---|---|
@@ -180,7 +180,7 @@ pub struct GithubAuthStatusResponse {
 {
   "jsonrpc": "2.0",
   "id": 2,
-  "method": "_loomdesk.dev/github/auth_start",
+  "method": "_anureo.dev/github/auth_start",
   "params": {
     "scopes": ["repo", "workflow", "read:org"]
   }
@@ -257,7 +257,7 @@ pub struct GithubAuthStartResponse {
 
 ---
 
-### `_loomdesk.dev/github/auth_complete`
+### `_anureo.dev/github/auth_complete`
 
 | 项目 | 内容 |
 |---|---|
@@ -273,7 +273,7 @@ pub struct GithubAuthStartResponse {
 {
   "jsonrpc": "2.0",
   "id": 3,
-  "method": "_loomdesk.dev/github/auth_complete",
+  "method": "_anureo.dev/github/auth_complete",
   "params": {
     "deviceCode": "device-code-internal-id"
   }
@@ -356,7 +356,7 @@ pub struct GithubAuthCompleteResponse {
 
 ---
 
-### `_loomdesk.dev/github/auth_disconnect`
+### `_anureo.dev/github/auth_disconnect`
 
 | 项目 | 内容 |
 |---|---|
@@ -372,7 +372,7 @@ pub struct GithubAuthCompleteResponse {
 {
   "jsonrpc": "2.0",
   "id": 4,
-  "method": "_loomdesk.dev/github/auth_disconnect",
+  "method": "_anureo.dev/github/auth_disconnect",
   "params": {
     "accountId": "gh-user-12345"
   }
@@ -407,7 +407,7 @@ pub struct GithubAuthCompleteResponse {
 
 1. **Token 撤销**: Server 调用 GitHub `DELETE /applications/{client-id}/token` 撤销 token（best-effort），然后从本地 credential store 删除。
 2. **活跃账号切换**: 若断开的是活跃账号且存在其他账号，Server 自动切换到下一个。
-3. **Capability 变化**: 断开最后一个账号后，`github/pr_*`、`github/issues_*` 等 method 可能变为不可用（依赖 gh CLI fallback 是否启用）。Server 发送 `_loomdesk.dev/capability_changed` notification。
+3. **Capability 变化**: 断开最后一个账号后，`github/pr_*`、`github/issues_*` 等 method 可能变为不可用（依赖 gh CLI fallback 是否启用）。Server 发送 `_anureo.dev/capability_changed` notification。
 
 #### Rust 类型
 
@@ -435,7 +435,7 @@ pub struct GithubAuthDisconnectResponse {
 
 ---
 
-### `_loomdesk.dev/github/auth_activate`
+### `_anureo.dev/github/auth_activate`
 
 | 项目 | 内容 |
 |---|---|
@@ -451,7 +451,7 @@ pub struct GithubAuthDisconnectResponse {
 {
   "jsonrpc": "2.0",
   "id": 5,
-  "method": "_loomdesk.dev/github/auth_activate",
+  "method": "_anureo.dev/github/auth_activate",
   "params": {
     "accountId": "gh-user-67890"
   }
@@ -503,7 +503,7 @@ pub struct GithubAuthActivateResponse {
 
 ---
 
-### `_loomdesk.dev/github/auth_set_gh_cli_disabled`
+### `_anureo.dev/github/auth_set_gh_cli_disabled`
 
 | 项目 | 内容 |
 |---|---|
@@ -519,7 +519,7 @@ pub struct GithubAuthActivateResponse {
 {
   "jsonrpc": "2.0",
   "id": 6,
-  "method": "_loomdesk.dev/github/auth_set_gh_cli_disabled",
+  "method": "_anureo.dev/github/auth_set_gh_cli_disabled",
   "params": {
     "disabled": true
   }
@@ -573,7 +573,7 @@ pub struct GithubSetGhCliDisabledResponse {
 
 ---
 
-### `_loomdesk.dev/github/pr_status`
+### `_anureo.dev/github/pr_status`
 
 | 项目 | 内容 |
 |---|---|
@@ -589,7 +589,7 @@ pub struct GithubSetGhCliDisabledResponse {
 {
   "jsonrpc": "2.0",
   "id": 10,
-  "method": "_loomdesk.dev/github/pr_status",
+  "method": "_anureo.dev/github/pr_status",
   "params": {
     "owner": "myorg",
     "repo": "myrepo",
@@ -722,7 +722,7 @@ pub struct GithubPrStatusResponse {
 
 ---
 
-### `_loomdesk.dev/github/prs_list`
+### `_anureo.dev/github/prs_list`
 
 | 项目 | 内容 |
 |---|---|
@@ -738,7 +738,7 @@ pub struct GithubPrStatusResponse {
 {
   "jsonrpc": "2.0",
   "id": 11,
-  "method": "_loomdesk.dev/github/prs_list",
+  "method": "_anureo.dev/github/prs_list",
   "params": {
     "owner": "myorg",
     "repo": "myrepo",
@@ -836,7 +836,7 @@ pub struct GithubPrsListResponse {
 
 ---
 
-### `_loomdesk.dev/github/pr_context`
+### `_anureo.dev/github/pr_context`
 
 | 项目 | 内容 |
 |---|---|
@@ -852,7 +852,7 @@ pub struct GithubPrsListResponse {
 {
   "jsonrpc": "2.0",
   "id": 12,
-  "method": "_loomdesk.dev/github/pr_context",
+  "method": "_anureo.dev/github/pr_context",
   "params": {
     "owner": "myorg",
     "repo": "myrepo",
@@ -978,7 +978,7 @@ pub struct GithubPrContextResponse {
 
 ---
 
-### `_loomdesk.dev/github/pr_create`
+### `_anureo.dev/github/pr_create`
 
 | 项目 | 内容 |
 |---|---|
@@ -995,7 +995,7 @@ pub struct GithubPrContextResponse {
 {
   "jsonrpc": "2.0",
   "id": 13,
-  "method": "_loomdesk.dev/github/pr_create",
+  "method": "_anureo.dev/github/pr_create",
   "params": {
     "owner": "myorg",
     "repo": "myrepo",
@@ -1084,7 +1084,7 @@ pub struct GithubPrCreateResponse {
 
 ---
 
-### `_loomdesk.dev/github/pr_update`
+### `_anureo.dev/github/pr_update`
 
 | 项目 | 内容 |
 |---|---|
@@ -1100,7 +1100,7 @@ pub struct GithubPrCreateResponse {
 {
   "jsonrpc": "2.0",
   "id": 14,
-  "method": "_loomdesk.dev/github/pr_update",
+  "method": "_anureo.dev/github/pr_update",
   "params": {
     "owner": "myorg",
     "repo": "myrepo",
@@ -1167,7 +1167,7 @@ pub struct GithubPrUpdateResponse {
 
 ---
 
-### `_loomdesk.dev/github/pr_merge`
+### `_anureo.dev/github/pr_merge`
 
 | 项目 | 内容 |
 |---|---|
@@ -1183,7 +1183,7 @@ pub struct GithubPrUpdateResponse {
 {
   "jsonrpc": "2.0",
   "id": 15,
-  "method": "_loomdesk.dev/github/pr_merge",
+  "method": "_anureo.dev/github/pr_merge",
   "params": {
     "owner": "myorg",
     "repo": "myrepo",
@@ -1272,7 +1272,7 @@ pub struct GithubPrMergeResponse {
 
 ---
 
-### `_loomdesk.dev/github/pr_ready`
+### `_anureo.dev/github/pr_ready`
 
 | 项目 | 内容 |
 |---|---|
@@ -1288,7 +1288,7 @@ pub struct GithubPrMergeResponse {
 {
   "jsonrpc": "2.0",
   "id": 16,
-  "method": "_loomdesk.dev/github/pr_ready",
+  "method": "_anureo.dev/github/pr_ready",
   "params": {
     "owner": "myorg",
     "repo": "myrepo",
@@ -1345,7 +1345,7 @@ pub struct GithubPrReadyResponse {
 
 ---
 
-### `_loomdesk.dev/github/issues_list`
+### `_anureo.dev/github/issues_list`
 
 | 项目 | 内容 |
 |---|---|
@@ -1361,7 +1361,7 @@ pub struct GithubPrReadyResponse {
 {
   "jsonrpc": "2.0",
   "id": 20,
-  "method": "_loomdesk.dev/github/issues_list",
+  "method": "_anureo.dev/github/issues_list",
   "params": {
     "owner": "myorg",
     "repo": "myrepo",
@@ -1453,7 +1453,7 @@ pub struct GithubIssuesListResponse {
 
 ---
 
-### `_loomdesk.dev/github/issue_get`
+### `_anureo.dev/github/issue_get`
 
 | 项目 | 内容 |
 |---|---|
@@ -1469,7 +1469,7 @@ pub struct GithubIssuesListResponse {
 {
   "jsonrpc": "2.0",
   "id": 21,
-  "method": "_loomdesk.dev/github/issue_get",
+  "method": "_anureo.dev/github/issue_get",
   "params": {
     "owner": "myorg",
     "repo": "myrepo",
@@ -1539,7 +1539,7 @@ pub type GithubIssueGetResponse = GithubIssueDetail;
 
 ---
 
-### `_loomdesk.dev/github/issue_comments`
+### `_anureo.dev/github/issue_comments`
 
 | 项目 | 内容 |
 |---|---|
@@ -1555,7 +1555,7 @@ pub type GithubIssueGetResponse = GithubIssueDetail;
 {
   "jsonrpc": "2.0",
   "id": 22,
-  "method": "_loomdesk.dev/github/issue_comments",
+  "method": "_anureo.dev/github/issue_comments",
   "params": {
     "owner": "myorg",
     "repo": "myrepo",
@@ -1634,7 +1634,7 @@ pub struct GithubIssueCommentsResponse {
 
 ---
 
-### `_loomdesk.dev/github/repo_upstream`
+### `_anureo.dev/github/repo_upstream`
 
 | 项目 | 内容 |
 |---|---|
@@ -1650,7 +1650,7 @@ pub struct GithubIssueCommentsResponse {
 {
   "jsonrpc": "2.0",
   "id": 30,
-  "method": "_loomdesk.dev/github/repo_upstream",
+  "method": "_anureo.dev/github/repo_upstream",
   "params": {
     "owner": "myfork",
     "repo": "myrepo"
@@ -1724,7 +1724,7 @@ pub struct GithubRepoUpstreamResponse {
 
 ---
 
-### `_loomdesk.dev/github/repo_branches`
+### `_anureo.dev/github/repo_branches`
 
 | 项目 | 内容 |
 |---|---|
@@ -1740,7 +1740,7 @@ pub struct GithubRepoUpstreamResponse {
 {
   "jsonrpc": "2.0",
   "id": 31,
-  "method": "_loomdesk.dev/github/repo_branches",
+  "method": "_anureo.dev/github/repo_branches",
   "params": {
     "owner": "myorg",
     "repo": "myrepo",
@@ -1824,12 +1824,12 @@ pub struct GithubRepoBranchesResponse {
 
 ## Notifications
 
-### `_loomdesk.dev/github/auth_changed`
+### `_anureo.dev/github/auth_changed`
 
 ```json
 {
   "jsonrpc": "2.0",
-  "method": "_loomdesk.dev/github/auth_changed",
+  "method": "_anureo.dev/github/auth_changed",
   "params": {
     "authenticated": true,
     "activeAccountId": "gh-user-12345"

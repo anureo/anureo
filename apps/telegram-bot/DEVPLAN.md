@@ -12,8 +12,8 @@
 
 ### Task 1.1 修复上游编译错误
 
-**问题**: `loom` crate 的 `ToolCallContent` 缺少 `len()` 方法，阻塞全部编译和测试
-**位置**: `loom/src/llm/openai/request.rs:123`, `loom/src/user_message/sqlite_store.rs:175`
+**问题**: `anureo` crate 的 `ToolCallContent` 缺少 `len()` 方法，阻塞全部编译和测试
+**位置**: `anureo/src/llm/openai/request.rs:123`, `anureo/src/user_message/sqlite_store.rs:175`
 **工作量**: S (0.5d)
 **验收**:
 - [ ] `cargo build -p telegram-bot` 成功

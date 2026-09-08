@@ -1,6 +1,6 @@
 # 跨域设计模式
 
-> **适用范围**: 所有 `_loomdesk.dev/*` 扩展域共享的设计模式
+> **适用范围**: 所有 `_anureo.dev/*` 扩展域共享的设计模式
 > **实现状态**: ❌ 未实现（扩展框架需新建）
 
 ---
@@ -63,7 +63,7 @@
 
 ```json
 {
-  "loomdesk.dev": {
+  "anureo.dev": {
     "git": {
       "commit": true,
       "push": true,
@@ -110,7 +110,7 @@ commit、push、pull、merge、rebase 等操作可能耗时长，需要进度上
   "params": {
     "sessionId": "thread-abc123",
     "update": {
-      "type": "loomdesk_progress",
+      "type": "anureo_progress",
       "operationId": "op-001",
       "domain": "git",
       "method": "push",
@@ -153,7 +153,7 @@ response 必须在最后一个 progress 之后发送。
 ```json
 {
   "jsonrpc": "2.0",
-  "method": "_loomdesk.dev/capability_changed",
+  "method": "_anureo.dev/capability_changed",
   "params": {
     "domains": ["git", "mcp"],
     "added": {
@@ -176,7 +176,7 @@ response 必须在最后一个 progress 之后发送。
 {
   "jsonrpc": "2.0",
   "id": 200,
-  "method": "_loomdesk.dev/capability/describe",
+  "method": "_anureo.dev/capability/describe",
   "params": {
     "domains": ["git", "mcp"]
   }
@@ -207,16 +207,16 @@ Response:
 {
   "type": "session_info_update",
   "metadata": {
-    "openchamber.sessionFolder": "folder-001",
-    "openchamber.tags": ["bug", "auth"],
-    "openchamber.customField": "value"
+    "anureo.sessionFolder": "folder-001",
+    "anureo.tags": ["bug", "auth"],
+    "anureo.customField": "value"
   }
 }
 ```
 
 ### 规则
 
-- 扩展使用 `openchamber.<domain>.<field>` 命名空间
+- 扩展使用 `anureo.<domain>.<field>` 命名空间
 - 标准 ACP 字段（`title` 等）不在 `metadata` 中
 - `metadata` 不影响 Agent 行为
 - 大数据不放入 metadata（用独立存储）
@@ -231,26 +231,26 @@ Response:
 
 | Notification | Authoritative method |
 |---|---|
-| `_loomdesk.dev/worktree/changed` | `_loomdesk.dev/worktree/list` |
-| `_loomdesk.dev/git/status_changed` | `_loomdesk.dev/git/status` |
-| `_loomdesk.dev/git/identity/changed` | `_loomdesk.dev/git/identity/list` |
-| `_loomdesk.dev/files/changed` | `_loomdesk.dev/files/list` |
-| `_loomdesk.dev/mcp/status_changed` | `_loomdesk.dev/mcp/list` |
-| `_loomdesk.dev/goal/changed` | `_loomdesk.dev/goal/list` |
-| `_loomdesk.dev/skills/changed` | `_loomdesk.dev/skills/list` |
-| `_loomdesk.dev/session-folder/changed` | `_loomdesk.dev/session-folder/list` |
-| `_loomdesk.dev/snippet/changed` | `_loomdesk.dev/snippet/list` |
-| `_loomdesk.dev/command/changed` | `_loomdesk.dev/command/list` |
-| `_loomdesk.dev/plugin/changed` | `_loomdesk.dev/plugin/list` |
-| `_loomdesk.dev/agent/changed` | `_loomdesk.dev/agent/list` |
-| `_loomdesk.dev/project/changed` | `_loomdesk.dev/project/list` |
-| `_loomdesk.dev/tunnel/changed` | `_loomdesk.dev/tunnel/list` |
-| `_loomdesk.dev/multi-run/changed` | `_loomdesk.dev/multi-run/status` |
-| `_loomdesk.dev/settings/changed` | `_loomdesk.dev/settings/load` |
-| `_loomdesk.dev/github/auth_changed` | `_loomdesk.dev/github/auth_status` |
-| `_loomdesk.dev/session-assist/recap` | 无（事件型，不需 resync） |
-| `_loomdesk.dev/auto-review/result` | `_loomdesk.dev/auto-review/status` |
-| `_loomdesk.dev/capability_changed` | `_loomdesk.dev/capability/describe` |
+| `_anureo.dev/worktree/changed` | `_anureo.dev/worktree/list` |
+| `_anureo.dev/git/status_changed` | `_anureo.dev/git/status` |
+| `_anureo.dev/git/identity/changed` | `_anureo.dev/git/identity/list` |
+| `_anureo.dev/files/changed` | `_anureo.dev/files/list` |
+| `_anureo.dev/mcp/status_changed` | `_anureo.dev/mcp/list` |
+| `_anureo.dev/goal/changed` | `_anureo.dev/goal/list` |
+| `_anureo.dev/skills/changed` | `_anureo.dev/skills/list` |
+| `_anureo.dev/session-folder/changed` | `_anureo.dev/session-folder/list` |
+| `_anureo.dev/snippet/changed` | `_anureo.dev/snippet/list` |
+| `_anureo.dev/command/changed` | `_anureo.dev/command/list` |
+| `_anureo.dev/plugin/changed` | `_anureo.dev/plugin/list` |
+| `_anureo.dev/agent/changed` | `_anureo.dev/agent/list` |
+| `_anureo.dev/project/changed` | `_anureo.dev/project/list` |
+| `_anureo.dev/tunnel/changed` | `_anureo.dev/tunnel/list` |
+| `_anureo.dev/multi-run/changed` | `_anureo.dev/multi-run/status` |
+| `_anureo.dev/settings/changed` | `_anureo.dev/settings/load` |
+| `_anureo.dev/github/auth_changed` | `_anureo.dev/github/auth_status` |
+| `_anureo.dev/session-assist/recap` | 无（事件型，不需 resync） |
+| `_anureo.dev/auto-review/result` | `_anureo.dev/auto-review/status` |
+| `_anureo.dev/capability_changed` | `_anureo.dev/capability/describe` |
 
 ### Resync 触发
 
@@ -421,7 +421,7 @@ pub struct ExtensionContext {
 ### Dispatch 流程
 
 ```text
-收到 _loomdesk.dev/{domain}/{method} JSON-RPC request
+收到 _anureo.dev/{domain}/{method} JSON-RPC request
   → 提取 domain 和 method
   → 检查 domain 是否在 capability snapshot 中
   → 检查 method 是否注册

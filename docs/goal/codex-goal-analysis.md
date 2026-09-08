@@ -6,9 +6,9 @@
 >
 > **上游仓库**：[openai/codex](https://github.com/openai/codex)
 >
-> **用途**：解释 Codex 的持久化 goal、自动 continuation、token/time 记账、模型工具和 app-server API；本文是源码事实记录，不等同于 Loom 的实现说明。
+> **用途**：解释 Codex 的持久化 goal、自动 continuation、token/time 记账、模型工具和 app-server API；本文是源码事实记录，不等同于 anureo 的实现说明。
 >
-> **相关 Loom 文档**：[Goal 系统工作流](../design/goal-system-workflow.md)、[Session Goal 集成](../design/session-goal-integration.md)、[Goal 用户指南](../user-guide/09-goal-task-experimental.md)
+> **相关 anureo 文档**：[Goal 系统工作流](./goal-system-workflow.md)、[Session Goal 集成](./session-goal-integration.md)、[Goal 用户指南](../user-guide/09-goal-task-experimental.md)
 
 ---
 
@@ -467,9 +467,9 @@ goal extension 同时持有 `GoalAnalytics`、`GoalMetrics` 与 `GoalEventEmitte
 6. `ext/goal/src/tool.rs`/`spec.rs`：理解模型能做什么、不能做什么；
 7. `app-server/src/request_processors/thread_goal_processor.rs`：理解客户端协议和事件顺序。
 
-## 14. 对 Loom 移植的关键启示
+## 14. 对 anureo 移植的关键启示
 
-这些是从 Codex 源码得到的可迁移原则，不是对 Loom 当前代码的断言：
+这些是从 Codex 源码得到的可迁移原则，不是对 anureo 当前代码的断言：
 
 | Codex 原则 | 移植时必须保留的语义 |
 |---|---|
@@ -482,7 +482,7 @@ goal extension 同时持有 `GoalAnalytics`、`GoalMetrics` 与 `GoalEventEmitte
 | completion/blocked prompt 规则 | 运行时只能提供机会；成功标准和 blocked 门槛必须反复注入模型上下文 |
 | 独立 app-server 通知 | UI 订阅完整 goal snapshot，而不是从零散命令结果猜状态 |
 
-Loom 当前的具体差异和落地计划见 [session-goal-integration.md](../design/session-goal-integration.md)；不要直接把本文的 `ThreadGoal` 字段替换成 Loom metadata，而应先确认两边的生命周期、checkpoint usage 和事件顺序是否等价。
+anureo 当前的具体差异和落地计划见 [session-goal-integration.md](./session-goal-integration.md)；不要直接把本文的 `ThreadGoal` 字段替换成 anureo metadata，而应先确认两边的生命周期、checkpoint usage 和事件顺序是否等价。
 
 ## 15. 上游源码链接
 

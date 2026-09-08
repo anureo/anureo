@@ -5,8 +5,8 @@
 ## 项目结构
 
 ```
-~/.loom/
-├── config.toml              # Loom 主配置（LLM/通用）
+~/.anureo/
+├── config.toml              # anureo 主配置（LLM/通用）
 ├── telegram-bot.toml        # Bot 专用配置
 └── .env                     # 环境变量
 
@@ -26,12 +26,12 @@ apps/telegram-bot/
 ## 快速开始
 
 ```bash
-# 1. 复制示例配置到 LOOM_HOME
-mkdir -p ~/.loom
-cp apps/telegram-bot/telegram-bot.example.toml ~/.loom/telegram-bot.toml
+# 1. 复制示例配置到 ANUREO_HOME
+mkdir -p ~/.anureo
+cp apps/telegram-bot/telegram-bot.example.toml ~/.anureo/telegram-bot.toml
 
 # 2. 编辑配置，填写 bot token
-vim ~/.loom/telegram-bot.toml
+vim ~/.anureo/telegram-bot.toml
 
 # 3. 设置环境变量（可选，推荐用于 token）
 export TELOXIDE_TOKEN="123456:ABC-DEF"
@@ -44,13 +44,13 @@ cargo run -p telegram-bot
 
 配置文件位置（按优先级）：
 
-1. `$LOOM_HOME/telegram-bot.toml`（推荐）
+1. `$ANUREO_HOME/telegram-bot.toml`（推荐）
 2. `./telegram-bot.toml`（当前目录）
 
 ### 配置示例
 
 ```toml
-# ~/.loom/telegram-bot.toml
+# ~/.anureo/telegram-bot.toml
 
 [settings]
 # 下载目录（相对于工作目录或绝对路径）
@@ -100,12 +100,12 @@ api_url = "${TELOXIDE_API_URL}"    # 自定义 API 地址
 | `bots.<name>.description` | String | 可选 | 机器人描述 |
 | `agent.enabled` | bool | `false` | 启用 Agent 集成（未来功能）|
 
-### LOOM_HOME 环境变量
+### ANUREO_HOME 环境变量
 
-默认配置目录为 `~/.loom`，可通过环境变量覆盖：
+默认配置目录为 `~/.anureo`，可通过环境变量覆盖：
 
 ```bash
-export LOOM_HOME="/custom/path/.loom"
+export ANUREO_HOME="/custom/path/.anureo"
 ```
 
 ## 核心概念

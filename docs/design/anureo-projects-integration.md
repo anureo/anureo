@@ -1,24 +1,24 @@
-# OpenChamber Projects 迁移到 Loom 扩展协议
+# anureo Projects 迁移到 anureo 扩展协议
 
 > **状态**: 草案（待评审）
 > **日期**: 2025-08-19
-> **涉及仓库**: `loom`（本仓库，后端）/ `openchamber-feat-dev`（前端）
+> **涉及仓库**: `anureo`（本仓库，后端）/ `anureo-feat-dev`（前端）
 > **关联文档**: [docs/acp-spec/extensions/27-project-config.md](../acp-spec/extensions/27-project-config.md)
 
 ---
 
 ## 1. 背景与目标
 
-OpenChamber 前端的项目管理（多项目注册表、图标、排序、活跃切换）目前完全落在
+anureo 前端的项目管理（多项目注册表、图标、排序、活跃切换）目前完全落在
 localStorage + Zustand（`packages/ui/src/stores/useProjectsStore.ts`，1014 行），无法跨设备/跨客户端共享，且与后端会话体系脱节。
 
-Loom ACP 扩展协议已有 `_loomdesk.dev/project/*` 域（`apps/acp/src/extensions/project.rs`），
+anureo ACP 扩展协议已有 `_anureo.dev/project/*` 域（`apps/acp/src/extensions/project.rs`），
 但只实现了 `list` / `get` / `update` / `icon` 四个方法，且只有内存 store、通知为 no-op。
 
-**目标**：补齐 Loom 侧 project 扩展（方法、持久化、广播、图标发现），OpenChamber 前端把 projects 读写切到 Loom，localStorage 仅作首启迁移源。
+**目标**：补齐 anureo 侧 project 扩展（方法、持久化、广播、图标发现），anureo 前端把 projects 读写切到 anureo，localStorage 仅作首启迁移源。
 
 **非目标**：
-- 不做 opencode v2 HTTP `/project` 端点（loom-kernel HTTP API 属另一条线，见 `opencode/specs/v2/loom-kernel/protocols/http/instance/project.md`，字段冲突留待那条线统一）
+- 不做 opencode v2 HTTP `/project` 端点（anureo-kernel HTTP API 属另一条线，见 `opencode/specs/v2/anureo-kernel/protocols/http/instance/project.md`，字段冲突留待那条线统一）
 - 不做项目级权限/多用户
 - `sessionCount` 首版恒为 0
 
@@ -26,7 +26,7 @@ Loom ACP 扩展协议已有 `_loomdesk.dev/project/*` 域（`apps/acp/src/extens
 
 ## 2. 现状盘点
 
-### 2.1 Loom 侧（`apps/acp/src/extensions/project.rs`）
+### 2.1 anureo 侧（`apps/acp/src/extensions/project.rs`）
 
 | 项 | 现状 | 问题 |
 |---|---|---|
@@ -40,7 +40,7 @@ Loom ACP 扩展协议已有 `_loomdesk.dev/project/*` 域（`apps/acp/src/extens
 `#RRGGBB` 颜色校验、secret 脱敏（`redact_value`）、分页（`pagination.rs`）、
 路径规范化（`server_path`）、目录边界校验（`boundary::validate_path`）。
 
-### 2.2 OpenChamber 侧（`useProjectsStore.ts` + `lib/api/types.ts`）
+### 2.2 anureo 侧（`useProjectsStore.ts` + `lib/api/types.ts`）
 
 `ProjectEntry`：
 
@@ -58,7 +58,7 @@ VS Code runtime 下 projects 由 workspace folders 派生，不落盘。
 
 ## 3. 契约设计
 
-### 3.1 方法总表（`_loomdesk.dev/project/*`）
+### 3.1 方法总表（`_anureo.dev/project/*`）
 
 | 方法 | 方向 | 现有/新增 | MVP | 说明 |
 |---|---|---|---|---|
@@ -73,9 +73,9 @@ VS Code runtime 下 projects 由 workspace folders 派生，不落盘。
 | `icon/discover` | req | **新增** | 可选 | 扫描项目目录发现图标 |
 | `changed` | ntf | 现有（未接线） | 可选 | 广播，排除发起连接 |
 
-### 3.2 字段映射（OpenChamber ↔ Loom）
+### 3.2 字段映射（anureo ↔ anureo）
 
-| OpenChamber `ProjectEntry` | Loom `ProjectItem` / `ProjectConfig` | 处理 |
+| anureo `ProjectEntry` | anureo `ProjectItem` / `ProjectConfig` | 处理 |
 |---|---|---|
 | `id`（path 派生） | `id` | create 可带 preferredId，迁移零重映射 |
 | `path` | `path` | server 规范化为绝对路径（`server_path`） |
@@ -99,7 +99,7 @@ VS Code runtime 下 projects 由 workspace folders 派生，不落盘。
 
 ```jsonc
 // request
-{ "path": "C:\\Users\\heycj\\dev\\loom", "preferredId": "dev-loom", "name": "Loom",
+{ "path": "C:\\Users\\heycj\\dev\\anureo", "preferredId": "dev-anureo", "name": "anureo",
   "color": "#4A90D9" /* 可选 */ }
 // response: 与 get 相同的 snapshot（item + config）
 ```
@@ -153,7 +153,7 @@ VS Code runtime 下 projects 由 workspace folders 派生，不落盘。
 #### `changed` 通知（接线后语义）
 
 ```jsonc
-{ "jsonrpc": "2.0", "method": "_loomdesk.dev/project/changed",
+{ "jsonrpc": "2.0", "method": "_anureo.dev/project/changed",
   "params": { "change": "created|updated|removed|icon_changed|reordered", "id": "proj_001" } }
 ```
 
@@ -168,11 +168,11 @@ VS Code runtime 下 projects 由 workspace folders 派生，不落盘。
 
 ---
 
-## 4. 后端实现设计（loom 仓库）
+## 4. 后端实现设计（anureo 仓库）
 
 ### 4.1 持久化：`FileProjectStore`
 
-- 路径：`loom_home()/projects.json`（全局注册表，跨项目共享 —— **不**用 `wd/.loom/`，那是 per-project 数据的位置）。MVP 图标内嵌 base64（沿用现有 256KB 上限）；外置文件模式见 backlog
+- 路径：`anureo_home()/projects.json`（全局注册表，跨项目共享 —— **不**用 `wd/.anureo/`，那是 per-project 数据的位置）。MVP 图标内嵌 base64（沿用现有 256KB 上限）；外置文件模式见 backlog
 - 结构：
 
 ```jsonc
@@ -214,11 +214,11 @@ VS Code runtime 下 projects 由 workspace folders 派生，不落盘。
 
 ---
 
-## 5. 前端改造设计（openchamber 仓库）
+## 5. 前端改造设计（anureo 仓库）
 
 ### 5.1 API client：`packages/ui/src/lib/api/projects.ts`
 
-封装 `_loomdesk.dev/project/*` 请求/通知订阅（复用现有 ACP WS 通道），暴露：
+封装 `_anureo.dev/project/*` 请求/通知订阅（复用现有 ACP WS 通道），暴露：
 `listProjects` / `createProject` / `removeProject` / `updateProject` / `setProjectIcon` /
 `discoverProjectIcon` / `reorderProjects` / `touchProject` / `onProjectChanged`。
 
@@ -244,7 +244,7 @@ VS Code runtime 下 projects 由 workspace folders 派生，不落盘。
 
 **验收**：`cargo test` 全绿；`cargo clippy --workspace --all-targets -- -D warnings` 零警告。
 
-### Phase 0.5 — 前端 MVP（openchamber）
+### Phase 0.5 — 前端 MVP（anureo）
 
 1. `lib/api/projects.ts` client 子集：`list`/`create`/`remove`/`update`/`icon`
 2. `useProjectsStore` 写穿改造（对外签名不变，组件零改动）
@@ -277,7 +277,7 @@ VS Code runtime 下 projects 由 workspace folders 派生，不落盘。
 | localStorage 与 server 双写分歧 | 迁移后前端不再本地写；断线只读 |
 | 多客户端同时 reorder 冲突 | last-write-wins + changed 通知收敛；无 OT 需求 |
 | `deny_unknown_fields` 与新字段 | item 端 struct 新字段全部 `#[serde(default)]`；request struct 保持 deny 以尽早暴露契约错误 |
-| loom-kernel HTTP `/project` 未来统一 | 本方案只动 ACP 扩展层；HTTP 层字段冲突留给那条线（`Project.Info` 的 worktree/vcs/commands 未纳入） |
+| anureo-kernel HTTP `/project` 未来统一 | 本方案只动 ACP 扩展层；HTTP 层字段冲突留给那条线（`Project.Info` 的 worktree/vcs/commands 未纳入） |
 
 ---
 

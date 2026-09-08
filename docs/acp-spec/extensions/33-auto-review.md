@@ -1,6 +1,6 @@
 # Auto-Review（自动代码审查）
 
-> 命名空间: `_loomdesk.dev/auto-review/*`
+> 命名空间: `_anureo.dev/auto-review/*`
 > Capability key: `auto-review`
 
 ## Capability
@@ -32,8 +32,8 @@ Session turn completed (prompt response returned)
       └── severity (info / warning / error / critical)
   → Result stored as:
       ├── independent review session (recommended), OR
-      └── session metadata: metadata.openchamber.review
-  → Emit _loomdesk.dev/auto-review/result notification
+      └── session metadata: metadata.anureo.review
+  → Emit _anureo.dev/auto-review/result notification
 ```
 
 - Auto-Review 触发时机：session 的 generation 完成（`stopReason` 非 `cancelled`）。
@@ -46,7 +46,7 @@ Session turn completed (prompt response returned)
 | 模式 | 说明 | 适用场景 |
 |---|---|---|
 | 独立 review session | 创建新的 ACP session 存储完整审查报告 | 大型审查、需要对话式跟进 |
-| Session metadata | 结果摘要写入 `metadata.openchamber.review` | 轻量审查、快速反馈 |
+| Session metadata | 结果摘要写入 `metadata.anureo.review` | 轻量审查、快速反馈 |
 
 - 默认策略由 server 配置决定；client 可以通过 `auto-review/start` 的参数覆盖。
 - 两种模式可以共存——metadata 中始终写入摘要，同时可选创建独立 review session。
@@ -55,14 +55,14 @@ Session turn completed (prompt response returned)
 
 ## Methods
 
-### `_loomdesk.dev/auto-review/start`
+### `_anureo.dev/auto-review/start`
 
 | 项目 | 内容 |
 |---|---|
 | 方向 | Client → Server request |
 | 能力 | `auto-review.start` |
 | 权限 | Server-side authorization（需要写权限 scope） |
-| 进度 | 长时操作，支持 `_loomdesk.dev/auto-review/progress` notification（`08-cross-cutting-patterns.md` §3） |
+| 进度 | 长时操作，支持 `_anureo.dev/auto-review/progress` notification（`08-cross-cutting-patterns.md` §3） |
 | 幂等 | 对同一 session 的重复 start 是 no-op（返回当前状态） |
 
 **Request:**
@@ -164,7 +164,7 @@ pub struct AutoReviewStartResponse {
 
 ---
 
-### `_loomdesk.dev/auto-review/stop`
+### `_anureo.dev/auto-review/stop`
 
 | 项目 | 内容 |
 |---|---|
@@ -223,7 +223,7 @@ pub struct AutoReviewStopResponse {
 
 ---
 
-### `_loomdesk.dev/auto-review/status`
+### `_anureo.dev/auto-review/status`
 
 | 项目 | 内容 |
 |---|---|
@@ -339,7 +339,7 @@ pub struct PendingReview {
 
 ## Notifications
 
-### `_loomdesk.dev/auto-review/result`
+### `_anureo.dev/auto-review/result`
 
 | 项目 | 内容 |
 |---|---|
@@ -349,7 +349,7 @@ pub struct PendingReview {
 ```json
 {
   "jsonrpc": "2.0",
-  "method": "_loomdesk.dev/auto-review/result",
+  "method": "_anureo.dev/auto-review/result",
   "params": {
     "sessionId": "sess_abc123",
     "reviewId": "rev_001",
@@ -435,7 +435,7 @@ pub struct InlineComment {
 1. Review 完成后发送此 notification，包含完整的结构化审查结果。
 2. `inlineComments` 为文件级评论，每条包含文件路径、行号、severity、规则名、描述和修复建议。
 3. Notification 携带完整结果——client 收到后可直接展示，不一定需要再调用 `auto-review/status`。
-4. 同时，review 结果摘要写入 session metadata `metadata.openchamber.review`（`08-cross-cutting-patterns.md` §5），通过标准 `session/update` 传播。
+4. 同时，review 结果摘要写入 session metadata `metadata.anureo.review`（`08-cross-cutting-patterns.md` §5），通过标准 `session/update` 传播。
 5. 如果 `createReviewSession: true`，`reviewSessionId` 非空——client 可以 `session/load` 加载完整审查报告 session。
 6. **Auto-Review 结果不修改原始 session 的 message 流**——审查意见只出现在 notification、session metadata 或独立 review session 中。
 

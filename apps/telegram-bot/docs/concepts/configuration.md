@@ -1,6 +1,6 @@
 # 配置系统
 
-Bot 从 `~/.loom/telegram-bot.toml` 加载配置，支持环境变量插值和优先级覆盖。
+Bot 从 `~/.anureo/telegram-bot.toml` 加载配置，支持环境变量插值和优先级覆盖。
 
 ## 什么时候用
 
@@ -12,8 +12,8 @@ Bot 从 `~/.loom/telegram-bot.toml` 加载配置，支持环境变量插值和�
 ### 配置文件结构
 
 ```
-~/.loom/
-├── config.toml              # Loom 主配置（LLM provider、API Key）
+~/.anureo/
+├── config.toml              # anureo 主配置（LLM provider、API Key）
 └── telegram-bot.toml        # Bot 专用配置
 ```
 
@@ -21,7 +21,7 @@ Bot 从 `~/.loom/telegram-bot.toml` 加载配置，支持环境变量插值和�
 
 变量按以下顺序应用（后者覆盖前者）：
 
-1. **Loom config.toml `[env]` 段** — 基础值
+1. **anureo config.toml `[env]` 段** — 基础值
 2. **项目 `.env` 文件** — 项目级覆盖
 3. **已有环境变量** — 最高优先级
 

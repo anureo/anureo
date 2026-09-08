@@ -1,9 +1,9 @@
 # Project Config 项目配置
 
-> **命名空间**: `_loomdesk.dev/project/*`
+> **命名空间**: `_anureo.dev/project/*`
 > **Capability key**: `project`
 > **实现状态**: ✅ 已实现（`apps/acp/src/extensions/project.rs`；`create`/`remove` 于 2025-08 加入）
-> **持久化**: `loom_home()/projects.json`（原子写，重启保留）
+> **持久化**: `anureo_home()/projects.json`（原子写，重启保留）
 
 ---
 
@@ -22,14 +22,14 @@
 }
 ```
 
-- Client 必须在 `initialize` 时声明 `agentCapabilities._meta["loomdesk.dev"].project` 的 method 粒度。
-- Project 是 LoomDesk 中的工作区概念——每个 project 对应一个工作目录，可以拥有独立的 agent profile、MCP 配置、command 集等。
+- Client 必须在 `initialize` 时声明 `agentCapabilities._meta["anureo.dev"].project` 的 method 粒度。
+- Project 是 Anureo 中的工作区概念——每个 project 对应一个工作目录，可以拥有独立的 agent profile、MCP 配置、command 集等。
 
 ---
 
 ## Methods
 
-### `_loomdesk.dev/project/create`
+### `_anureo.dev/project/create`
 
 | 项目 | 内容 |
 |---|---|
@@ -44,11 +44,11 @@
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "_loomdesk.dev/project/create",
+  "method": "_anureo.dev/project/create",
   "params": {
-    "path": "C:\\Users\\heycj\\dev\\loom",
-    "preferredId": "dev-loom",
-    "name": "Loom",
+    "path": "C:\\Users\\heycj\\dev\\anureo",
+    "preferredId": "dev-anureo",
+    "name": "anureo",
     "color": "#4A90D9",
     "defaultModel": "anthropic/claude",
     "iconBackground": "#112233",
@@ -62,7 +62,7 @@
 - 无 `preferredId` 时生成 `proj-<FNV-1a 路径哈希 10 位>`。
 - Response 为与 `get` 相同的 snapshot，外加 `existed: bool`。
 
-### `_loomdesk.dev/project/remove`
+### `_anureo.dev/project/remove`
 
 | 项目 | 内容 |
 |---|---|
@@ -73,7 +73,7 @@
 #### Request
 
 ```json
-{ "jsonrpc": "2.0", "id": 1, "method": "_loomdesk.dev/project/remove",
+{ "jsonrpc": "2.0", "id": 1, "method": "_anureo.dev/project/remove",
   "params": { "id": "proj_001" } }
 ```
 
@@ -85,7 +85,7 @@
 
 - 不存在 → `-32003 not_found`；不删除磁盘上的项目文件，仅注销注册。
 
-### `_loomdesk.dev/project/list`
+### `_anureo.dev/project/list`
 
 | 项目 | 内容 |
 |---|---|
@@ -100,7 +100,7 @@
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "_loomdesk.dev/project/list",
+  "method": "_anureo.dev/project/list",
   "params": {
     "cursor": null,
     "limit": 50
@@ -118,9 +118,9 @@
     "items": [
       {
         "id": "proj_001",
-        "name": "Loom",
-        "path": "/home/user/dev/loom",
-        "description": "Loom ACP backend",
+        "name": "anureo",
+        "path": "/home/user/dev/anureo",
+        "description": "anureo ACP backend",
         "icon": "custom",
         "iconUrl": null,
         "color": "#4A90D9",
@@ -134,9 +134,9 @@
       },
       {
         "id": "proj_002",
-        "name": "OpenChamber",
-        "path": "/home/user/dev/openchamber",
-        "description": "OpenChamber frontend",
+        "name": "anureo",
+        "path": "/home/user/dev/anureo",
+        "description": "anureo frontend",
         "icon": "react",
         "iconUrl": null,
         "color": "#61DAFB",
@@ -224,7 +224,7 @@ pub struct ProjectListResponse {
 
 ---
 
-### `_loomdesk.dev/project/get`
+### `_anureo.dev/project/get`
 
 | 项目 | 内容 |
 |---|---|
@@ -238,7 +238,7 @@ pub struct ProjectListResponse {
 {
   "jsonrpc": "2.0",
   "id": 2,
-  "method": "_loomdesk.dev/project/get",
+  "method": "_anureo.dev/project/get",
   "params": {
     "id": "proj_001"
   }
@@ -257,9 +257,9 @@ pub struct ProjectListResponse {
   "id": 2,
   "result": {
     "id": "proj_001",
-    "name": "Loom",
-    "path": "/home/user/dev/loom",
-    "description": "Loom ACP backend",
+    "name": "anureo",
+    "path": "/home/user/dev/anureo",
+    "description": "anureo ACP backend",
     "icon": "custom",
     "iconUrl": null,
     "color": "#4A90D9",
@@ -374,7 +374,7 @@ pub struct ProjectGetResponse {
 
 ---
 
-### `_loomdesk.dev/project/update`
+### `_anureo.dev/project/update`
 
 | 项目 | 内容 |
 |---|---|
@@ -388,11 +388,11 @@ pub struct ProjectGetResponse {
 {
   "jsonrpc": "2.0",
   "id": 3,
-  "method": "_loomdesk.dev/project/update",
+  "method": "_anureo.dev/project/update",
   "params": {
     "id": "proj_001",
-    "name": "Loom (ACP Backend)",
-    "description": "Loom ACP backend implementation",
+    "name": "anureo (ACP Backend)",
+    "description": "anureo ACP backend implementation",
     "color": "#E8A838",
     "agentProfile": "architect",
     "config": {
@@ -476,7 +476,7 @@ pub struct ProjectConfigUpdate {
 
 ---
 
-### `_loomdesk.dev/project/icon`
+### `_anureo.dev/project/icon`
 
 | 项目 | 内容 |
 |---|---|
@@ -490,7 +490,7 @@ pub struct ProjectConfigUpdate {
 {
   "jsonrpc": "2.0",
   "id": 4,
-  "method": "_loomdesk.dev/project/icon",
+  "method": "_anureo.dev/project/icon",
   "params": {
     "id": "proj_001",
     "icon": "custom",
@@ -564,12 +564,12 @@ pub struct ProjectIconResponse {
 
 ## Notifications
 
-### `_loomdesk.dev/project/changed`
+### `_anureo.dev/project/changed`
 
 ```json
 {
   "jsonrpc": "2.0",
-  "method": "_loomdesk.dev/project/changed",
+  "method": "_anureo.dev/project/changed",
   "params": {
     "change": "updated | icon_changed",
     "id": "proj_001"

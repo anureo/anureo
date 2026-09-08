@@ -1,8 +1,8 @@
-# Loom ACP 协议规范总览
+# anureo ACP 协议规范总览
 
-> **状态**: Spec（Loom 后端实现指南）
+> **状态**: Spec（anureo 后端实现指南）
 > **协议基线**: ACP v1（`agent-client-protocol` crate v0.15.1）
-> **扩展命名空间**: `_loomdesk.dev/*`
+> **扩展命名空间**: `_anureo.dev/*`
 
 ## 目录结构
 
@@ -52,7 +52,7 @@ docs/acp-spec/
 
 | 组件 | 状态 | 关键文件 |
 |---|---|---|
-| ACP Agent | ✅ 已实现 | `apps/acp/src/agent.rs` — `LoomAcpAgent` |
+| ACP Agent | ✅ 已实现 | `apps/acp/src/agent.rs` — `anureoAcpAgent` |
 | initialize | ✅ 已实现 | `agent.rs::initialize()` |
 | authenticate | ✅ handler 存在 | `agent.rs::authenticate()`（返回空） |
 | session/new | ✅ 已实现 | `agent.rs::new_session()` |
@@ -74,7 +74,7 @@ docs/acp-spec/
 | WebSocket /acp | ✅ 已实现 | `apps/server/src/handlers/acp.rs` |
 | AcpHub 多连接 | ✅ 已实现 | `apps/server/src/acp_hub.rs` |
 | stdio bridge | ✅ 已实现 | `apps/acp/src/ws_bridge.rs` |
-| _loomdesk.dev/* | ⚠️ 框架已实现，传输层未接线 | `apps/acp/src/extensions/`（32 个域 handler 已注册，`wrap_incoming_stream` 无生产调用方；详见 `docs/dev/acp/02-adding-methods.md` §4）|
+| _anureo.dev/* | ⚠️ 框架已实现，传输层未接线 | `apps/acp/src/extensions/`（32 个域 handler 已注册，`wrap_incoming_stream` 无生产调用方；详见 `docs/dev/acp/02-adding-methods.md` §4）|
 
 ## 协议版本
 
@@ -99,7 +99,7 @@ connection (AcpConnection)
 
 ## 能力声明（initialize 响应）
 
-Loom 在 `initialize` 返回的 `agentCapabilities`：
+anureo 在 `initialize` 返回的 `agentCapabilities`：
 
 ```json
 {
@@ -116,7 +116,7 @@ Loom 在 `initialize` 返回的 `agentCapabilities`：
 }
 ```
 
-扩展能力放在 `agentCapabilities._meta["loomdesk.dev"]`，内容为 `ExtensionRegistry` 的 capability 快照（32 个域，随域注册自动生成，见 `agent.rs::initialize()`）。注意扩展方法当前未接入传输层分发（见上表 `_loomdesk.dev/*` 行）。
+扩展能力放在 `agentCapabilities._meta["anureo.dev"]`，内容为 `ExtensionRegistry` 的 capability 快照（32 个域，随域注册自动生成，见 `agent.rs::initialize()`）。注意扩展方法当前未接入传输层分发（见上表 `_anureo.dev/*` 行）。
 
 **注意**: `session/fork` handler 已实现并在 `stdio_loop.rs` 注册，但 `initialize` 响应的 `sessionCapabilities` 未包含 `fork` 字段。这是已知代码 bug（`agent.rs:436-440`），标准客户端不会调用 fork。
 
@@ -124,7 +124,7 @@ Loom 在 `initialize` 返回的 `agentCapabilities`：
 
 | 模块 | 文件 | 核心类型 |
 |---|---|---|
-| Agent | `apps/acp/src/agent.rs` | `LoomAcpAgent` |
+| Agent | `apps/acp/src/agent.rs` | `anureoAcpAgent` |
 | 协议 | `apps/acp/src/protocol.rs` | `ProtocolVersion::V1` |
 | Session | `apps/acp/src/session.rs` | `SessionStore`, `SessionEntry`, `SessionConfig` |
 | Session 持久化 | `apps/acp/src/session_repository.rs` | `SessionRepository` |
@@ -143,6 +143,6 @@ Loom 在 `initialize` 返回的 `agentCapabilities`：
 | Agent 注册 | `apps/acp/src/agent_registry.rs` | `AgentRegistry` |
 | Client 能力 | `apps/acp/src/client_capabilities.rs` | `ClientCapabilitiesInfo` |
 | 高频用量 | `apps/acp/src/high_freq_usage.rs` | token usage 节流 |
-| MCP 转换 | `apps/acp/src/mcp_convert.rs` | ACP MCP → Loom MCP |
+| MCP 转换 | `apps/acp/src/mcp_convert.rs` | ACP MCP → anureo MCP |
 | Server WS | `apps/server/src/handlers/acp.rs` | `/acp` WebSocket upgrade |
 | Server Hub | `apps/server/src/acp_hub.rs` | `AcpHub`, `SessionOwner`, `DisconnectPolicy` |

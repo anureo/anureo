@@ -1,6 +1,6 @@
-# Loom Security & Privacy
+# anureo Security & Privacy
 
-Loom can read and write files, run commands, connect to MCP services, operate browsers, and store session and workflow data. Treat it as a privileged development tool, not a risk-free chat window.
+anureo can read and write files, run commands, connect to MCP services, operate browsers, and store session and workflow data. Treat it as a privileged development tool, not a risk-free chat window.
 
 ## Four Checks Before Use
 
@@ -26,7 +26,7 @@ ACP interacts through the IDE's permission requests; CLI or non-interactive runs
 
 ## Data Storage and Cleanup
 
-Loom uses the user config directory and project `.loom/` to store configuration, session associations, memory, skills, and workflow instances.
+anureo uses the user config directory and project `.anureo/` to store configuration, session associations, memory, skills, and workflow instances.
 
 - Before deleting sessions, memory, skills, or instances, confirm the specific target; these operations may not be reversible.
 - Logs may contain operational metadata; keep them in controlled local locations with rotation.
@@ -38,10 +38,10 @@ Loom uses the user config directory and project `.loom/` to store configuration,
 For modification tasks:
 
 ```powershell
-loom --worktree -m "Modify and test this feature"
+anureo --worktree -m "Modify and test this feature"
 ```
 
-Loom runs in an isolated worktree; it cleans up when there are no changes, and preserves the directory for review when there are. Inspect retained branches, diffs, and untracked files before deciding to merge or delete. Cancelling an agent does not automatically undo all completed external operations.
+anureo runs in an isolated worktree; it cleans up when there are no changes, and preserves the directory for review when there are. Inspect retained branches, diffs, and untracked files before deciding to merge or delete. Cancelling an agent does not automatically undo all completed external operations.
 
 ## When Issues Arise
 

@@ -1,10 +1,10 @@
-# Loom Tool、MCP 与 Skill 开发
+# anureo Tool、MCP 与 Skill 开发
 
 > **状态**：基于当前源码的贡献者说明
 > **相关代码**：`agent/tool/tool-core`、`agent/tool/tool-basic`、`agent/skill`、`foundation/config/src/mcp_config.rs`
 > **安全参考**：[security-and-privacy.md](../user-guide/07-security-and-privacy.md)
 
-本文面向 Loom 贡献者，说明当前 Tool、MCP 和 Skill 的实现边界、调用流程、扩展点与测试方法。结论只依据本文列出的当前源码和测试；计划列表中的 `agent/tool/tool-basic/src/mod.rs` 在当前仓库不存在，因此不把它当作模块或 API 依据。未在这些源码中出现的 CLI、配置项、传输能力和行为不视为已实现。
+本文面向 anureo 贡献者，说明当前 Tool、MCP 和 Skill 的实现边界、调用流程、扩展点与测试方法。结论只依据本文列出的当前源码和测试；计划列表中的 `agent/tool/tool-basic/src/mod.rs` 在当前仓库不存在，因此不把它当作模块或 API 依据。未在这些源码中出现的 CLI、配置项、传输能力和行为不视为已实现。
 
 ## 1. 结论先行
 
@@ -87,7 +87,7 @@ call_tool(name,args,ctx)
 
 `foundation/config/src/mcp_config.rs` 定义 Cursor/Claude 兼容的 JSON 根对象：`mcpServers` 映射 server name 到 `McpServerEntry`。entry 当前字段是 `command`、`args`、`env`、`disabled`、`url`、`headers`、`oauth`。
 
-配置路径优先级由 `discover_mcp_config_path` 实现：存在的显式 `override_path` → `working_dir/.loom/mcp.json` → `loom_home()/mcp.json`；都不存在时返回 `None`。`parse_mcp_config` 跳过 `disabled: true`；若同时有 `url` 和 `command`，url 优先；url 必须以 `http://` 或 `https://` 开头；否则必须有非空 command。配置保存是“写固定 sibling `json.tmp` 临时文件后替换目标文件”的 best-effort replace，upsert/remove 也复用该路径；源码没有 `sync_all` 或并发写协调，不能把它承诺为具备 durability 或并发安全的完整原子保存契约。若要承诺这些性质，需要锁、唯一临时名、`sync_all`、rename 失败清理和并发测试。
+配置路径优先级由 `discover_mcp_config_path` 实现：存在的显式 `override_path` → `working_dir/.anureo/mcp.json` → `anureo_home()/mcp.json`；都不存在时返回 `None`。`parse_mcp_config` 跳过 `disabled: true`；若同时有 `url` 和 `command`，url 优先；url 必须以 `http://` 或 `https://` 开头；否则必须有非空 command。配置保存是“写固定 sibling `json.tmp` 临时文件后替换目标文件”的 best-effort replace，upsert/remove 也复用该路径；源码没有 `sync_all` 或并发写协调，不能把它承诺为具备 durability 或并发安全的完整原子保存契约。若要承诺这些性质，需要锁、唯一临时名、`sync_all`、rename 失败清理和并发测试。
 
 配置解析得到的 `McpServerDef::Stdio` 或 `McpServerDef::Http` 只是 foundation 层的数据模型。本文指定源码没有展示从该 enum 到 Agent registry 的完整 wiring；贡献者修改入口时应继续追踪实际调用方，不要把 `parse_mcp_config` 当成已经建立 MCP session 的 API。
 
@@ -126,7 +126,7 @@ register_mcp_tools
 
 ### 5.1 Discovery 与 builtin skill
 
-`agent/skill/src/discovery.rs` 的 `SkillRegistry::discover` 按当前顺序扫描：project 的 `<working_folder>/.loom/skills`、extra/profile dirs、`loom_home()/skills`、`loom_home()/data/skills`（后者 recursive），同名 skill 由先出现的 source 保留。`add_agent_skills` 追加 Agent source；`add_builtin` 只在没有同名文件系统条目时加入 Builtin source，因此 project/user skill 优先于 builtin。
+`agent/skill/src/discovery.rs` 的 `SkillRegistry::discover` 按当前顺序扫描：project 的 `<working_folder>/.anureo/skills`、extra/profile dirs、`anureo_home()/skills`、`anureo_home()/data/skills`（后者 recursive），同名 skill 由先出现的 source 保留。`add_agent_skills` 追加 Agent source；`add_builtin` 只在没有同名文件系统条目时加入 Builtin source，因此 project/user skill 优先于 builtin。
 
 `SkillEntry` 保存 metadata、base_path、SKILL.md 路径、source，以及 builtin 的 embedded content/reference files。`load_skill_with_dir` 去掉 frontmatter，只返回 body；filesystem skill 会列出同目录 support files，builtin skill 会列出编译时 embedded references。`apply_filters` 处理 enabled/disabled/platform，`apply_toolset_filters` 处理 `requires_tools`、`requires_toolsets` 和 fallback 条件。
 
@@ -134,7 +134,7 @@ register_mcp_tools
 
 ### 5.2 持久化与 `skill_manage`
 
-`agent/skill/src/storage.rs` 的 `SkillStorageRegistry` 以传入的 `base_dir` 为根：`Source::Auto` → `auto`，`Source::Manual` → `curated`，`Source::Evolved` → `evolved`；有 category 时保存到 `base_dir/source/category/name/SKILL.md`。`save` 使用 `atomic_write_text`（临时 sibling file、`sync_all`、rename），`list` recursive 查找 SKILL.md，并排除 hidden/underscore/`.loom` 内部路径。
+`agent/skill/src/storage.rs` 的 `SkillStorageRegistry` 以传入的 `base_dir` 为根：`Source::Auto` → `auto`，`Source::Manual` → `curated`，`Source::Evolved` → `evolved`；有 category 时保存到 `base_dir/source/category/name/SKILL.md`。`save` 使用 `atomic_write_text`（临时 sibling file、`sync_all`、rename），`list` recursive 查找 SKILL.md，并排除 hidden/underscore/`.anureo` 内部路径。
 
 `agent/tool/tool-basic/src/skill/manage.rs` 的 `SkillManagerTool` 暴露六个 action：`create`、`patch`、`edit`、`delete`、`write_file`、`remove_file`；`action` 和 `name` 是 schema required。create/edit 接收完整 SKILL.md，patch 默认只替换一个 occurrence，`replace_all=true` 替换全部，patch 可用 `file_path` 修改 support file。write/remove file 用 `file_path`，每个 support file 上限为 1 MiB。
 
@@ -168,10 +168,10 @@ delete 在配置了 usage store 时只允许 `is_agent_created` 的 skill；`abs
 
 适合首次贡献者的最小闭环，是只在 `agent/tool/tool-basic/src/mcp/mod.rs` 的 `McpToolSource::call_tool_async` 边界增加一个纯参数校验分支：接受 JSON object，遇到 string、array、number、boolean 或 null 返回 `ToolSourceError::InvalidInput`。这个改动不启用 `allow_outside`，不运行外部 MCP server，也不执行 shell、delete 或 archive。
 
-建议把校验提取为同文件的纯函数，并在该文件现有 `#[cfg(test)] mod tests` 增加非 object/ object 两个 unit test；随后再在 `session.rs` 和 `session_http.rs` 各补一条调用边界测试，确认两种 transport 都不会把错误值静默转换为 `None`。最小验证命令（从 Loom workspace 根目录运行）是：
+建议把校验提取为同文件的纯函数，并在该文件现有 `#[cfg(test)] mod tests` 增加非 object/ object 两个 unit test；随后再在 `session.rs` 和 `session_http.rs` 各补一条调用边界测试，确认两种 transport 都不会把错误值静默转换为 `None`。最小验证命令（从 anureo workspace 根目录运行）是：
 
 ```powershell
-cd C:\Users\<user>\dev\loom
+cd C:\Users\<user>\dev\anureo
 cargo fmt --check
 cargo test -p tool-basic mcp
 cargo test -p tool-basic --lib
@@ -203,7 +203,7 @@ git diff -- agent/tool/tool-basic/src/mcp/mod.rs agent/tool/tool-basic/src/mcp/s
 
 ## 7. 测试与验证
 
-先满足这些前置条件：从 `C:\Users\<user>\dev\loom`（或 Unix 等价的 Loom workspace 根目录）运行；安装可用的 Rust/Cargo toolchain；确保 workspace 和 `target` 目录可写。若 target 无写权限，修复目录权限或选择可写的 `CARGO_TARGET_DIR` 后再重跑。然后按改动范围运行以下检查，并把 `cargo fmt --check` 作为基础检查；package 名和 test target 应以当前 workspace manifest 为准：
+先满足这些前置条件：从 `C:\Users\<user>\dev\anureo`（或 Unix 等价的 anureo workspace 根目录）运行；安装可用的 Rust/Cargo toolchain；确保 workspace 和 `target` 目录可写。若 target 无写权限，修复目录权限或选择可写的 `CARGO_TARGET_DIR` 后再重跑。然后按改动范围运行以下检查，并把 `cargo fmt --check` 作为基础检查；package 名和 test target 应以当前 workspace manifest 为准：
 
 ```powershell
 cargo fmt --check

@@ -3,13 +3,13 @@
 > **状态**：基于当前源码的贡献者说明
 > **相关代码**：`foundation/config`、`foundation/checkpoint`、`foundation/checkpoint-sqlite-store`、`apps/cli`、`apps/acp`、`apps/server`、`experimental/task/task-core/migrations`
 
-本文面向 Loom 贡献者，说明当前源码中的配置来源、运行时状态、checkpoint、长期 Store 及应用层持久化边界。所有路径、字段、命令和行为均以列出的当前源码为准；没有源码和测试证据的 API 不在本文中承诺。
+本文面向 anureo 贡献者，说明当前源码中的配置来源、运行时状态、checkpoint、长期 Store 及应用层持久化边界。所有路径、字段、命令和行为均以列出的当前源码为准；没有源码和测试证据的 API 不在本文中承诺。
 
 前置知识建议先阅读[架构与依赖边界](./02-architecture-and-dependency-boundaries.md)，其中说明配置、checkpoint 与 Store 的 owning boundary；涉及 ACP session 或 backend storage 时，再阅读[ACP 与 backend 集成](./06-acp-and-backend-integration.md)。本文在首次涉及这些边界时仍保留对应源码路径，便于直接回到实现。
 
 ## 1. 先区分四类“状态”
 
-Loom 目前不是由一个统一数据库承载全部状态，而是按生命周期分开：
+anureo 目前不是由一个统一数据库承载全部状态，而是按生命周期分开：
 
 | 状态 | owning module | 当前实现 | 生命周期 |
 | --- | --- | --- | --- |
@@ -22,32 +22,32 @@ Loom 目前不是由一个统一数据库承载全部状态，而是按生命周
 
 ## 2. 配置加载链
 
-### 2.1 Loom home 与文件路径
+### 2.1 anureo home 与文件路径
 
-`foundation/config/src/home.rs` 是用户级路径的单一边界。`loom_home()` 先读 `LOOM_HOME`；未设置时 Unix 读 `$HOME`，Windows 读 `%USERPROFILE%`，再拼接 `.loom`；相应 home 变量缺失时最终回退到当前目录 `.`。路径函数只返回 `PathBuf`，不会自动创建目录。
+`foundation/config/src/home.rs` 是用户级路径的单一边界。`anureo_home()` 先读 `ANUREO_HOME`；未设置时 Unix 读 `$HOME`，Windows 读 `%USERPROFILE%`，再拼接 `.anureo`；相应 home 变量缺失时最终回退到当前目录 `.`。路径函数只返回 `PathBuf`，不会自动创建目录。
 
 当前源码定义的路径包括：
 
 ```text
-{LOOM_HOME}/config.toml
-{LOOM_HOME}/mcp.json
-{LOOM_HOME}/thread/{session_id}/
-{LOOM_HOME}/acp/
-{LOOM_HOME}/logs/
-{LOOM_HOME}/logs/cli/
-{LOOM_HOME}/logs/acp/
-{LOOM_HOME}/logs/acp/loom-acp.log
-{LOOM_HOME}/logs/llm/
+{ANUREO_HOME}/config.toml
+{ANUREO_HOME}/mcp.json
+{ANUREO_HOME}/thread/{session_id}/
+{ANUREO_HOME}/acp/
+{ANUREO_HOME}/logs/
+{ANUREO_HOME}/logs/cli/
+{ANUREO_HOME}/logs/acp/
+{ANUREO_HOME}/logs/acp/anureo-acp.log
+{ANUREO_HOME}/logs/llm/
 ```
 
-`foundation/checkpoint-sqlite-store` 的 `default_memory_db_path()` 使用 `{LOOM_HOME}/memory.db`，创建父目录；home 不可用时回退到当前目录的 `memory.db`。CLI 的 task 数据库另在 `{LOOM_HOME}/tasks/tasks.db`，由 `apps/cli/src/task_db.rs::ensure_task_db` 创建父目录。CLI file session store 默认使用 `{LOOM_HOME}/data/sessions`。
+`foundation/checkpoint-sqlite-store` 的 `default_memory_db_path()` 使用 `{ANUREO_HOME}/memory.db`，创建父目录；home 不可用时回退到当前目录的 `memory.db`。CLI 的 task 数据库另在 `{ANUREO_HOME}/tasks/tasks.db`，由 `apps/cli/src/task_db.rs::ensure_task_db` 创建父目录。CLI file session store 默认使用 `{ANUREO_HOME}/data/sessions`。
 
 ### 2.2 `config.toml`、`.env` 与 process environment
 
-`load_and_apply_with_report("loom", override_dir)` 的调用流程是：
+`load_and_apply_with_report("anureo", override_dir)` 的调用流程是：
 
 ```text
-LOOM_HOME/config.toml
+ANUREO_HOME/config.toml
   -> xdg_toml::load_full_config
   -> [env]、[default].provider、[[providers]]
 
@@ -98,7 +98,7 @@ reasoning_efforts = ["low", "medium", "high"]
 
 `ProviderDef::to_env_map()` 当前映射 `api_key → OPENAI_API_KEY`、`base_url → OPENAI_BASE_URL`、`model → MODEL`、有限的 `temperature → OPENAI_TEMPERATURE`。`provider_config.rs` 则把 provider 转为 `model-spec-core::registry::ProviderConfig`，其中 `fetch_models` 默认 `false`、`enable_tier_resolution` 默认 `true`，并把手工声明的 model id 传入 `declared_models`。
 
-没有 `base_url` 时，配置加载器会先检查 `LOOM_MODELS_DEV_API_JSON` 内联 JSON；否则请求 `MODELS_DEV_URL`，默认是 `https://models.dev/api.json`，从 provider 名称提取 API 地址。这是当前源码的 fallback，不应被描述成稳定的 provider discovery API；测试应优先使用内联 JSON，避免网络依赖。
+没有 `base_url` 时，配置加载器会先检查 `ANUREO_MODELS_DEV_API_JSON` 内联 JSON；否则请求 `MODELS_DEV_URL`，默认是 `https://models.dev/api.json`，从 provider 名称提取 API 地址。这是当前源码的 fallback，不应被描述成稳定的 provider discovery API；测试应优先使用内联 JSON，避免网络依赖。
 
 `default_model()` 的顺序是 `MODEL` 环境变量、`[default].provider` 对应 provider 的 `model`、名称含 `coding-plan` 的第一个 provider、任意第一个带 model 的 provider，最后是 `gpt-4o-mini`。`default_provider_name()` 的顺序是显式 default、名称含 `coding-plan` 的第一个 provider、首个 provider。
 
@@ -108,9 +108,9 @@ reasoning_efforts = ["low", "medium", "high"]
 
 MCP 配置不是 `config.toml [env]` 的一部分。`mcp_config.rs` 读取 Cursor/Claude 兼容的 JSON 根对象 `mcpServers`，每个 entry 必须有 `command` 或 `url`；`url` 存在时优先，并且只接受 `http://` 或 `https://`。`disabled = true` 的 entry 被跳过。stdio 结果为 `McpServerDef::Stdio`，远程结果为 `McpServerDef::Http`，HTTP entry 可携带 `headers` 与 `oauth`。
 
-发现顺序是：显式 `override_path`（文件存在）→ `{working_dir}/.loom/mcp.json` → `{LOOM_HOME}/mcp.json`。`save_mcp_config` 先写同目录 `.json.tmp` 再 rename；`upsert_mcp_server`、`remove_mcp_server` 是文件级修改接口，`get_or_create_mcp_config_path` 会创建全局空配置。
+发现顺序是：显式 `override_path`（文件存在）→ `{working_dir}/.anureo/mcp.json` → `{ANUREO_HOME}/mcp.json`。`save_mcp_config` 先写同目录 `.json.tmp` 再 rename；`upsert_mcp_server`、`remove_mcp_server` 是文件级修改接口，`get_or_create_mcp_config_path` 会创建全局空配置。
 
-LSP 配置也独立于 Loom home：先找 `$XDG_CONFIG_HOME/loom/lsp.toml`，再找 `~/.config/loom/lsp.toml`；没有文件时返回内置默认。当前默认 server 覆盖 Rust、TypeScript、JavaScript、Python、Go、Java。`LspServerConfig` 的扩展字段包括 command/args、file patterns、initialization options、root URI、env、startup timeout 和 auto-install；默认并发数为 10，启动超时通常为 10 秒（Java 为 30 秒）。源码只提供加载/发现模型，不在本文扩展未读出的 LSP runtime API。
+LSP 配置也独立于 anureo home：先找 `$XDG_CONFIG_HOME/anureo/lsp.toml`，再找 `~/.config/anureo/lsp.toml`；没有文件时返回内置默认。当前默认 server 覆盖 Rust、TypeScript、JavaScript、Python、Go、Java。`LspServerConfig` 的扩展字段包括 command/args、file patterns、initialization options、root URI、env、startup timeout 和 auto-install；默认并发数为 10，启动超时通常为 10 秒（Java 为 30 秒）。源码只提供加载/发现模型，不在本文扩展未读出的 LSP runtime API。
 
 ## 3. Checkpoint 与 Store 的模块边界
 
@@ -137,9 +137,9 @@ LSP 配置也独立于 Loom home：先找 `$XDG_CONFIG_HOME/loom/lsp.toml`，再
 
 ### 3.3 SQLite checkpoint
 
-`foundation/checkpoint-sqlite-store` 的公开实现是 `SqliteSaver`（`Checkpointer`）和 `SqliteStore`（`Store`），默认 memory DB 路径是 `{LOOM_HOME}/memory.db`。`SqliteSaver` 注入 `Arc<dyn Serializer<S>>`，因此 state 类型必须与 serializer 的序列化能力匹配；backend 还保存 checkpoint lineage、pending writes 和 metadata。
+`foundation/checkpoint-sqlite-store` 的公开实现是 `SqliteSaver`（`Checkpointer`）和 `SqliteStore`（`Store`），默认 memory DB 路径是 `{ANUREO_HOME}/memory.db`。`SqliteSaver` 注入 `Arc<dyn Serializer<S>>`，因此 state 类型必须与 serializer 的序列化能力匹配；backend 还保存 checkpoint lineage、pending writes 和 metadata。
 
-这是一个有破坏性后果的“重新建空库”操作，不是旧业务数据恢复。执行 repair 前必须停止所有 Loom 进程，确认要操作的绝对数据库路径，并先复制原文件备份；同时确认没有其他进程会继续打开该路径。操作后核对原文件名是否变为 `.corrupt-*`、新库是否存在 `state_meta(key='schema_repair', ...)`，并确认应用自己的 schema 初始化已成功。旧数据仍在 `.corrupt-*` 文件中，必须通过明确的导入/恢复流程处理，不能把新库中的 schema marker 当作数据已恢复的证明。
+这是一个有破坏性后果的“重新建空库”操作，不是旧业务数据恢复。执行 repair 前必须停止所有 anureo 进程，确认要操作的绝对数据库路径，并先复制原文件备份；同时确认没有其他进程会继续打开该路径。操作后核对原文件名是否变为 `.corrupt-*`、新库是否存在 `state_meta(key='schema_repair', ...)`，并确认应用自己的 schema 初始化已成功。旧数据仍在 `.corrupt-*` 文件中，必须通过明确的导入/恢复流程处理，不能把新库中的 schema marker 当作数据已恢复的证明。
 
 SQLite 文件损坏时，`repair_state_db_schema` 只对 SQLite 报告的 `file is not a database`、`database disk image is malformed` 或 `not a database` 做修复：把原文件重命名为 `<name>.corrupt-<unix_ts>`，打开原路径建立新连接，并写入 `state_meta(schema_repair, timestamp)` 标记。原损坏文件会保留，便于恢复；locked、out-of-memory 等其他错误会继续向上返回。修复函数不能替代业务 schema 初始化，调用方仍需运行自己的 init schema。
 
@@ -149,7 +149,7 @@ SQLite 文件损坏时，`repair_state_db_schema` 只对 SQLite 报告的 `file 
 
 `apps/cli/src/run/session_store.rs` 的 `FileSessionStore` 把一个 `StoredSession` 写成 `{base_dir}/{id}.json`。字段是 id、title、content、created_at、updated_at、tags；`list(limit)` 按 updated_at 倒序，`search(query, limit)` 在 content/title/tags 上做 lowercase substring 匹配。`store_session_from_conversation` 对已有 session 追加 User/Assistant 文本并合并去重 tags，不是 checkpoint resume。
 
-`apps/cli/src/task_db.rs` 目前只负责确保 `{LOOM_HOME}/tasks/tasks.db` 的目录和路径；它没有在该源码文件中实现 task repository 或 schema。不要从函数名推断更高层 task API。
+`apps/cli/src/task_db.rs` 目前只负责确保 `{ANUREO_HOME}/tasks/tasks.db` 的目录和路径；它没有在该源码文件中实现 task repository 或 schema。不要从函数名推断更高层 task API。
 
 ### 4.2 ACP session 与 session config
 
@@ -177,7 +177,7 @@ SQLite 文件损坏时，`repair_state_db_schema` 只对 SQLite 报告的 `file 
 CLI / ACP / server 入口
         │
         ├─ foundation/config::load_and_apply_with_report
-        │     ├─ LOOM_HOME/config.toml
+        │     ├─ ANUREO_HOME/config.toml
         │     ├─ project .env
         │     ├─ active provider -> process env
         │     └─ default_model / ProviderConfig consumer
@@ -203,7 +203,7 @@ CLI / ACP / server 入口
 
 ### 6.1 配置测试
 
-基础单元测试覆盖 home 路径、dotenv parser、TOML 缺失/解析错误、provider 字段、model 默认值、MCP JSON 校验和 LSP 默认配置。注意：`foundation/config/src/home.rs` 中的 `CONFIG_TEST_LOCK` 位于 `#[cfg(test)] pub(crate)`，集成测试不可访问；而且 `providers_e2e.rs` 与 `mcp_config_e2e.rs` 各自有私有 mutex，不能跨测试目标协调。凡会修改 process-global environment 的集成测试，都必须在自己的测试文件中使用串行锁和 RAII guard；guard 至少覆盖 `LOOM_HOME`、所有待写入的 provider/config key、`LOOM_MODELS_DEV_API_JSON` 和 `MODELS_DEV_URL`，并在正常返回、断言失败或 panic 展开时恢复原值。
+基础单元测试覆盖 home 路径、dotenv parser、TOML 缺失/解析错误、provider 字段、model 默认值、MCP JSON 校验和 LSP 默认配置。注意：`foundation/config/src/home.rs` 中的 `CONFIG_TEST_LOCK` 位于 `#[cfg(test)] pub(crate)`，集成测试不可访问；而且 `providers_e2e.rs` 与 `mcp_config_e2e.rs` 各自有私有 mutex，不能跨测试目标协调。凡会修改 process-global environment 的集成测试，都必须在自己的测试文件中使用串行锁和 RAII guard；guard 至少覆盖 `ANUREO_HOME`、所有待写入的 provider/config key、`ANUREO_MODELS_DEV_API_JSON` 和 `MODELS_DEV_URL`，并在正常返回、断言失败或 panic 展开时恢复原值。
 
 provider 与 MCP 的 e2e 文件使用真实临时目录、写入 `config.toml`/`mcp.json`、调用公开 load/discover 函数并断言 env/report 或 server definition；但当前测试函数均带 `#[ignore]`。运行时应明确选择被忽略测试，例如：
 
@@ -212,7 +212,7 @@ cargo test -p config --test providers_e2e -- --ignored
 cargo test -p config --test mcp_config_e2e -- --ignored
 ```
 
-provider fallback 测试优先设置 `LOOM_MODELS_DEV_API_JSON`，不要让测试依赖外网 `https://models.dev/api.json`。
+provider fallback 测试优先设置 `ANUREO_MODELS_DEV_API_JSON`，不要让测试依赖外网 `https://models.dev/api.json`。
 
 ### 6.2 checkpoint/store/SQLite 测试
 
@@ -221,9 +221,9 @@ provider fallback 测试优先设置 `LOOM_MODELS_DEV_API_JSON`，不要让测�
 ```powershell
 cargo test -p checkpoint
 cargo test -p checkpoint-sqlite-store
-cargo test -p cli
+cargo test -p anureo-cli
 cargo test -p acp
-cargo test -p loom-server
+cargo test -p anureo-server
 ```
 
 重点断言包括：缺少 `thread_id` 的错误、latest 与指定 checkpoint 读取、history paging、pending writes 的顺序与 `(task_id, idx)` 幂等性、JSON serializer round-trip、Store namespace/filter/search 的 limit/offset、SQLite 重启后的 round-trip，以及损坏 DB 被保留为 `.corrupt-*` 后重新初始化。涉及 `apps/server` 时还要分别验证 store 为 `None` 的旧测试路径和启用 store 的 load/write-through 路径。
@@ -248,7 +248,7 @@ cargo test -p loom-server
 
 常见坑：
 
-- 把 `LOOM_HOME` 当成会自动建目录的 API；多数 home 路径函数只拼路径，只有具体 store/文件 writer 才负责创建目录。
+- 把 `ANUREO_HOME` 当成会自动建目录的 API；多数 home 路径函数只拼路径，只有具体 store/文件 writer 才负责创建目录。
 - 认为 `[default].provider` 会选择第一个 provider；配置加载器只应用显式选中的 provider，默认 model 的 fallback 是另一套逻辑。
 - 把 `.env` 当完整 dotenv parser，或以为 `.env` 能覆盖 shell 中已经存在的变量；两者都不成立。
 - 把 `MemorySaver`/`InMemoryStore` 当持久化；它们都会在进程结束时丢失。
@@ -272,7 +272,7 @@ cargo test -p loom-server
 
 下面是一次可复制、范围较小的 `foundation/config` 修改路径。假设要给 `ProviderDef` 增加一个已有字段到 process environment 的映射：先在 `foundation/config/src/xdg_toml.rs:82` 定位 `ProviderDef`，在 `:111-115` 修改 `ProviderDef::to_env_map()`，再检查 `foundation/config/src/provider_config.rs:21` 是否也需要把该字段传给 `ProviderConfig`；不要只改 consumer 侧的 `set_var`。如果字段影响默认选择或 fallback，同时检查 `default_model()`/`default_provider_name()` 的优先级。
 
-测试放在 `foundation/config/tests/providers_e2e.rs`：复制现有 `e2e_default_provider_sets_env_vars` 的结构，在 `tempfile::tempdir()` 下写入 `config.toml`（`write_config(dir.path(), ...)`），用本测试目标自己的 `LOCK` 和 RAII `EnvGuard`，设置 `LOOM_HOME`，并清理本测试会触及的 provider key（例如 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`MODEL`、`LLM_PROVIDER`、`OPENAI_TEMPERATURE`）、`LOOM_MODELS_DEV_API_JSON` 与 `MODELS_DEV_URL`。调用 `load_and_apply_with_report("loom", None::<&std::path::Path>)`，断言新增环境变量的值（`ProviderDef::to_env_map()` 当前会映射 `api_key`、`base_url`、`model`、有限的 `temperature`；`provider_type` 则由 provider 配置转换/consumer 使用，不是该方法的 env 映射）以及 `ConfigLoadReport` 中对应 entry 的 `source`；若测试 provider 没有 `base_url`，用内联 `LOOM_MODELS_DEV_API_JSON`，不要访问网络。测试函数保持 `#[ignore]` 时，从仓库根目录运行：
+测试放在 `foundation/config/tests/providers_e2e.rs`：复制现有 `e2e_default_provider_sets_env_vars` 的结构，在 `tempfile::tempdir()` 下写入 `config.toml`（`write_config(dir.path(), ...)`），用本测试目标自己的 `LOCK` 和 RAII `EnvGuard`，设置 `ANUREO_HOME`，并清理本测试会触及的 provider key（例如 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`MODEL`、`LLM_PROVIDER`、`OPENAI_TEMPERATURE`）、`ANUREO_MODELS_DEV_API_JSON` 与 `MODELS_DEV_URL`。调用 `load_and_apply_with_report("anureo", None::<&std::path::Path>)`，断言新增环境变量的值（`ProviderDef::to_env_map()` 当前会映射 `api_key`、`base_url`、`model`、有限的 `temperature`；`provider_type` 则由 provider 配置转换/consumer 使用，不是该方法的 env 映射）以及 `ConfigLoadReport` 中对应 entry 的 `source`；若测试 provider 没有 `base_url`，用内联 `ANUREO_MODELS_DEV_API_JSON`，不要访问网络。测试函数保持 `#[ignore]` 时，从仓库根目录运行：
 
 ```powershell
 cargo test -p config --test providers_e2e -- --ignored e2e_default_provider_sets_env_vars

@@ -1,6 +1,6 @@
 # Settings（设置管理）
 
-> 命名空间: `_loomdesk.dev/settings/*`
+> 命名空间: `_anureo.dev/settings/*`
 > Capability key: `settings`
 
 ## Capability
@@ -34,7 +34,7 @@
 
 ## Methods
 
-### `_loomdesk.dev/settings/load`
+### `_anureo.dev/settings/load`
 
 | 项目 | 内容 |
 |---|---|
@@ -134,7 +134,7 @@ pub const SYNC_EXCLUDED_KEYS: &[&str] = &[
 
 ---
 
-### `_loomdesk.dev/settings/save`
+### `_anureo.dev/settings/save`
 
 | 项目 | 内容 |
 |---|---|
@@ -209,7 +209,7 @@ pub struct SettingsSaveResponse {
 
 ---
 
-### `_loomdesk.dev/settings/restart_opencode`
+### `_anureo.dev/settings/restart_opencode`
 
 | 项目 | 内容 |
 |---|---|
@@ -272,7 +272,7 @@ pub struct RestartOpencodeResponse {
 
 ## Notifications
 
-### `_loomdesk.dev/settings/changed`
+### `_anureo.dev/settings/changed`
 
 | 项目 | 内容 |
 |---|---|
@@ -282,7 +282,7 @@ pub struct RestartOpencodeResponse {
 ```json
 {
   "jsonrpc": "2.0",
-  "method": "_loomdesk.dev/settings/changed",
+  "method": "_anureo.dev/settings/changed",
   "params": {
     "version": 16,
     "changedKeys": ["ui.theme", "ui.fontSize", "editor.wordWrap"],

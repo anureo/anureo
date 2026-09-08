@@ -145,7 +145,7 @@ stream-event/ (slimmed, ~1,170 行)       ← 保留 crate 名
 ├── sender.rs
 └── writers/
 
-loom-protocol/ (new, ~1,940 行)          ← 新 crate (或复用已废弃的旧名)
+anureo-protocol/ (new, ~1,940 行)          ← 新 crate (或复用已废弃的旧名)
 ├── event.rs
 ├── envelope.rs
 └── convert.rs
@@ -158,7 +158,7 @@ codex-protocol/ (new, ~426 行)           ← 新 crate
 
 **优点**：
 - 11 个消费者不需要改 Cargo.toml（仍依赖 `stream-event`）
-- 只有 runner.rs + CLI agent.rs 需要加 `loom-protocol` 依赖
+- 只有 runner.rs + CLI agent.rs 需要加 `anureo-protocol` 依赖
 - codex 消费者改为依赖 `codex-protocol`
 - 编译隔离：改协议层不再重编译 foundation/*
 
@@ -287,7 +287,7 @@ stream-event/ (slimmed)
 └── tests/
     └── stream_event.rs      # 保留核心测试
 
-loom-protocol/ (new)
+anureo-protocol/ (new)
 ├── Cargo.toml               # depends on: stream-event
 ├── src/
 │   ├── lib.rs
@@ -312,13 +312,13 @@ codex-protocol     → (无内部依赖)
 
 stream-event       → serde, serde_json, tokio (mpsc)
 
-loom-protocol      → stream-event, serde, serde_json
+anureo-protocol      → stream-event, serde, serde_json
 
 foundation/llm     → stream-event           (不变)
 foundation/graph-core → stream-event        (不变)
 foundation/pregel  → stream-event           (不变)
-agent-core         → stream-event + loom-protocol  (新增 loom-protocol)
-apps/cli           → stream-event + loom-protocol + codex-protocol  (新增 2 个)
+agent-core         → stream-event + anureo-protocol  (新增 anureo-protocol)
+apps/cli           → stream-event + anureo-protocol + codex-protocol  (新增 2 个)
 apps/acp           → stream-event           (不变)
 experimental/codex → stream-event + codex-protocol  (新增 codex-protocol)
 ```
@@ -333,8 +333,8 @@ experimental/codex → stream-event + codex-protocol  (新增 codex-protocol)
 | agent-core/think_node | **无** | **无** |
 | agent-core/act_executor | **无** | **无** |
 | agent-core/subagent_display | **无** | **无** |
-| agent-core/runner | 加 `loom-protocol` | `use stream_event::envelope::EnvelopeState` → `use loom_protocol::EnvelopeState`; `use stream_event::convert::...` → `use loom_protocol::...` |
-| apps/cli/agent.rs | 加 `loom-protocol` | `use stream_event::EnvelopeState` → `use loom_protocol::EnvelopeState` |
+| agent-core/runner | 加 `anureo-protocol` | `use stream_event::envelope::EnvelopeState` → `use anureo_protocol::EnvelopeState`; `use stream_event::convert::...` → `use anureo_protocol::...` |
+| apps/cli/agent.rs | 加 `anureo-protocol` | `use stream_event::EnvelopeState` → `use anureo_protocol::EnvelopeState` |
 | apps/cli/display | **无** | **无** |
 | apps/cli/codex_event_builder | 加 `codex-protocol` | `use stream_event::codex::` → `use codex_protocol::` |
 | apps/acp | **无** | **无** |
@@ -366,34 +366,34 @@ experimental/codex → stream-event + codex-protocol  (新增 codex-protocol)
 
 **验证点**: `stream-event` 不再包含 codex 模块; `codex-protocol` 独立编译通过
 
-### Step 2: 提取 loom-protocol（核心步骤）
+### Step 2: 提取 anureo-protocol（核心步骤）
 
 ```
-1. 创建 loom-protocol/ crate (depends on stream-event)
+1. 创建 anureo-protocol/ crate (depends on stream-event)
 2. 移动 3 个文件:
-   - stream-event/src/event.rs     → loom-protocol/src/event.rs
-   - stream-event/src/envelope.rs  → loom-protocol/src/envelope.rs
-   - stream-event/src/convert.rs   → loom-protocol/src/convert.rs
-3. 移动 stream-event/tests/stream_event.rs → loom-protocol/tests/protocol.rs
-4. 更新 loom-protocol/src/lib.rs:
+   - stream-event/src/event.rs     → anureo-protocol/src/event.rs
+   - stream-event/src/envelope.rs  → anureo-protocol/src/envelope.rs
+   - stream-event/src/convert.rs   → anureo-protocol/src/convert.rs
+3. 移动 stream-event/tests/stream_event.rs → anureo-protocol/tests/protocol.rs
+4. 更新 anureo-protocol/src/lib.rs:
    pub use event::ProtocolEvent;
    pub use envelope::{to_json, Envelope, EnvelopeState};
    pub use convert::{stream_event_to_protocol_envelope, stream_event_to_format_a, ProtocolEventEnvelope};
 5. 从 stream-event/src/lib.rs 删除:
    - pub mod convert / pub mod envelope / pub mod event
    - 对应的 pub use 行
-6. 更新 workspace Cargo.toml 添加 loom-protocol
+6. 更新 workspace Cargo.toml 添加 anureo-protocol
 7. 更新 2 个消费者:
-   - agent-core: 加 loom-protocol 依赖, 改 import
-   - apps/cli: 加 loom-protocol 依赖, 改 import
+   - agent-core: 加 anureo-protocol 依赖, 改 import
+   - apps/cli: 加 anureo-protocol 依赖, 改 import
 8. cargo build --workspace
 9. cargo test -p stream-event
-10. cargo test -p loom-protocol
+10. cargo test -p anureo-protocol
 11. cargo test -p agent-core
 12. cargo test -p apps-cli
 ```
 
-**验证点**: `stream-event` 不再包含 protocol 模块; `loom-protocol` 依赖 `stream-event` 并独立编译
+**验证点**: `stream-event` 不再包含 protocol 模块; `anureo-protocol` 依赖 `stream-event` 并独立编译
 
 ### Step 3: 清理
 
@@ -413,7 +413,7 @@ experimental/codex → stream-event + codex-protocol  (新增 codex-protocol)
 |------|:----:|:----:|------|
 | Import 路径遗漏 | 中 | 低 | 编译器强制检查 (use 路径不存在 → 编译错误) |
 | convert.rs 测试编译错误 | 高 | 低 | Step 3 修复已知 bug (`use stream_event::` → `use crate::`) |
-| loom-protocol 名字冲突 | 低 | 低 | 搜索 workspace 确认无同名 crate |
+| anureo-protocol 名字冲突 | 低 | 低 | 搜索 workspace 确认无同名 crate |
 | 消费者遗漏 | 低 | 中 | `cargo build --workspace` 验证全量编译 |
 | git 历史丢失 | 低 | 低 | 使用 `git mv` 保留文件历史 |
 
@@ -429,7 +429,7 @@ experimental/codex → stream-event + codex-protocol  (新增 codex-protocol)
 | `metadata.rs` | 87 | stream-event | StreamMetadata + CheckpointEvent，与 StreamEvent 绑定 |
 | `sender.rs` | 223 | stream-event | StreamEventSink 桥接 MessageChunk → StreamEvent，属于事件层 |
 | `writers/stream_writer.rs` | 430 | stream-event | StreamWriter 发送 StreamEvent，属于事件层 |
-| `event.rs` | 528 | **loom-protocol** | ProtocolEvent 是线路格式，不是领域事件 |
-| `envelope.rs` | 377 | **loom-protocol** | EnvelopeState 是线路注入器，只有 runner 用 |
-| `convert.rs` | 1,038 | **loom-protocol** | 转换函数桥接领域→线路，只有 runner 用 |
-| `codex.rs` | 426 | **codex-protocol** | 完全独立的 Codex 协议，与 Loom 事件无关 |
+| `event.rs` | 528 | **anureo-protocol** | ProtocolEvent 是线路格式，不是领域事件 |
+| `envelope.rs` | 377 | **anureo-protocol** | EnvelopeState 是线路注入器，只有 runner 用 |
+| `convert.rs` | 1,038 | **anureo-protocol** | 转换函数桥接领域→线路，只有 runner 用 |
+| `codex.rs` | 426 | **codex-protocol** | 完全独立的 Codex 协议，与 anureo 事件无关 |

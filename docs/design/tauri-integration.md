@@ -2,18 +2,18 @@
 
 > **状态**: 提案
 > **日期**: 2025-08-19
-> **范围**: 将 OpenChamber Web 应用转换为 Tauri 桌面应用
-> **相关仓库**: `loom` (后端) / `openchamber-feat-dev` (前端)
+> **范围**: 将 anureo Web 应用转换为 Tauri 桌面应用
+> **相关仓库**: `anureo` (后端) / `anureo-feat-dev` (前端)
 
 ## 1. 背景与目标
 
 ### 1.1 现状分析
 
-当前 OpenChamber (loomdesk) 作为纯 Web 应用运行在浏览器中，通过 ACP WebSocket 协议与 Loom 后端通信。虽然功能完整，但缺乏桌面应用的系统集成能力。
+当前 anureo (anureo) 作为纯 Web 应用运行在浏览器中，通过 ACP WebSocket 协议与 anureo 后端通信。虽然功能完整，但缺乏桌面应用的系统集成能力。
 
 **现有架构**:
 ```
-浏览器 ←→ ACP WebSocket ←→ Loom Backend (3031端口)
+浏览器 ←→ ACP WebSocket ←→ anureo Backend (3031端口)
 ```
 
 **局限性**:
@@ -25,7 +25,7 @@
 
 ### 1.2 目标
 
-通过 Tauri 将 OpenChamber 打包为原生桌面应用，提供：
+通过 Tauri 将 anureo 打包为原生桌面应用，提供：
 
 1. **原生桌面体验**: 系统托盘、菜单栏、文件关联
 2. **更好的系统集成**: 原生通知、快捷键、窗口管理
@@ -34,7 +34,7 @@
 
 **目标架构**:
 ```
-Tauri Desktop App ←→ ACP WebSocket ←→ Loom Backend
+Tauri Desktop App ←→ ACP WebSocket ←→ anureo Backend
 ```
 
 ## 2. 技术方案
@@ -46,7 +46,7 @@ Tauri Desktop App ←→ ACP WebSocket ←→ Loom Backend
 │        Tauri Desktop Application     │
 │  ┌─────────────────────────────┐    │
 │  │   Frontend (React/Vue)      │    │
-│  │   - 现有 OpenChamber UI     │    │
+│  │   - 现有 anureo UI     │    │
 │  │   - Vite 构建               │    │
 │  └──────────┬──────────────────┘    │
 │             │ Tauri IPC             │
@@ -60,7 +60,7 @@ Tauri Desktop App ←→ ACP WebSocket ←→ Loom Backend
               │ ACP WebSocket
               ▼
 ┌─────────────────────────────────────┐
-│        Loom Backend Server          │
+│        anureo Backend Server          │
 │  - HTTP + ACP WebSocket (3031)      │
 │  - Agent 运行时                     │
 │  - 会话管理                         │
@@ -70,7 +70,7 @@ Tauri Desktop App ←→ ACP WebSocket ←→ Loom Backend
 ### 2.2 项目结构
 
 ```
-openchamber-feat-dev/
+anureo-feat-dev/
 ├── src-tauri/                    # Tauri Rust 后端
 │   ├── src/
 │   │   ├── main.rs              # Tauri 入口点
@@ -110,14 +110,14 @@ openchamber-feat-dev/
 - UI 库: 保持现有组件库
 
 **后端**:
-- 语言: Rust (与 Loom 后端一致)
+- 语言: Rust (与 anureo 后端一致)
 - 框架: Tauri 2.x
 - WebSocket: tokio-tungstenite
 - 异步运行时: tokio
 
 **通信**:
 - 前后端: Tauri IPC (invoke/invoke-handler)
-- 与 Loom: ACP WebSocket (保持现有协议)
+- 与 anureo: ACP WebSocket (保持现有协议)
 
 ## 3. 核心功能实现
 
@@ -170,8 +170,8 @@ pub fn create_system_tray() -> SystemTray {
     let quit = CustomMenuItem::new("quit".to_string(), "退出");
     let hide = CustomMenuItem::new("hide".to_string(), "隐藏");
     let show = CustomMenuItem::new("show".to_string(), "显示");
-    let start_server = CustomMenuItem::new("start_server".to_string(), "启动 Loom 服务");
-    let stop_server = CustomMenuItem::new("stop_server".to_string(), "停止 Loom 服务");
+    let start_server = CustomMenuItem::new("start_server".to_string(), "启动 anureo 服务");
+    let stop_server = CustomMenuItem::new("stop_server".to_string(), "停止 anureo 服务");
     
     let tray_menu = SystemTrayMenu::new()
         .add_item(show)
@@ -207,10 +207,10 @@ pub fn handle_system_tray_event(app: &AppHandle, event: tauri::SystemTrayEvent) 
                     window.set_focus().unwrap();
                 }
                 "start_server" => {
-                    // 启动 Loom 服务
+                    // 启动 anureo 服务
                 }
                 "stop_server" => {
-                    // 停止 Loom 服务
+                    // 停止 anureo 服务
                 }
                 _ => {}
             }
@@ -346,7 +346,7 @@ async fn open_file_in_project(app_handle: tauri::AppHandle, file_path: String) -
 
 fn extract_project_path(file_path: &str) -> Result<String, String> {
     // 实现项目路径解析逻辑
-    // 向上查找 .loom 目录或项目标识文件
+    // 向上查找 .anureo 目录或项目标识文件
     let path = std::path::Path::new(file_path);
     
     // 简化实现：直接返回父目录
@@ -362,7 +362,7 @@ async fn register_file_associations() -> Result<(), String> {
     // 注册文件关联（Windows）
     #[cfg(target_os = "windows")]
     {
-        // 使用 Windows API 注册 .loom 文件关联
+        // 使用 Windows API 注册 .anureo 文件关联
         // 这里需要调用系统 API 或使用第三方库
     }
     
@@ -443,9 +443,9 @@ async fn show_error_notification(
 ```json
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "LoomDesk",
+  "productName": "Anureo",
   "version": "1.0.0",
-  "identifier": "com.loomdesk.app",
+  "identifier": "com.anureo.app",
   "build": {
     "distDir": "../dist",
     "devPath": "http://localhost:5180",
@@ -456,7 +456,7 @@ async fn show_error_notification(
   "app": {
     "windows": [
       {
-        "title": "LoomDesk",
+        "title": "Anureo",
         "width": 1200,
         "height": 800,
         "resizable": true,
@@ -487,12 +487,12 @@ async fn show_error_notification(
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "identifier": "com.loomdesk.app",
-    "publisher": "LoomDesk Team",
-    "copyright": "Copyright © 2025 LoomDesk Team",
+    "identifier": "com.anureo.app",
+    "publisher": "Anureo Team",
+    "copyright": "Copyright © 2025 Anureo Team",
     "category": "DeveloperTool",
     "shortDescription": "AI Agent Desktop Application",
-    "longDescription": "LoomDesk is a desktop application for managing AI agents and development workflows.",
+    "longDescription": "Anureo is a desktop application for managing AI agents and development workflows.",
     "macOS": {
       "frameworks": [],
       "minimumSystemVersion": "10.13",
@@ -511,7 +511,7 @@ async fn show_error_notification(
     "updater": {
       "active": true,
       "endpoints": [
-        "https://releases.loomdesk.app/{{target}}/{{current_version}}"
+        "https://releases.anureo.app/{{target}}/{{current_version}}"
       ],
       "dialog": true,
       "pubkey": "YOUR_PUBLIC_KEY_HERE"
@@ -563,12 +563,12 @@ async fn show_error_notification(
 
 ```toml
 [package]
-name = "loomdesk"
+name = "anureo"
 version = "1.0.0"
-description = "LoomDesk - AI Agent Desktop Application"
-authors = ["LoomDesk Team"]
+description = "Anureo - AI Agent Desktop Application"
+authors = ["Anureo Team"]
 license = "MIT"
-repository = "https://github.com/your-org/loomdesk"
+repository = "https://github.com/your-org/anureo"
 edition = "2021"
 
 [build-dependencies]
@@ -679,7 +679,7 @@ export const tauriApi = {
 ### 5.2 现有代码适配
 
 ```typescript
-// 在现有的 OpenChamber 代码中集成 Tauri 功能
+// 在现有的 anureo 代码中集成 Tauri 功能
 import { tauriApi } from '@tauri-apps/api/lib';
 
 // 替换现有的通知调用
@@ -724,7 +724,7 @@ useEffect(() => {
 ### 6.1 开发环境
 
 ```bash
-# 在 openchamber-feat-dev 目录下
+# 在 anureo-feat-dev 目录下
 
 # 安装 Tauri CLI
 npm install -g @tauri-apps/cli
@@ -904,7 +904,7 @@ async fn download_and_install_update(app_handle: tauri::AppHandle) -> Result<(),
    - API 扩展
 
 3. **多实例管理**
-   - 支持多个 Loom 实例
+   - 支持多个 anureo 实例
    - 实例切换
    - 资源隔离
 

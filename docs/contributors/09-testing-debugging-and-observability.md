@@ -1,39 +1,39 @@
-# Loom 测试、调试与可观测性
+# anureo 测试、调试与可观测性
 
 > **状态**：基于当前源码的贡献者说明
 > **相关代码**：`agent/agent-core/src/test_support.rs`、`agent/tool/tool-workflow/tests`、`apps/acp/tests`、`apps/server/tests`、`foundation/llm/src/client/openai/tests.rs`、`foundation/stream-event/tests/stream_event.rs`、`apps/cli/src/logging.rs`、`apps/acp/src/logging.rs`
 
-本文面向 Loom 贡献者，说明当前测试层级、可复用测试替身、workflow/ACP/server/LLM 的调试路径，以及日志和 stream event 的观测边界。所有命令、路径、配置项和行为均以当前源码为准；没有在指定源码中出现的 API 不在本文中当作已实现能力。
+本文面向 anureo 贡献者，说明当前测试层级、可复用测试替身、workflow/ACP/server/LLM 的调试路径，以及日志和 stream event 的观测边界。所有命令、路径、配置项和行为均以当前源码为准；没有在指定源码中出现的 API 不在本文中当作已实现能力。
 
 ## 1. 测试地图与边界
 
-Loom 的测试大致沿着“纯数据/状态 → crate 集成 → 真实进程 → HTTP/ACP 协议 → Web UI”分层。测试应尽量在拥有该行为的层验证，只有跨进程或跨协议行为才提升到 e2e。
+anureo 的测试大致沿着“纯数据/状态 → crate 集成 → 真实进程 → HTTP/ACP 协议 → Web UI”分层。测试应尽量在拥有该行为的层验证，只有跨进程或跨协议行为才提升到 e2e。
 
 | 层级 | 当前源码证据 | 适合验证的内容 |
 | --- | --- | --- |
 | Foundation unit | `foundation/llm/src/client/openai/tests.rs`、`foundation/stream-event/tests/stream_event.rs` | OpenAI 请求/响应、retry 分类、SSE chunk、event envelope 的字段和序号 |
 | Agent/tool crate integration | `agent/tool/tool-basic/src/skill/manage/tests/coverage.rs`、`agent/tool/tool-workflow/tests/*.rs` | Tool 输入校验、回滚、runtime registry、cancel、checkpoint resume |
 | 应用内 router | `apps/server/tests/endpoint_integration.rs`、`apps/server/tests/protocol.rs` | Axum route 的 status/body/header、event replay、SSE、协议形状 |
-| 真实 ACP 进程 | `apps/acp/tests/e2e/common/harness.rs`、`apps/acp/tests/e2e/reload.rs`、`apps/acp/tests/e2e_mega.rs` | `loom-acp` 子进程、JSON-RPC request/notification、reverse RPC、日志和退出；Cargo test target 名为 `e2e_mega` |
+| 真实 ACP 进程 | `apps/acp/tests/e2e/common/harness.rs`、`apps/acp/tests/e2e/reload.rs`、`apps/acp/tests/e2e_mega.rs` | `anureo-acp` 子进程、JSON-RPC request/notification、reverse RPC、日志和退出；Cargo test target 名为 `e2e_mega` |
 | Web e2e | `e2e/playwright.config.ts`、`e2e/tests/web/smoke.spec.ts` | 浏览器中的 session、发送消息、刷新恢复、空状态和 JS 失败 |
 
-根 `README.md` 的开发命令是 `cargo build -p cli` 和 `cargo test -p cli`；workflow、browser extension 和 task modes 在 README 中仍标为实验性，`evolve` 尚未实现。不要因为存在测试文件就把实验性或过时测试描述成稳定 API。
+根 `README.md` 的开发命令是 `cargo build -p anureo-cli` 和 `cargo test -p anureo-cli`；workflow、browser extension 和 task modes 在 README 中仍标为实验性，`evolve` 尚未实现。不要因为存在测试文件就把实验性或过时测试描述成稳定 API。
 
 ## 2. Rust 测试运行方式
 
-仓库根 `.nextest.toml` 是当前 nextest 配置：默认 `test-threads = "num-cpus"`、单测试 slow timeout 为 10 秒且最多终止 3 次；名称匹配 `test(e2e_)` 的测试为 30 秒/2 次；当前文件中的 ACP 覆盖条件仍是 `package(loom-acp)`，但它与实际 Cargo package 名 `acp` 不匹配，因此不会覆盖 ACP package。若修复 nextest 配置本身，应使用 `package(acp)`；本文件只记录该现状，不修改配置文件。`ci` profile 使用 8 个线程、60 秒/3 次，且默认 profile `fail-fast = false`。
+仓库根 `.nextest.toml` 是当前 nextest 配置：默认 `test-threads = "num-cpus"`、单测试 slow timeout 为 10 秒且最多终止 3 次；名称匹配 `test(e2e_)` 的测试为 30 秒/2 次；当前文件中的 ACP 覆盖条件仍是 `package(anureo-acp)`，但它与实际 Cargo package 名 `acp` 不匹配，因此不会覆盖 ACP package。若修复 nextest 配置本身，应使用 `package(acp)`；本文件只记录该现状，不修改配置文件。`ci` profile 使用 8 个线程、60 秒/3 次，且默认 profile `fail-fast = false`。
 
 贡献者可先运行针对性测试，再扩大范围：
 
 ```powershell
-cargo test -p cli
+cargo test -p anureo-cli
 cargo test -p tool-workflow
-cargo test -p loom-server
+cargo test -p anureo-server
 cargo test -p acp
 cargo test --workspace
 ```
 
-上面的 package 名必须以当前 Cargo manifest 为准：ACP 的 package 名是 `acp`，库名是 `loom_acp`，而 `loom-acp` 只是在产品/二进制语境中使用的名称。修改 foundation 或跨 crate 协议后，再运行 `cargo check --workspace` 与对应 integration test。源码未定义统一的 `make test` 或 coverage 命令，不要在贡献文档中虚构一个。
+上面的 package 名必须以当前 Cargo manifest 为准：ACP 的 package 名是 `acp`，库名是 `anureo_acp`，而 `anureo-acp` 只是在产品/二进制语境中使用的名称。修改 foundation 或跨 crate 协议后，再运行 `cargo check --workspace` 与对应 integration test。源码未定义统一的 `make test` 或 coverage 命令，不要在贡献文档中虚构一个。
 
 ### 2.1 环境变量测试必须串行化
 
@@ -44,7 +44,7 @@ cargo test --workspace
 3. 通过 RAII 在闭包结束或 panic 时恢复旧值；
 4. 用 thread-local depth 支持同线程嵌套调用，避免嵌套死锁。
 
-新增环境测试应复用该 helper，不要自行设置 `LOOM_HOME`、`OPENAI_BASE_URL` 或类似全局变量而不恢复。需要跨 crate 共享环境状态时，测试仍需在自己的 owning crate 设计隔离方案；不能假设 `agent-core` 的锁自动覆盖其他 crate。
+新增环境测试应复用该 helper，不要自行设置 `ANUREO_HOME`、`OPENAI_BASE_URL` 或类似全局变量而不恢复。需要跨 crate 共享环境状态时，测试仍需在自己的 owning crate 设计隔离方案；不能假设 `agent-core` 的锁自动覆盖其他 crate。
 
 ## 3. Tool 与 workflow 测试
 
@@ -79,7 +79,7 @@ runtime registry 查找并请求取消
 
 同一个 run 连续 cancel 仍返回 `cancelling`，说明当前 registry 命中路径是幂等的；未知实例返回 `not_found_or_terminal`。缺少 `instance` 会产生 Tool error，但 `instance_dir` 可作为 fallback。`../escape`、包含 `/` 或 `\` 的名称被拒绝，避免 path traversal。测试还要求 cancel 在约 50ms 内返回，说明 cancel tool 不应等待完整 workflow 结束。
 
-状态读取由 `WorkflowStatusTool` 覆盖：checkpoint 中 `status: "cancelled"` 映射为 cancelled；存在 instance directory 但尚无 terminal checkpoint 时为 running；未知目录是 error。当前测试使用 `.loom/instances/<instance>` 下的 `checkpoint.json`、`instance.json`、`events.jsonl` 和 `workflow.lua` fixture。不要把这些测试 fixture 推导成未经源码确认的公开文件格式；它们是当前 workflow runtime 的观测材料。
+状态读取由 `WorkflowStatusTool` 覆盖：checkpoint 中 `status: "cancelled"` 映射为 cancelled；存在 instance directory 但尚无 terminal checkpoint 时为 running；未知目录是 error。当前测试使用 `.anureo/instances/<instance>` 下的 `checkpoint.json`、`instance.json`、`events.jsonl` 和 `workflow.lua` fixture。不要把这些测试 fixture 推导成未经源码确认的公开文件格式；它们是当前 workflow runtime 的观测材料。
 
 ### 3.3 workflow：resume 与 crash recovery
 
@@ -103,7 +103,7 @@ resume 测试不应只断言最终 `result.is_ok()`；必须同时断言 dispatc
 
 `parallel_mapper.rs` 和 `terminal_events.rs` 顶部都写明：旧的 `WorkflowTool` 已在重构中拆成 `WorkflowStartTool`/`WorkflowRuntime`，这些测试需要按新 API 重写。它们是迁移提示，不是当前可执行 contract。贡献者修复 workflow 测试时应以当前公开类型和 `cancel_basic.rs`/`cancel_resume.rs` 的调用方式为准，不能恢复已删除的 `WorkflowTool`。
 
-`instance_smoke.rs` 是可选 smoke：设置 `LOOM_TEST_INSTANCES_DIR` 后读取真实 instance 下的 `checkpoint.json` 与 `events.jsonl`，调用 `build_instance_meta` 和 `write_instance_artifacts`，然后断言 `instance.json` 的 `schema_version = 1`、`status = completed`、非空 agents、64 字符 `checkpoint_hash`、正的 event total 和 `agent_done` 类型。未设置变量或 fixture 不存在时测试只打印提示并 return，不等于验证通过。
+`instance_smoke.rs` 是可选 smoke：设置 `ANUREO_TEST_INSTANCES_DIR` 后读取真实 instance 下的 `checkpoint.json` 与 `events.jsonl`，调用 `build_instance_meta` 和 `write_instance_artifacts`，然后断言 `instance.json` 的 `schema_version = 1`、`status = completed`、非空 agents、64 字符 `checkpoint_hash`、正的 event total 和 `agent_done` 类型。未设置变量或 fixture 不存在时测试只打印提示并 return，不等于验证通过。
 
 ## 4. LLM、stream event 与协议测试
 
@@ -154,30 +154,30 @@ resume 测试不应只断言最终 `result.is_ok()`；必须同时断言 dispatc
 
 ### 5.2 ACP harness 的进程、JSON-RPC 与 reverse RPC
 
-`apps/acp/tests/e2e/common/harness.rs` 的 `AcpTestHarness::spawn()` 启动真实 `loom-acp` binary，设置：
+`apps/acp/tests/e2e/common/harness.rs` 的 `AcpTestHarness::spawn()` 启动真实 `anureo-acp` binary，设置：
 
 ```text
 OPENAI_BASE_URL=<llm_url>/v1
 OPENAI_API_KEY=test-key
 OPENAI_MODEL=openai/gpt-4o
-loom acp --log-file <temp LOOM_HOME>/loom-acp.log --log-level info
+anureo acp --log-file <temp ANUREO_HOME>/anureo-acp.log --log-level info
 ```
 
 harness 拥有 child 的 stdin/stdout/stderr、`JsonRpcClient`、notification buffer 和 `ReverseRpcResponder`。stdin 通过 unbounded channel 写入，stdout reader 将 response 放入 pending map，将 notification 缓存，并自动回答 agent→client 的 `session/request_permission`、`fs/read_text_file`、`fs/write_text_file`、`terminal/create`、`terminal/output` 和 `terminal/kill`。request 默认 timeout 是 30 秒；等待 graceful shutdown 是 10 秒，超时会 kill child。
 
 调试 ACP test timeout 时，应先看 `dump_log_tail()` 输出的 log file 最后 60 行，再检查 buffered notifications；不要只增加 timeout。`shutdown()` 先关闭 write sender、abort reader task，使 writer 看到 EOF，之后等待 child 正常退出。harness 的 `Drop` 只负责 `start_kill()`，所以需要验证正常退出的测试应显式调用 `shutdown()`。
 
-`apps/acp/tests/e2e/reload.rs` 当前直接 spawn binary：`loom acp --show-log-dir` 应成功并打印含 `loom`/`log` 的路径；`loom acp reload` 在无 PID file 时不应 panic 或 hang，Windows 可以输出 not supported，Unix 在无 PID file 时可以非零退出。这是平台差异，不能把 reload 无 PID 的退出码写成跨平台固定值。
+`apps/acp/tests/e2e/reload.rs` 当前直接 spawn binary：`anureo acp --show-log-dir` 应成功并打印含 `anureo`/`log` 的路径；`anureo acp reload` 在无 PID file 时不应 panic 或 hang，Windows 可以输出 not supported，Unix 在无 PID file 时可以非零退出。这是平台差异，不能把 reload 无 PID 的退出码写成跨平台固定值。
 
-`apps/acp/tests/common/test_setup.rs` 通过临时目录创建 `.loom/agents` 并设置 `LOOM_HOME`，Drop 时删除变量。测试并行运行时仍应谨慎：该 helper 本身没有 `agent-core::env_lock()`，跨测试同时改变 `LOOM_HOME` 可能互相影响。
+`apps/acp/tests/common/test_setup.rs` 通过临时目录创建 `.anureo/agents` 并设置 `ANUREO_HOME`，Drop 时删除变量。测试并行运行时仍应谨慎：该 helper 本身没有 `agent-core::env_lock()`，跨测试同时改变 `ANUREO_HOME` 可能互相影响。
 
 ## 6. 日志、配置与故障定位
 
-`apps/cli/src/logging.rs` 的 CLI 日志优先级是：显式 `--log-file` → `config.toml` 的 `[logging.cli].path` → 启动前捕获的 shell `LOG_FILE` → 默认 `~/.loom/logs/cli/loom-cli.log`。`bootstrap` 在加载 `config.toml` 前捕获 shell 环境，因此配置路径存在时会跳过该 shell 路径；由 `config.toml` 的 `[env]` 注入的 `LOG_FILE` 不等同于启动前捕获的 shell `LOG_FILE`。`--log-level` 覆盖 `RUST_LOG`，再回退到 `info`；`--log-format` 支持 `text`/`json`，非法值在当前 `LogArgs::new` 中静默回退为默认的 `text`；rotation 支持 `none`、`daily`、`hourly`、`minutely`，非法值静默回退为默认的 `none`。`{working_folder}` 路径变量由 `resolve_log_path` 解析，写文件时自动创建父目录；没有 CLI/env/config 覆盖时仍写入默认文件，而不是使用丢弃 sink。只有绕过 `resolve_cli_log_path` 并直接以 `None` 初始化时，才会进入 sink 路径。
+`apps/cli/src/logging.rs` 的 CLI 日志优先级是：显式 `--log-file` → `config.toml` 的 `[logging.cli].path` → 启动前捕获的 shell `LOG_FILE` → 默认 `~/.anureo/logs/cli/anureo-cli.log`。`bootstrap` 在加载 `config.toml` 前捕获 shell 环境，因此配置路径存在时会跳过该 shell 路径；由 `config.toml` 的 `[env]` 注入的 `LOG_FILE` 不等同于启动前捕获的 shell `LOG_FILE`。`--log-level` 覆盖 `RUST_LOG`，再回退到 `info`；`--log-format` 支持 `text`/`json`，非法值在当前 `LogArgs::new` 中静默回退为默认的 `text`；rotation 支持 `none`、`daily`、`hourly`、`minutely`，非法值静默回退为默认的 `none`。`{working_folder}` 路径变量由 `resolve_log_path` 解析，写文件时自动创建父目录；没有 CLI/env/config 覆盖时仍写入默认文件，而不是使用丢弃 sink。只有绕过 `resolve_cli_log_path` 并直接以 `None` 初始化时，才会进入 sink 路径。
 
-`apps/acp/src/logging.rs` 的 ACP 日志路径优先级是 CLI file → `LOGS_ACP` → `[logging.acp].path` → `~/.loom/logs/acp/loom-acp.log`。ACP stdio 入口在请求循环启动时直接调用 `logging::init_logging(None)`，并由 `OnceLock` 保持只初始化一次的 worker guard；此时相对路径按进程当前工作目录解析。`new_session` handler 是在已启动的连接循环中才调用 `agent.new_session(req)`，因此首个 session 的 `working_folder` 不会参与当前日志初始化。若要让该目录决定路径，必须调整初始化时序，并明确多 session 下 `OnceLock` 的路径选择语义。ACP 的 `text`/`json` 格式和 rotation 也来自当前 `LogConfig`/config。
+`apps/acp/src/logging.rs` 的 ACP 日志路径优先级是 CLI file → `LOGS_ACP` → `[logging.acp].path` → `~/.anureo/logs/acp/anureo-acp.log`。ACP stdio 入口在请求循环启动时直接调用 `logging::init_logging(None)`，并由 `OnceLock` 保持只初始化一次的 worker guard；此时相对路径按进程当前工作目录解析。`new_session` handler 是在已启动的连接循环中才调用 `agent.new_session(req)`，因此首个 session 的 `working_folder` 不会参与当前日志初始化。若要让该目录决定路径，必须调整初始化时序，并明确多 session 下 `OnceLock` 的路径选择语义。ACP 的 `text`/`json` 格式和 rotation 也来自当前 `LogConfig`/config。
 
-建议按以下最小信息排查问题：Loom version/commit、入口（CLI/ACP/server/workflow）、effective working directory、session/instance id、model/provider、错误分类和 log path。不要粘贴 API key、cookie、完整环境变量或私有源码。[故障排查指南](../guides/troubleshooting.md) 还要求：模型问题先运行 `loom models`，ACP 可用 `loom acp --show-log-dir`，workflow 先查看 `workflow_status`，失败时只查询必要的 `agent_done`/`run_done` 事件。
+建议按以下最小信息排查问题：anureo version/commit、入口（CLI/ACP/server/workflow）、effective working directory、session/instance id、model/provider、错误分类和 log path。不要粘贴 API key、cookie、完整环境变量或私有源码。[故障排查指南](../guides/troubleshooting.md) 还要求：模型问题先运行 `anureo models`，ACP 可用 `anureo acp --show-log-dir`，workflow 先查看 `workflow_status`，失败时只查询必要的 `agent_done`/`run_done` 事件。
 
 ## 7. Web e2e 与 Playwright
 
@@ -211,11 +211,11 @@ npm run ui
 
 ### 常见坑
 
-- 把 `cargo test -p cli` 当成 workspace 全量测试；它不会替代 workflow、server、ACP 和 Web e2e。
-- 在并行测试中直接修改 `LOOM_HOME` 或 `OPENAI_BASE_URL`，造成 flaky。
+- 把 `cargo test -p anureo-cli` 当成 workspace 全量测试；它不会替代 workflow、server、ACP 和 Web e2e。
+- 在并行测试中直接修改 `ANUREO_HOME` 或 `OPENAI_BASE_URL`，造成 flaky。
 - 只断言 workflow resume 成功，不断言 `CountingBackend` dispatch count，漏掉重复执行。
 - 将 `parallel_mapper.rs`/`terminal_events.rs` 的旧 `WorkflowTool` 当成当前 API。
-- 把 `instance_smoke` 未设置 fixture 时的 return 当成通过；它需要 `LOOM_TEST_INSTANCES_DIR` 和指定 instance 目录。
+- 把 `instance_smoke` 未设置 fixture 时的 return 当成通过；它需要 `ANUREO_TEST_INSTANCES_DIR` 和指定 instance 目录。
 - 把 cancel 的 `cancelling` 当成 workflow 已完成；它只是 registry 接受取消请求，terminal status 需另查。
 - 把 server 501 的 upgrade/instance update 写成待实现却未标实验性；当前测试明确它们返回 NOT_IMPLEMENTED。
 - 把 ACP 无 PID reload 的退出码固定为 0 或 1；源码允许 Windows/Unix 差异。

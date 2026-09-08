@@ -47,7 +47,7 @@
 **方案**：
 ```rust
 async fn exists(&self, thread_id: &str) -> Result<bool, BotError> {
-    let db_path = loom::memory::default_memory_db_path();
+    let db_path = anureo::memory::default_memory_db_path();
     let conn = rusqlite::Connection::open(&db_path)
         .map_err(|e| BotError::Database(e.to_string()))?;
 
@@ -67,7 +67,7 @@ async fn exists(&self, thread_id: &str) -> Result<bool, BotError> {
 
 ### 0.4 统一 `main.rs` 启动错误处理
 
-**问题**：loom 全局配置加载用 `if let Ok` 静默忽略失败，telegram-bot 配置用 `process::exit(1)`。两条路径风格不一致。
+**问题**：anureo 全局配置加载用 `if let Ok` 静默忽略失败，telegram-bot 配置用 `process::exit(1)`。两条路径风格不一致。
 
 **文件**：`src/main.rs`
 
@@ -75,9 +75,9 @@ async fn exists(&self, thread_id: &str) -> Result<bool, BotError> {
 ```rust
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // 全局配置：仅打印 warning，不中断启动
-    if let Err(e) = config::load_and_apply_with_report("loom", None::<&std::path::Path>) {
-        tracing::warn!("Failed to load loom global config (non-fatal): {}", e);
-    } else if let Ok(report) = config::load_and_apply_with_report("loom", None::<&std::path::Path>) {
+    if let Err(e) = config::load_and_apply_with_report("anureo", None::<&std::path::Path>) {
+        tracing::warn!("Failed to load anureo global config (non-fatal): {}", e);
+    } else if let Ok(report) = config::load_and_apply_with_report("anureo", None::<&std::path::Path>) {
         // ... 原有的 eprintln 信息 ...
     }
     // ... 其余不变 ...
@@ -272,7 +272,7 @@ pub struct MockSender { messages: Arc<RwLock<Vec<(i64, String)>>> }
 ```rust
 pub struct HandlerDeps {
     pub sender: TeloxideSender,
-    pub agent_runner: LoomAgentRunner,
+    pub agent_runner: anureoAgentRunner,
     pub session_manager: SqliteSessionManager,
     pub file_downloader: TeloxideDownloader,
     // ...
@@ -335,26 +335,26 @@ async fn health_handler(State(state): State<HealthState>) -> Json<serde_json::Va
 
 ### 2.3 统一 `Settings` 所有权
 
-**问题**：`bot.rs` 用 `Arc<Settings>`，`LoomAgentRunner` 持有 owned `Settings`。两个地方对同一配置的所有权模型不一致，可能导致配置更新不同步。
+**问题**：`bot.rs` 用 `Arc<Settings>`，`anureoAgentRunner` 持有 owned `Settings`。两个地方对同一配置的所有权模型不一致，可能导致配置更新不同步。
 
 **文件**：`src/agent.rs`, `src/bot.rs`
 
 **方案**：
 
 ```rust
-pub struct LoomAgentRunner {
+pub struct anureoAgentRunner {
     bot: Bot,
     settings: Arc<Settings>,
 }
 
-impl LoomAgentRunner {
+impl anureoAgentRunner {
     pub fn new(bot: Bot, settings: Arc<Settings>) -> Self {
         Self { bot, settings }
     }
 }
 ```
 
-同时 `run_loom_agent_streaming` 改为接收 `&Settings`（当前已经如此），内部传引用。
+同时 `run_anureo_agent_streaming` 改为接收 `&Settings`（当前已经如此），内部传引用。
 
 ### 2.4 `SqliteSessionManager` 连接管理
 
@@ -371,7 +371,7 @@ pub struct SqliteSessionManager {
 
 impl SqliteSessionManager {
     pub fn new() -> Result<Self, BotError> {
-        let db_path = loom::memory::default_memory_db_path();
+        let db_path = anureo::memory::default_memory_db_path();
         let conn = rusqlite::Connection::open(&db_path)
             .map_err(|e| BotError::Database(e.to_string()))?;
         Ok(Self { conn: Mutex::new(conn) })

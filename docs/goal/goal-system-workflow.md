@@ -1,10 +1,12 @@
 # Goal 系统 Workflow 方案
 
-> 基于 Codex `/goal` 系统的完整架构分析，将每一块拆分为独立 Agent，设计 Loom 的 Workflow 实现方案。
+> 状态：**已被取代**（2026-09-06）——方向性评审未通过（Rust/Lua 双头编排未决、无 ACP 定位、对 Codex 语义转述失实，详见后继文档附录 A），由 [goal-codex-alignment.md](./goal-codex-alignment.md) 取代；本文保留作历史参考，勿据此实现。
 >
-> 参考文档：`docs/reference/codex-goal-analysis.md`
+> 基于 Codex `/goal` 系统的完整架构分析，将每一块拆分为独立 Agent，设计 anureo 的 Workflow 实现方案。
+>
+> 参考文档：`docs/goal/codex-goal-analysis.md`
 
-**创建时间**：2025-08-25｜**最后更新**：2025-08-25
+**创建时间**：2025-08-25｜**最后更新**：2025-08-25（日期存疑，参考文档快照为 2026-08-20）
 
 ---
 
@@ -25,14 +27,14 @@
 
 ## 1. 问题
 
-### 1.1 当前 Loom Goal 系统的局限
+### 1.1 当前 anureo Goal 系统的局限
 
-Loom 现有 `GoalRunner` 是一个**单体循环**，在一个进程中顺序执行所有逻辑：
+anureo 现有 `GoalRunner` 是一个**单体循环**，在一个进程中顺序执行所有逻辑：
 
 ```
 GoalRunner (loop)
   ├─ build_continuation_prompt()
-  ├─ tool.execute()          ← 调用外部编码工具（ShellTool / LoomTool）
+  ├─ tool.execute()          ← 调用外部编码工具（ShellTool / anureoTool）
   ├─ save_iteration_state()
   ├─ check_token_budget()
   ├─ run_verify_command()
@@ -59,7 +61,7 @@ TUI → Extension → Runtime → Store → SQLite → Protocol
 
 ### 1.3 目标
 
-将 Codex 的 6 层架构映射为 Loom 的 **Workflow Agent 架构**，每个关键模块是一个独立 Agent，通过 Workflow 编排协作。
+将 Codex 的 6 层架构映射为 anureo 的 **Workflow Agent 架构**，每个关键模块是一个独立 Agent，通过 Workflow 编排协作。
 
 ---
 
@@ -84,9 +86,9 @@ TUI → Extension → Runtime → Store → SQLite → Protocol
 │         │                                    ▲                   │
 │         ▼                                    │                   │
 │  ┌──────────────────────────────────────────────────────┐       │
-│  │  Coding Agent (LoomTool / ShellTool)                  │       │
+│  │  Coding Agent (anureoTool / ShellTool)                  │       │
 │  │  ┌─────────────┐  ┌──────────────┐  ┌────────────┐  │       │
-│  │  │ LoomTool    │  │ ShellTool    │  │ CodexTool  │  │       │
+│  │  │ anureoTool    │  │ ShellTool    │  │ CodexTool  │  │       │
 │  │  │ (internal)  │  │ (external)   │  │ (external) │  │       │
 │  │  └─────────────┘  └──────────────┘  └────────────┘  │       │
 │  └──────────────────────────────────────────────────────┘       │
@@ -101,7 +103,7 @@ TUI → Extension → Runtime → Store → SQLite → Protocol
 
 ### 2.2 Agent 分解对应
 
-| Codex 模块 | Loom Agent | 行数预估 | 职责 |
+| Codex 模块 | anureo Agent | 行数预估 | 职责 |
 |---|---|---|---|
 | GoalStore (1728 行) | **State Agent** | ~400 | SQLite CRUD + 原子 accounting |
 | GoalExtension (hooks) | **Orchestrator Agent** | ~500 | 生命周期编排、continuation 调度 |
@@ -362,9 +364,9 @@ impl GoalSteeringAgent {
 
 **Prompt 模板继承**：
 
-| Loom 模板 | Codex 来源 | 关键改进 |
+| anureo 模板 | Codex 来源 | 关键改进 |
 |---|---|---|
-| `continuation_prompt` | `continuation.md` | 保留 Loom 现有的 `RESEARCH & VERIFY` + `COMPLETION AUDIT` |
+| `continuation_prompt` | `continuation.md` | 保留 anureo 现有的 `RESEARCH & VERIFY` + `COMPLETION AUDIT` |
 | `budget_limit_prompt` | `budget_limit.md` | 新增：不开始新工作，总结进度，给用户下一步 |
 | `objective_updated_prompt` | `objective_updated.md` | 新增：新 objective 覆盖旧目标 |
 | `blocked_audit_prompt` | — | 新增：3 轮重复阻塞检测规则 |
@@ -511,7 +513,7 @@ impl GoalDisplayAgent {
 ║              │         Iteration Loop                   │    ║
 ║              │  ┌──────────────┐  ┌───────────────┐    │    ║
 ║              │  │ Steering     │  │ Coding Agent   │    │    ║
-║              │  │ Agent        │──│ (LoomTool)     │    │    ║
+║              │  │ Agent        │──│ (anureoTool)     │    │    ║
 ║              │  │ .continuation│  │ .execute()     │    │    ║
 ║              │  │ _prompt()    │  └───────┬───────┘    │    ║
 ║              │  └──────┬───────┘          │            │    ║
@@ -761,7 +763,7 @@ pub struct GoalMeta {
 ```pseudo
 1. Orchestrator 调用 Steering Agent.continuation_prompt(goal)
 2. Orchestrator 调用 Coding Agent.tool.execute(prompt)
-3. Coding Agent 内部运行 LoomTool（调用 agent 处理）
+3. Coding Agent 内部运行 anureoTool（调用 agent 处理）
 4. 每次 tool finish:
    a. Accounting Agent.mark_tool_finish() → 计算 delta
    b. State Agent.account_usage(delta) → 原子更新
@@ -852,12 +854,12 @@ pub struct GoalMeta {
 
 | 模式 | 触发方式 | 架构 |
 |---|---|---|
-| **旧模式**（单体） | `loom goal <desc>` | 现有 GoalRunner 循环 |
+| **旧模式**（单体） | `anureo goal <desc>` | 现有 GoalRunner 循环 |
 | **新模式**（Workflow） | `/goal <desc>` 在 REPL 中 | Agent 协作 |
 
 **过渡策略**：
 1. 第一阶段：实现 `/goal` 斜杠命令，使用新架构
-2. 第二阶段：`loom goal` 内部也切换到新架构
+2. 第二阶段：`anureo goal` 内部也切换到新架构
 3. 第三阶段：废弃 `GoalRunner` 单体循环
 
 ### 7.3 REPL 集成
@@ -866,7 +868,7 @@ pub struct GoalMeta {
 
 ```rust
 // repl.rs 中
-loom_command::Command::Goal { subcommand } => {
+anureo_command::Command::Goal { subcommand } => {
     match subcommand {
         GoalSubcommand::Set { description } => {
             // 启动 Orchestrator
@@ -1063,7 +1065,7 @@ pub enum GoalSubcommand {
 
 | 步骤 | 操作 | 验证 |
 |---|---|---|
-| 6.1 | 确保 `loom goal` 旧模式不受影响 | `cargo test` |
+| 6.1 | 确保 `anureo goal` 旧模式不受影响 | `cargo test` |
 | 6.2 | 新模式与旧模式共享同一个 TaskDb | `cargo test` |
 | 6.3 | 文档更新 | — |
 | 6.4 | 端到端测试 | 手动测试 |
@@ -1087,10 +1089,10 @@ pub enum GoalSubcommand {
 
 | 文件 | 行数 | 职责 |
 |---|---|---|
-| `.loom/workflows/goal-run.lua` | 367 | **主 Workflow**：编排迭代循环，协调 coding+audit+steering |
-| `.loom/workflows/goal-audit.lua` | 99 | **子 Workflow**：完成审计 + blocked 审计 |
-| `.loom/workflows/goal-steering.lua` | 145 | **子 Workflow**：4 种 steering prompt 构建 |
-| `.loom/workflows/goal-introspect.lua` | 84 | **子 Workflow**：goal 状态摘要显示 |
+| `.anureo/workflows/goal-run.lua` | 367 | **主 Workflow**：编排迭代循环，协调 coding+audit+steering |
+| `.anureo/workflows/goal-audit.lua` | 99 | **子 Workflow**：完成审计 + blocked 审计 |
+| `.anureo/workflows/goal-steering.lua` | 145 | **子 Workflow**：4 种 steering prompt 构建 |
+| `.anureo/workflows/goal-introspect.lua` | 84 | **子 Workflow**：goal 状态摘要显示 |
 
 ### 11.2 调用关系
 
@@ -1117,7 +1119,7 @@ goal-run.lua (主编排)
 ```bash
 # 通过 workflow 工具启动
 workflow_start({
-  workflow = ".loom/workflows/goal-run.lua",
+  workflow = ".anureo/workflows/goal-run.lua",
   args = {
     objective = "将项目从 JS 迁移到 TS，strict mode",
     thread_id = "session-001",
@@ -1127,7 +1129,7 @@ workflow_start({
 
 # 查看 goal 状态
 workflow_start({
-  workflow = ".loom/workflows/goal-introspect.lua",
+  workflow = ".anureo/workflows/goal-introspect.lua",
   args = {
     goal = { status = "active", objective = "...", tokens_used = 12345 },
   },
@@ -1149,7 +1151,7 @@ workflow_start({
 
 ## 附录：与 Codex 的架构映射
 
-| Codex 文件 | Loom 对应 | 状态 |
+| Codex 文件 | anureo 对应 | 状态 |
 |---|---|---|
 | `state/src/runtime/goals.rs` (1728L) | `goal/state.rs` | 待实现 |
 | `ext/goal/src/extension.rs` | `goal/orchestrator.rs` | 待实现 |

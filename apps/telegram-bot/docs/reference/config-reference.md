@@ -1,6 +1,6 @@
 # 配置文件参考
 
-`telegram-bot.toml` 完整字段说明。文件路径：`~/.loom/telegram-bot.toml`。
+`telegram-bot.toml` 完整字段说明。文件路径：`~/.anureo/telegram-bot.toml`。
 
 ## `[settings]` — 全局设置
 
@@ -21,7 +21,7 @@
 | `interaction_mode` | string | 否 | `"streaming"`（推荐）或 `"periodic_summary"` |
 | `model` | string | 否 | 默认模型 ID，可通过 `/model` 命令切换 |
 | `system_prompt` | string | 否 | 自定义系统提示词 |
-| `agent_name` | string | 否 | Loom Agent 名称 |
+| `agent_name` | string | 否 | anureo Agent 名称 |
 
 ## `[settings.agent]` — Agent 配置
 
@@ -41,7 +41,7 @@
 ## 完整配置示例
 
 ```toml
-# ~/.loom/telegram-bot.toml
+# ~/.anureo/telegram-bot.toml
 
 [settings]
 download_dir = "downloads"

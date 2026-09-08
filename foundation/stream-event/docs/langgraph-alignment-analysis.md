@@ -59,7 +59,7 @@ stream-event/
 ### 1.2 当前数据流
 
 ```
-                    Loom (agent-core / pregel)
+                    anureo (agent-core / pregel)
                              │
                     StreamEvent<S> (泛型, 内部类型)
                              │
@@ -255,7 +255,7 @@ StreamMode = Literal[
 ]
 ```
 
-对比: Loom 有额外的 `Tools` 模式，LangGraph 将其包含在 `tasks` 中。
+对比: anureo 有额外的 `Tools` 模式，LangGraph 将其包含在 `tasks` 中。
 
 #### StreamPart v2 (判别联合)
 
@@ -365,47 +365,47 @@ class StreamTransformer(ABC):
 
 ### 3.1 StreamMode
 
-| 维度 | LangGraph | Loom | 差异 |
+| 维度 | LangGraph | anureo | 差异 |
 |------|-----------|------|------|
-| 变体数 | 7 | 8 | Loom 多 `Tools` |
-| `Tools` 模式 | 无（合并到 tasks/custom） | 有 | **Loom 更细粒度** |
-| `debug` 语义 | = checkpoints + tasks | = checkpoints + tasks + tools | **Loom 隐含 tools** |
-| 序列化 | `Literal` 字符串 | `enum` + serde derive | **Loom 编译期安全** |
+| 变体数 | 7 | 8 | anureo 多 `Tools` |
+| `Tools` 模式 | 无（合并到 tasks/custom） | 有 | **anureo 更细粒度** |
+| `debug` 语义 | = checkpoints + tasks | = checkpoints + tasks + tools | **anureo 隐含 tools** |
+| 序列化 | `Literal` 字符串 | `enum` + serde derive | **anureo 编译期安全** |
 | 多模式同时 | `stream_mode=[...]` → `(mode, data)` 元组 | `HashSet<StreamMode>` + `is_mode_enabled()` | **概念对齐** |
-| 序列化测试 | 无（Python） | 8 变体 roundtrip | Loom 有 ✅ |
+| 序列化测试 | 无（Python） | 8 变体 roundtrip | anureo 有 ✅ |
 
-**结论**: `StreamMode` 设计已对齐。`Tools` 额外变体是 Loom 的改进（工具事件是一等公民，不需要从 messages 中推导）。
+**结论**: `StreamMode` 设计已对齐。`Tools` 额外变体是 anureo 的改进（工具事件是一等公民，不需要从 messages 中推导）。
 
 ### 3.2 事件信封 (Envelope)
 
-| 维度 | LangGraph | Loom | 差异 |
+| 维度 | LangGraph | anureo | 差异 |
 |------|-----------|------|------|
 | 信封类型 | `ProtocolEvent` (TypedDict) | `EnvelopeState` + `Envelope` | **概念对应** |
 | 序列号 | `seq: int` (单调，明确不用时间戳) | `event_id: u64` (单调递增) | **设计一致** ✅ |
 | 排序可靠性 | 文档明确: `seq` > `timestamp` | 隐含: `event_id` 递增 | LangGraph 显式 |
-| 会话 ID | 无独立信封字段 | `session_id: String` | **Loom 更完整** |
-| 节点追踪 | `params.namespace: list[str]` | `node_run_seq` → `run-{id}-{seq}` | LangGraph 用路径，Loom 用序号 |
+| 会话 ID | 无独立信封字段 | `session_id: String` | **anureo 更完整** |
+| 节点追踪 | `params.namespace: list[str]` | `node_run_seq` → `run-{id}-{seq}` | LangGraph 用路径，anureo 用序号 |
 | 注入策略 | StreamMux 统一注入 | `EnvelopeState::inject_into` (`or_insert_with` 不覆盖) | **设计一致** ✅ |
-| 不覆盖已有 | 默认行为 | 显式 `or_insert_with` + 测试 | Loom 有测试 ✅ |
+| 不覆盖已有 | 默认行为 | 显式 `or_insert_with` + 测试 | anureo 有测试 ✅ |
 
 **结论**: 信封设计核心一致。差异在 namespace 表示方式（tuple vs 序号）。
 
 ### 3.3 Namespace (子图路由)
 
-| 维度 | LangGraph | Loom | 差距 |
+| 维度 | LangGraph | anureo | 差距 |
 |------|-----------|------|------|
 | 类型 | `tuple[str, ...]` / `list[str]` | `Option<String>` | **重大差距** |
 | 表达能力 | 完整子图路径: `("parent:task-1", "child:task-2")` | 单层字符串或 None | 无法表达嵌套 |
 | 空值语义 | `()` = 根图 | `None` = 根图 | 概念对应 |
 | 序列化 | JSON array: `["parent:t1", "child:t2"]` | JSON string: `"sub"` | 不兼容 |
 | 子图路由 | 每个 subgraph 事件自动携带路径前缀 | 手动传递 `Option<String>` | LangGraph 自动化 |
-| checkpoint_ns | `params.namespace` 覆盖 | 独立字段 `checkpoint_ns: Option<String>` | Loom 分离 |
+| checkpoint_ns | `params.namespace` 覆盖 | 独立字段 `checkpoint_ns: Option<String>` | anureo 分离 |
 
-**结论**: namespace 是最大的结构性差距。LangGraph 的 tuple 表示能表达任意深度子图嵌套，Loom 的 `Option<String>` 只能表达单层。
+**结论**: namespace 是最大的结构性差距。LangGraph 的 tuple 表示能表达任意深度子图嵌套，anureo 的 `Option<String>` 只能表达单层。
 
 ### 3.4 事件转换
 
-| 维度 | LangGraph | Loom | 差距 |
+| 维度 | LangGraph | anureo | 差距 |
 |------|-----------|------|------|
 | 转换方式 | StreamTransformer 管道 (可插拔) | `convert.rs` 硬编码 1:1 match | **重大差距** |
 | 可扩展性 | 运行时注册 transformer | 编译期固定 | **重大差距** |
@@ -415,51 +415,51 @@ class StreamTransformer(ABC):
 | transformer 顺序 | `before_builtins` 控制 | N/A | — |
 | 事件投影 | 内置 + 自定义 transformer | 无 | **缺失** |
 
-**结论**: 转换层是最大的功能差距。LangGraph 有完整的中间件管道，Loom 只有静态转换。
+**结论**: 转换层是最大的功能差距。LangGraph 有完整的中间件管道，anureo 只有静态转换。
 
 ### 3.5 消费端模型
 
-| 维度 | LangGraph | Loom | 差距 |
+| 维度 | LangGraph | anureo | 差距 |
 |------|-----------|------|------|
 | 消费方式 | 类型化投影 (`stream.messages` 等) | 单循环 giant match | **重大差距** |
 | 多消费者 | broadcast channel (各投影独立迭代器) | 单消费者 mpsc | **重大差距** |
-| 类型安全 | TypedDict + 类型窄化 | `match` 手动分派 | Loom 也安全 ✅ |
+| 类型安全 | TypedDict + 类型窄化 | `match` 手动分派 | anureo 也安全 ✅ |
 | 并发消费 | 多个 `async for` 并行 | 串行处理 | **差距** |
 | 子流发现 | `stream.subgraphs` 自动发现嵌套图 | 无 | **缺失** |
 
 ### 3.6 消息流 (Messages)
 
-| 维度 | LangGraph | Loom | 差异 |
+| 维度 | LangGraph | anureo | 差异 |
 |------|-----------|------|------|
-| 数据结构 | `(message_chunk, metadata)` 二元组 | `MessageChunk { content, kind }` + `StreamMetadata` | Loom 更结构化 ✅ |
-| Thinking 区分 | 通过 message type (AIMessageChunk) | `MessageChunkKind::Thinking` 显式变体 | **Loom 更好** ✅ |
-| metadata 内容 | `langgraph_node`, `langgraph_step` 等 | `loom_node`, `namespace` | 对应 |
+| 数据结构 | `(message_chunk, metadata)` 二元组 | `MessageChunk { content, kind }` + `StreamMetadata` | anureo 更结构化 ✅ |
+| Thinking 区分 | 通过 message type (AIMessageChunk) | `MessageChunkKind::Thinking` 显式变体 | **anureo 更好** ✅ |
+| metadata 内容 | `langgraph_node`, `langgraph_step` 等 | `anureo_node`, `namespace` | 对应 |
 | Sink 抽象 | `get_stream_writer()` 从 config 获取 | `StreamSink` trait + `StreamEventSink` | 对应 |
-| 热路径优化 | 无特殊处理 | `try_send` (非阻塞) + 零中间 channel | **Loom 更优** ✅ |
+| 热路径优化 | 无特殊处理 | `try_send` (非阻塞) + 零中间 channel | **anureo 更优** ✅ |
 
 ### 3.7 工具事件
 
-| 维度 | LangGraph | Loom | 差异 |
+| 维度 | LangGraph | anureo | 差异 |
 |------|-----------|------|------|
-| 模式 | 无独立 `Tools` 模式 | `StreamMode::Tools` 独立模式 | **Loom 更好** ✅ |
-| 生命周期事件 | 从 messages 推导 (ToolCallTransformer) | `ToolCall/ToolStart/ToolOutput/ToolEnd` 原生变体 | **Loom 更好** ✅ |
-| raw_result | 无 | `ToolEnd.raw_result: Option<String>` | **Loom 独有** ✅ |
+| 模式 | 无独立 `Tools` 模式 | `StreamMode::Tools` 独立模式 | **anureo 更好** ✅ |
+| 生命周期事件 | 从 messages 推导 (ToolCallTransformer) | `ToolCall/ToolStart/ToolOutput/ToolEnd` 原生变体 | **anureo 更好** ✅ |
+| raw_result | 无 | `ToolEnd.raw_result: Option<String>` | **anureo 独有** ✅ |
 
 ### 3.8 推理框架事件
 
-| 维度 | LangGraph | Loom | 差异 |
+| 维度 | LangGraph | anureo | 差异 |
 |------|-----------|------|------|
-| ToT 事件 | 无内置（需用 custom mode） | `TotExpand/Evaluate/Backtrack` 原生 | **Loom 独有** ✅ |
-| GoT 事件 | 无内置 | `GotPlan/NodeStart/Complete/Failed/Expand` 原生 | **Loom 独有** ✅ |
-| 用法 | `custom` 模式 + 自定义 data | 编译期类型安全 | **Loom 更好** ✅ |
+| ToT 事件 | 无内置（需用 custom mode） | `TotExpand/Evaluate/Backtrack` 原生 | **anureo 独有** ✅ |
+| GoT 事件 | 无内置 | `GotPlan/NodeStart/Complete/Failed/Expand` 原生 | **anureo 独有** ✅ |
+| 用法 | `custom` 模式 + 自定义 data | 编译期类型安全 | **anureo 更好** ✅ |
 
 ### 3.9 Checkpoint 事件
 
-| 维度 | LangGraph | Loom | 差异 |
+| 维度 | LangGraph | anureo | 差异 |
 |------|-----------|------|------|
 | 格式 | `StateSnapshot` (同 `get_state()` 返回) | `CheckpointEvent<S>` 自定义 | 设计不同 |
 | 触发 | `stream_mode="checkpoints"` | `StreamMode::Checkpoints` | 一致 ✅ |
-| checkpoint_ns | `params.namespace` 统一 | 独立字段 `checkpoint_ns` | Loom 分离 |
+| checkpoint_ns | `params.namespace` 统一 | 独立字段 `checkpoint_ns` | anureo 分离 |
 
 ---
 
@@ -485,7 +485,7 @@ class StreamTransformer(ABC):
 | **G7** | 无子图发现机制 | 消费端无法自动发现嵌套图执行 | `stream.subgraphs` |
 | **G8** | 无版本化 API | 破坏性变更无迁移路径 | `version="v1"/"v2"/"v3"` |
 
-### 4.3 非差距项 (Loom 已对齐或更优)
+### 4.3 非差距项 (anureo 已对齐或更优)
 
 - ✅ `StreamMode` 8 变体 (比 LangGraph 多 `Tools`)
 - ✅ `event_id` / `seq` 单调递增
@@ -1013,7 +1013,7 @@ tokio::select! {
 | HITL interrupt 事件 (G5) | 需要图执行引擎层面的 interrupt/resume 支持，超出 stream-event crate 范围 |
 | Transformer 异步调度 (G6) | `schedule()` 需要 async runtime 绑定，且当前无使用场景 |
 | 子图自动发现 (G7) | 需要 Pregel 引擎配合，超出 stream-event crate 范围 |
-| 版本化 API (G8) | LangGraph 的 v1/v2/v3 是历史演进产物，Loom 可以直接用正确的版本 |
+| 版本化 API (G8) | LangGraph 的 v1/v2/v3 是历史演进产物，anureo 可以直接用正确的版本 |
 | `langgraph_sdk` 的 `messages-tuple` 模式 | SDK 特有，不需要 |
 | `stream_transformers` 编译时注册 | LangGraph 通过 `compile(stream_transformers=...)` 实现，需要图引擎配合 |
 
@@ -1032,7 +1032,7 @@ tokio::select! {
 
 ## 附录 B: 词汇表
 
-| 术语 | LangGraph | Loom | 说明 |
+| 术语 | LangGraph | anureo | 说明 |
 |------|-----------|------|------|
 | 流模式 | `StreamMode` (Literal) | `StreamMode` (enum) | 控制发送哪些类型的事件 |
 | 流事件 | `StreamPart` (TypedDict) | `StreamEvent<S>` (泛型 enum) | Pregel 引擎发出的原始事件 |

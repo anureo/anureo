@@ -1,8 +1,8 @@
-# Loom 端到端功能实现 walkthrough
+# anureo 端到端功能实现 walkthrough
 
 > **状态**：基于当前源码的贡献者说明
 > **相关代码**：`agent/tool`、`agent/agent-core`、`apps/cli`、`apps/acp`、`foundation/config`、`foundation/checkpoint`、`agent/tool/tool-workflow`
-> **目标读者**：Loom 贡献者
+> **目标读者**：anureo 贡献者
 
 本文用一条端到端路径说明：一个能力如何从 Tool 或 Graph 实现进入 Agent，再由 CLI、ACP 或 Workflow 宿主运行，并如何测试和持久化结果。文中的 API、路径、命令和行为均以当前仓库源码为准；没有在所列源码中出现的 wiring 不在本文承诺范围内。
 
@@ -14,7 +14,7 @@
 | `tool-basic` | 文件、Skill、Bash、MCP 等具体 Tool，以及注册组合入口 | Agent runner 的生命周期 |
 | `agent-core` | 根据 `ReactBuildConfig` 构造 runner，执行 `React`、`Dup`、`Tot`、`Got` 并转发 stream event | 应用侧 worktree、debug 或 curator 副作用 |
 | `apps/cli` | 构造 CLI 使用的 config/context，并展示 Tool spec | 重新实现 Tool 调用 |
-| `apps/acp` | 按 ACP client capabilities 创建客户端文件工具，把 ACP MCP 描述转换成 Loom 模型 | 假设客户端支持未声明的能力 |
+| `apps/acp` | 按 ACP client capabilities 创建客户端文件工具，把 ACP MCP 描述转换成 anureo 模型 | 假设客户端支持未声明的能力 |
 | `tool-workflow` | 把 Workflow backend 接到 `Agent`，注入 schema tool、allowlist 和取消处理 | 把结构化输出协议塞进通用 registry |
 | `foundation/config` | 读取环境变量、`config.toml`、`.env` 和 MCP 配置模型 | 自动建立完整 Agent session |
 | `foundation/checkpoint` | 定义 checkpoint 之外的 durable `Store` 数据模型和搜索接口 | 把长期 memory 当作一次运行快照 |
@@ -71,7 +71,7 @@ call_tool(name, args, ctx)
 
 `agent/tool/tool-basic/src/lib.rs` 的 `register_file_tools` 是文件能力的组合入口，而不是单一文件 Tool。它先 canonicalize `working_folder` 并确认是目录，然后把同一个 `Arc<PathBuf>` 和 `allow_outside` 传给 `LsTool`、`ReadFileTool`、`WriteFileTool`、`EditFileTool`、`MultieditTool`、`ApplyPatchTool`、`MoveFileTool`、`DeleteFileTool`、`CreateDirTool`、`GlobTool`、`GrepTool`，以及 Todo/Date tools。
 
-该函数还按参数选择 Skill discovery：有 `SkillRegistry` 时使用 registry；否则可以从 working folder 构造；最后总会创建 `.loom/skills` 下的 `SkillStorageRegistry` 和 `SkillUsageStore`，并根据 `is_background_review` 选择 `SkillManagerTool::for_background_review` 或 `for_foreground`。
+该函数还按参数选择 Skill discovery：有 `SkillRegistry` 时使用 registry；否则可以从 working folder 构造；最后总会创建 `.anureo/skills` 下的 `SkillStorageRegistry` 和 `SkillUsageStore`，并根据 `is_background_review` 选择 `SkillManagerTool::for_background_review` 或 `for_foreground`。
 
 文件路径安全是工具族的共同约束：默认应把 canonical path 限制在 working folder；`allow_outside = true` 会绕过 containment check，是高风险开关。新增文件 Tool 应复用现有路径解析逻辑，不要自己拼接相对路径。
 
@@ -109,7 +109,7 @@ call_tool(name, args, ctx)
 
 `apps/acp/tests/test_fs_tools_integration.rs` 给出了可观察契约：写新文件时返回 `ToolCallContent::Diff`，`old_text` 为 `None`；更新已有文件时包含旧文本和新文本；读文件返回 `Text`；不存在的文件返回错误；write → read 可以 round-trip。修改 ACP file tool 时应保留这些结果类型和调用顺序的测试。
 
-`apps/acp/src/mcp_convert.rs` 的 `acp_mcp_to_loom` 只负责把 ACP 的 stdio/http/sse server 描述转换成 `foundation::config::McpServerDef`；SSE 映射为 HTTP，注释说明由 rmcp 的 `StreamableHttpClientTransport` 处理。转换函数不会因此自动创建 MCP session 或注册 Tool。
+`apps/acp/src/mcp_convert.rs` 的 `acp_mcp_to_anureo` 只负责把 ACP 的 stdio/http/sse server 描述转换成 `foundation::config::McpServerDef`；SSE 映射为 HTTP，注释说明由 rmcp 的 `StreamableHttpClientTransport` 处理。转换函数不会因此自动创建 MCP session 或注册 Tool。
 
 ## 6. MCP 与配置：模型转换不等于运行时接入
 
@@ -125,18 +125,18 @@ ACP 转换后的 `McpServerDef` 仍需由应用或 Tool 层选择 transport、�
 
 这个 Tool 还返回名为 `workflow` 的 `BuiltinSkill`，内容和 references 都由 `include_str!` 编译进 binary，并声明依赖 `workflow_start`、`workflow_status`。这是 local Tool + builtin guidance 的组合例子：Tool schema 负责机器可调用契约，Skill references 负责较长的 Lua DSL、架构和验证说明。
 
-`agent/tool/tool-workflow/src/backend.rs` 的 `LoomAgentBackend` 则是另一条边界：它实现 `luft_core::contract::backend::AgentBackend`，把 `AgentTask` 转成 Loom `Agent::from_config` 和 `agent.run`。运行前它可以：
+`agent/tool/tool-workflow/src/backend.rs` 的 `anureoAgentBackend` 则是另一条边界：它实现 `luft_core::contract::backend::AgentBackend`，把 `AgentTask` 转成 anureo `Agent::from_config` 和 `agent.run`。运行前它可以：
 
 - 用 `thread_id` 设置 `resume_mode`；
 - 用 `model` 覆盖 model；
 - 用 `workdir_override` 覆盖工作目录；
 - 注入 `WorkflowValidateSchemaTool`，把结构化结果写入 output slot；
 - 把 allow/deny 转成 `BuiltinToolFilter`；
-- 把 Loom event 映射为 Luft `AgentProgress`，同时累计 token usage。
+- 把 anureo event 映射为 Luft `AgentProgress`，同时累计 token usage。
 
 最终输出有明确的优先级：schema tool 写入 slot 时优先返回 slot；没有 slot 时把 agent reply 包成 `{ "_agent_fallback_text": true, "text": ... }`；即使 Agent 出错但 slot 已有结构化结果，也会 salvage slot；两者都没有才返回 `BackendError::Execution`。文件中的四个 unit tests 正是这四种组合的证据。
 
-`agent/tool/tool-workflow/tests/instance_smoke.rs` 是可选 fixture smoke test：设置 `LOOM_TEST_INSTANCES_DIR` 后，读取 `checkpoint.json` 和 `events.jsonl`，调用 `build_instance_meta`/`write_instance_artifacts`，检查 `instance.json` 的 `schema_version`、completed status、agent 列表、64 字符 checkpoint hash 和 event stats。未设置环境变量时该测试会打印提示并返回，不是失败。
+`agent/tool/tool-workflow/tests/instance_smoke.rs` 是可选 fixture smoke test：设置 `ANUREO_TEST_INSTANCES_DIR` 后，读取 `checkpoint.json` 和 `events.jsonl`，调用 `build_instance_meta`/`write_instance_artifacts`，检查 `instance.json` 的 `schema_version`、completed status、agent 列表、64 字符 checkpoint hash 和 event stats。未设置环境变量时该测试会打印提示并返回，不是失败。
 
 ## 8. Checkpoint 与长期 memory 的区别
 
@@ -144,10 +144,10 @@ ACP 转换后的 `McpServerDef` 仍需由应用或 Tool 层选择 transport、�
 
 仓库中的 examples 展示了不同层级：
 
-- `loom-examples/examples/echo.rs`：直接实现 `loom_graph_core::Agent`，只处理 `EchoState`。
+- `anureo-examples/examples/echo.rs`：直接实现 `anureo_graph_core::Agent`，只处理 `EchoState`。
 - `state_graph_echo.rs`：用 `StateGraph`、`START`、`END` 和 `AgentNode` 编排同一个 echo node。
 - `memory_checkpoint.rs`：用 `MemorySaver`、`RunnableConfig { thread_id: ... }` 和 `compile_with_checkpointer` 保存一次运行的最终 state。
-- `memory_persistence.rs`：用 `SqliteSaver` 和 `LOOM_CHECKPOINT_DB` 将 checkpoint 持久化到 SQLite，进程重启后可继续使用同一数据库。
+- `memory_persistence.rs`：用 `SqliteSaver` 和 `ANUREO_CHECKPOINT_DB` 将 checkpoint 持久化到 SQLite，进程重启后可继续使用同一数据库。
 - `openai_embedding.rs`：用 `OpenAIEmbedder::new("text-embedding-3-small")` 创建 embedding，再将 LanceStore 的 namespace memory 写入并按语义搜索。
 - `react_memory.rs`：把短期消息、Tool result、`Store` 和 SQLite checkpointer 组合到一个自定义 ReAct graph；其中 embedding 使用 example 内的 mock embedder，不能据此承诺生产 embedding 配置。
 
@@ -168,7 +168,7 @@ ACP 转换后的 `McpServerDef` 仍需由应用或 Tool 层选择 transport、�
 
 ### 扩展 Workflow
 
-Lua 入口参数和后台生命周期改 `WorkflowStartTool`/service；Agent 的 model、workdir、allowlist、schema output 和取消改 `LoomAgentBackend`。如果新增结果形态，先更新 `finalize_output` 的优先级测试，再更新实例 artifact 和事件验证。
+Lua 入口参数和后台生命周期改 `WorkflowStartTool`/service；Agent 的 model、workdir、allowlist、schema output 和取消改 `anureoAgentBackend`。如果新增结果形态，先更新 `finalize_output` 的优先级测试，再更新实例 artifact 和事件验证。
 
 ### 扩展 memory/checkpoint
 
@@ -187,14 +187,14 @@ cargo test -p config
 cargo check --workspace
 ```
 
-运行 `instance_smoke` 时，如需真正读取 fixture，先设置当前 shell 的 `LOOM_TEST_INSTANCES_DIR`；没有 fixture 时测试按源码设计跳过。示例可以按各文件注释中的命令运行，例如：
+运行 `instance_smoke` 时，如需真正读取 fixture，先设置当前 shell 的 `ANUREO_TEST_INSTANCES_DIR`；没有 fixture 时测试按源码设计跳过。示例可以按各文件注释中的命令运行，例如：
 
 ```powershell
-cargo run -p loom-examples --example echo
-cargo run -p loom-examples --example state_graph_echo
-cargo run -p loom-examples --example memory_checkpoint -- "hello"
-cargo run -p loom-examples --example memory_persistence -- "hello"
-cargo run -p loom-examples --example openai_embedding
+cargo run -p anureo-examples --example echo
+cargo run -p anureo-examples --example state_graph_echo
+cargo run -p anureo-examples --example memory_checkpoint -- "hello"
+cargo run -p anureo-examples --example memory_persistence -- "hello"
+cargo run -p anureo-examples --example openai_embedding
 ```
 
 涉及 ACP file tool 时重点运行 `apps/acp/tests/test_fs_tools_integration.rs` 对应的 integration tests；涉及 CLI spec 展示时检查 `apps/cli/src/tool_cmd.rs` 中的 formatter tests；涉及 MCP CLI 配置时运行 `apps/cli/tests/mcp_cli_test.rs`，但注意该测试注释说明其 manager 使用固定路径，不能把临时文件本身当成真实配置发现路径。
@@ -208,7 +208,7 @@ cargo run -p loom-examples --example openai_embedding
 - `ReadFileTool` 的 `encoding` 只在 schema 中出现；当前实现仍是 UTF-8 `read_to_string`。
 - `allow_outside` 会取消文件 containment check，不能当作普通便利参数。
 - ACP 的 `ReadTextFileTool`/`WriteTextFileTool` 受 client capability 控制，与 `tool-basic` local file tools 不是同一个实现。
-- `acp_mcp_to_loom` 只做数据转换；MCP 配置或 ACP server 定义出现，不代表 session、认证、工具注册或 reconnect 已完成。
+- `acp_mcp_to_anureo` 只做数据转换；MCP 配置或 ACP server 定义出现，不代表 session、认证、工具注册或 reconnect 已完成。
 - Workflow start 是后台启动语义；返回 `instance_dir` 后还要通过 status/events/source 查看结果，不应假设 `call` 已等待完成。
 - Workflow structured output 可能被 fallback text 包装；只有 schema tool 成功写入 output slot 时才有结构化 slot 优先级。
 - `MemorySaver` 是进程内示例；`SqliteSaver` 才是 `memory_persistence.rs` 展示的跨进程持久化路径。

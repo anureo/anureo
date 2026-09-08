@@ -1,6 +1,6 @@
 # Agent Channel：让 AI Agent 持续沟通
 
-**状态**：技术方案设计。Agent Channel 是独立通信服务；Loom、Codex、远程 agent 与人工端均可接入。
+**状态**：技术方案设计。Agent Channel 是独立通信服务；anureo、Codex、远程 agent 与人工端均可接入。
 
 ---
 
@@ -72,10 +72,10 @@ Human / Host Application
                               │ 标准通信事件与投递请求
               ┌───────────────┼────────────────┐
               ▼               ▼                ▼
-        Loom adapter      Codex adapter    Remote / Human adapter
+        anureo adapter      Codex adapter    Remote / Human adapter
               │               │                │
               ▼               ▼                ▼
-          Loom agent      Codex agent       Other endpoint
+          anureo agent      Codex agent       Other endpoint
 ```
 
 ### 2.1 系统组件

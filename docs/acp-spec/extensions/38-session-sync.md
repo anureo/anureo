@@ -4,7 +4,7 @@
 > 版本：v1
 > 日期：2026-08-22
 
-`_loomdesk.dev/session-sync/*` 为 Loom Desk 提供按会话排序的增量恢复通道。标准 ACP `session/load` 仍是兼容回退路径。
+`_anureo.dev/session-sync/*` 为 anureo Desk 提供按会话排序的增量恢复通道。标准 ACP `session/load` 仍是兼容回退路径。
 
 ## 游标
 
@@ -24,7 +24,7 @@
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "_loomdesk.dev/session-sync/open",
+  "method": "_anureo.dev/session-sync/open",
   "params": {
     "sessionId": "session-id",
     "cwd": "C:\\absolute\\project",
@@ -73,7 +73,7 @@ v1 的 reset 响应不携带快照；客户端必须回退到标准 `session/loa
 
 ## 实时通知
 
-方法：`_loomdesk.dev/session-sync/update`
+方法：`_anureo.dev/session-sync/update`
 
 ```json
 {
@@ -100,7 +100,7 @@ v1 的 reset 响应不携带快照；客户端必须回退到标准 `session/loa
 
 ## `close`
 
-`_loomdesk.dev/session-sync/close` 参数为 `{ "sessionId": "..." }`。它只取消当前连接的 sync 订阅，不删除会话或持久化历史。连接断开时服务端自动清理全部订阅。
+`_anureo.dev/session-sync/close` 参数为 `{ "sessionId": "..." }`。它只取消当前连接的 sync 订阅，不删除会话或持久化历史。连接断开时服务端自动清理全部订阅。
 
 ## 保留窗口
 

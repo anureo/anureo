@@ -6,7 +6,7 @@ telegram-bot 的核心 trait 和接口定义，用于扩展和测试。
 
 ### `AgentRunner`
 
-AI Agent 执行器抽象。`LoomAgentRunner` 是默认实现。
+AI Agent 执行器抽象。`anureoAgentRunner` 是默认实现。
 
 | 方法 | 参数 | 返回值 | 说明 |
 |------|------|--------|------|
@@ -115,7 +115,7 @@ pub struct FileMetadata {
 | `Network(teloxide::RequestError)` | Telegram API 网络错误 |
 | `Io(std::io::Error)` | 文件 I/O 错误 |
 | `Agent(String)` | Agent 执行错误 |
-| `AgentRun(loom::RunError)` | Loom 运行时错误 |
+| `AgentRun(anureo::RunError)` | anureo 运行时错误 |
 | `RateLimit` | API 频率限制 |
 | `Session(String)` | 会话管理错误 |
 

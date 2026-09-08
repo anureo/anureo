@@ -1,7 +1,7 @@
-# Loom Desk 子代理交互 ↔ Loom 后端差距审计
+# anureo Desk 子代理交互 ↔ anureo 后端差距审计
 
 > **状态**：Audit（2026-08-22 源码复核；可据此排期）
-> **范围**：Loom `agent-core` / `apps/acp` 与 OpenChamber 前端 `openchamber-feat-dev/packages/ui` 的子代理交互链路
+> **范围**：anureo `agent-core` / `apps/acp` 与 anureo 前端 `anureo-feat-dev/packages/ui` 的子代理交互链路
 > **相关代码**：`agent/agent-core/src/tools/agent/`、`agent/tool/tool-core/src/context.rs`、`apps/acp/src/stream_bridge.rs`、`apps/acp/src/session_repository.rs`、`apps/acp/src/agent.rs`；前端 `packages/ui/src/components/chat/message/parts/ToolPart.tsx`、`packages/ui/src/lib/acp/acp-session-store.ts`、`packages/ui/src/lib/acp/type-mapping.ts`
 > **交叉参考**：[ACP 子代理契约](./acp-subagent-contract.md)、[Session List 重设计](./session-list-redesign.md)、[Session List 规范](../acp-spec/extensions/37-session-list.md)
 
@@ -9,7 +9,7 @@
 
 ## 1. 审计结论
 
-Loom 已有可运行的 in-process 子代理引擎，Loom Desk 也已有 OpenCode `task` 工具的子任务卡片与只读子会话 UI，但两端之间缺少一等 ACP 契约。当前链路不能稳定回答以下问题：
+anureo 已有可运行的 in-process 子代理引擎，anureo Desk 也已有 OpenCode `task` 工具的子任务卡片与只读子会话 UI，但两端之间缺少一等 ACP 契约。当前链路不能稳定回答以下问题：
 
 1. 父会话中的哪个 tool call 创建了哪个子代理 invocation；
 2. invocation 对应哪个可加载、可取消的 ACP child session；
@@ -20,7 +20,7 @@ Loom 已有可运行的 in-process 子代理引擎，Loom Desk 也已有 OpenCod
 
 ## 2. 当前能力矩阵
 
-| 能力 | Loom 当前实现 | Desk 当前实现 | 结论 |
+| 能力 | anureo 当前实现 | Desk 当前实现 | 结论 |
 | --- | --- | --- | --- |
 | 子代理执行 | `agent` tool 可同步/后台运行，存在 registry、深度限制与统计结构 | 可渲染普通 tool call | 引擎存在，但未形成 ACP child session |
 | 子代理工具识别 | wire tool name 为 `agent` | 专用 UI 只识别规范化后严格等于 `task` | **名称不兼容** |
@@ -39,13 +39,13 @@ Loom 已有可运行的 in-process 子代理引擎，Loom Desk 也已有 OpenCod
 
 ### 3.1 GAP-01（P0）：`agent` 与 `task` 工具名不匹配
 
-- Loom 的 canonical tool name 定义为 `agent`（`agent/tool/tool-core/src/tool_name.rs`）。
+- anureo 的 canonical tool name 定义为 `agent`（`agent/tool/tool-core/src/tool_name.rs`）。
 - Desk 的 `TaskToolSummary` 仅在 `normalizedTool === "task"` 时启用（`ToolPart.tsx`）。
 - `normalizeToolName` 只做大小写和命名空间归一化，不会把 `agent` 映射为 `task`。
 
-**影响**：即使 Loom 后端补齐 session metadata，当前 `agent` 调用仍不会进入专用子代理 UI。
+**影响**：即使 anureo 后端补齐 session metadata，当前 `agent` 调用仍不会进入专用子代理 UI。
 
-**决定**：Desk 增加统一的 `isSubagentTool` 判定，迁移期同时接受 `agent` 与 `task`；wire 不把 Loom tool 重命名为 `task`。
+**决定**：Desk 增加统一的 `isSubagentTool` 判定，迁移期同时接受 `agent` 与 `task`；wire 不把 anureo tool 重命名为 `task`。
 
 ### 3.2 GAP-02（P0）：缺少稳定的 invocation / session / thread 身份
 
@@ -69,7 +69,7 @@ agent-core 只创建子 runner/checkpoint thread，没有调用 `apps/acp` 的 `
 
 **影响**：Desk 的 `taskSessionId` 一级解析为空，只能退化到 output 文本或时间窗猜测。
 
-**决定**：通过 ACP `_meta["loomdesk.dev"].subagent` 发送版本化 metadata；前端 store 和两条 adapter 路径必须原样保留，再投影为 UI metadata。
+**决定**：通过 ACP `_meta["anureo.dev"].subagent` 发送版本化 metadata；前端 store 和两条 adapter 路径必须原样保留，再投影为 UI metadata。
 
 ### 3.5 GAP-05（P0）：`parentSessionId` 与 `parentID` 的领域模型漂移
 
@@ -102,21 +102,21 @@ SessionIndex wire 使用 `parentSessionId`，但 Desk 现有 session tree、fall
 - extension response 中出现 `notification` 字段不等于 server 已发布 push notification。
 - fork 创建新 session 不等于按指定 message boundary 复制历史并“接管”。
 - SessionIndex 当前删除语义是删除目标、重算祖先并允许后代提升为 effective root；不得恢复旧草案的默认级联删除。
-- “Loom 只改后端、Desk 无需修改”不成立；工具识别、metadata 保留和 parent 字段适配都需要 Desk 改动。
+- “anureo 只改后端、Desk 无需修改”不成立；工具识别、metadata 保留和 parent 字段适配都需要 Desk 改动。
 
 ### 4.1 审计验证记录
 
 2026-08-22 在当前两仓工作树上执行了以下针对性回归：
 
 ```powershell
-# openchamber-feat-dev/packages/ui
+# anureo-feat-dev/packages/ui
 bun test --isolate src/components/chat/message/parts/__tests__/resolveFallbackTaskSessionId.test.js src/components/chat/message/parts/ToolPart.test.ts src/components/session/sidebar/sessionTree.test.ts src/lib/acp/acp-session-actions.create.test.ts src/lib/acp/acp-event-source.test.ts
 
-# loom
-cargo nextest run -p loom-acp stream_bridge
+# anureo
+cargo nextest run -p anureo-acp stream_bridge
 ```
 
-Desk 结果为 31 passed / 0 failed；Loom stream bridge 结果为 5 passed。它们证明现有 OpenCode-style `task`/`parentID` fallback 和 token usage metadata 回归没有破坏，但**没有**覆盖 Loom `agent` tool、versioned subagent metadata、ACP child session 注册或 `parentSessionId -> parentID` 端到端适配。因此这些通过结果不能作为子代理契约已落地的证据。
+Desk 结果为 31 passed / 0 failed；anureo stream bridge 结果为 5 passed。它们证明现有 OpenCode-style `task`/`parentID` fallback 和 token usage metadata 回归没有破坏，但**没有**覆盖 anureo `agent` tool、versioned subagent metadata、ACP child session 注册或 `parentSessionId -> parentID` 端到端适配。因此这些通过结果不能作为子代理契约已落地的证据。
 
 ## 5. 可执行开发方案
 
@@ -135,8 +135,8 @@ parent ACP session
 交付：
 
 - 以 [ACP 子代理契约](./acp-subagent-contract.md) §3～§7 为 wire source of truth。
-- Loom 单元测试覆盖唯一 ID、depth/ACP context 传播、lifecycle 调用顺序。
-- Desk 单元测试使用真实 Loom tool name `agent`、`parentSessionId` 和 `_meta` envelope。
+- anureo 单元测试覆盖唯一 ID、depth/ACP context 传播、lifecycle 调用顺序。
+- Desk 单元测试使用真实 anureo tool name `agent`、`parentSessionId` 和 `_meta` envelope。
 - ACP wire 测试先断言当前实现缺失 child session / metadata，再进入实现阶段。
 
 ### Phase 1：修复 agent-core 身份与上下文
@@ -167,9 +167,9 @@ parent ACP session
 
 改动：
 
-- Loom 在初始和后续 tool call frame 中发送版本化 subagent metadata。
+- anureo 在初始和后续 tool call frame 中发送版本化 subagent metadata。
 - Desk `AcpToolCallRecord`、native adapter、legacy adapter 和 `ToolPartInput` 保留 metadata。
-- 增加 `isSubagentTool("agent" | "task")`；把 Loom input `agent` 映射为 UI agent label/type。
+- 增加 `isSubagentTool("agent" | "task")`；把 anureo input `agent` 映射为 UI agent label/type。
 - ACP session adapter 将 `parentSessionId` 映射为内部 `parentID`。
 - 有显式 metadata 时禁用时间窗猜测；fallback 仅服务旧 server。
 
@@ -198,7 +198,7 @@ parent ACP session
 1. `fix(agent-core): unify subagent identity and context propagation`
 2. `feat(acp): register subagents as child sessions`
 3. `feat(acp): publish versioned subagent tool metadata`
-4. `feat(desk): adapt loom agent tools and child session metadata`
+4. `feat(desk): adapt anureo agent tools and child session metadata`
 5. `feat(subagent): add cancellation stats and background completion`
 6. `feat(desk): render nested subagents and repair fork takeover`
 7. `docs(subagent): record implementation status and release evidence`
@@ -214,7 +214,7 @@ parent ACP session
 | 嵌套子代理 | depth 递增，parent chain 正确，无 checkpoint 复用 |
 | 子会话取消 | `session/cancel` 停止正确 invocation；父 tool 和 child durable metadata 为 cancelled，session lifecycle 为 closed |
 | 后台完成 | prompt 返回后仍能收到父 tool terminal update，重连后状态可恢复 |
-| 旧 Loom 兼容 | 无 metadata 时才启用 fallback；新 Loom 不走时间窗猜测 |
+| 旧 anureo 兼容 | 无 metadata 时才启用 fallback；新 anureo 不走时间窗猜测 |
 | 删除父/子 | 遵循 SessionIndex 非级联语义，祖先 tree activity 正确重算 |
 | fork | 未实现 message boundary 前不显示“接管成功”语义 |
 
@@ -222,13 +222,13 @@ parent ACP session
 
 ```powershell
 cargo nextest run -p agent
-cargo nextest run -p loom-acp
+cargo nextest run -p anureo-acp
 cargo clippy --workspace --all-targets -- -D warnings
-bun --cwd C:\Users\heycj\dev\openchamber-feat-dev\packages\ui test
-bun --cwd C:\Users\heycj\dev\openchamber-feat-dev\packages\ui run type-check
+bun --cwd C:\Users\heycj\dev\anureo-feat-dev\packages\ui test
+bun --cwd C:\Users\heycj\dev\anureo-feat-dev\packages\ui run type-check
 npm --prefix e2e run test:bdd:dev
 ```
 
 ## 8. 发布边界
 
-MVP 发布必须同时具备：唯一身份、ACP child session、metadata、Desk adapter、load/cancel 和同步终态。缺少任一项时仍属于实验性 in-process 子代理，不应对外宣称“Loom Desk 已支持一等子代理会话”。Goal、Multi-Run、Profile mode、嵌套树与 fork 接管不阻塞 MVP，但必须在 UI 中避免呈现未实现能力。
+MVP 发布必须同时具备：唯一身份、ACP child session、metadata、Desk adapter、load/cancel 和同步终态。缺少任一项时仍属于实验性 in-process 子代理，不应对外宣称“anureo Desk 已支持一等子代理会话”。Goal、Multi-Run、Profile mode、嵌套树与 fork 接管不阻塞 MVP，但必须在 UI 中避免呈现未实现能力。

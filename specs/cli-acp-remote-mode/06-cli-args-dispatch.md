@@ -15,15 +15,15 @@
 pub(crate) struct Args {
     // ... existing fields ...
 
-    /// Run against a remote loom-server via ACP WebSocket protocol.
+    /// Run against a remote anureo-server via ACP WebSocket protocol.
     ///
     /// When set, agent execution happens on the server instead of in-process.
     /// Accepts an optional URL; defaults to ws://127.0.0.1:3030/acp.
     ///
     /// Examples:
-    ///   loom --remote "hello"
-    ///   loom --remote ws://192.168.1.100:3030/acp "hello"
-    ///   loom --remote -i
+    ///   anureo --remote "hello"
+    ///   anureo --remote ws://192.168.1.100:3030/acp "hello"
+    ///   anureo --remote -i
     #[arg(
         long,
         value_name = "URL",
@@ -39,9 +39,9 @@ pub(crate) struct Args {
 
 | 命令 | `args.remote` 值 | 效果 |
 |------|-------------------|------|
-| `loom "msg"` | `None` | 本地模式（默认） |
-| `loom --remote "msg"` | `Some("ws://127.0.0.1:3030/acp")` | ACP 远程模式，默认地址 |
-| `loom --remote ws://host:port/acp "msg"` | `Some("ws://host:port/acp")` | ACP 远程模式，自定义地址 |
+| `anureo "msg"` | `None` | 本地模式（默认） |
+| `anureo --remote "msg"` | `Some("ws://127.0.0.1:3030/acp")` | ACP 远程模式，默认地址 |
+| `anureo --remote ws://host:port/acp "msg"` | `Some("ws://host:port/acp")` | ACP 远程模式，自定义地址 |
 
 `clap` 配置说明：
 - `num_args = 0..=1`：`--remote` 可不带值（使用默认）或带 URL 值
@@ -105,20 +105,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── Validation ──────────────────────────────────────────────
     if let Err(e) = run_flow::validate_tier_arg(&args.tier) {
-        eprintln!("loom: {}", e);
+        eprintln!("anureo: {}", e);
         std::process::exit(1);
     }
     if let Err(e) = run_flow::check_model_tier_conflict(&args) {
-        eprintln!("loom: {}", e);
+        eprintln!("anureo: {}", e);
         std::process::exit(1);
     }
 
     // ── ACP bridge (existing) ───────────────────────────────────
     if let Some(Cmd::Acp(acp_args)) = &args.cmd {
-        let log_config = loom_acp::logging::LogConfig { /* ... */ };
-        loom_acp::set_log_config(log_config);
-        if let Err(e) = loom_acp::ws_bridge::run_ws_bridge(acp_args.url.clone()).await {
-            eprintln!("loom acp: {e}");
+        let log_config = anureo_acp::logging::LogConfig { /* ... */ };
+        anureo_acp::set_log_config(log_config);
+        if let Err(e) = anureo_acp::ws_bridge::run_ws_bridge(acp_args.url.clone()).await {
+            eprintln!("anureo acp: {e}");
             std::process::exit(1);
         }
         return Ok(());
@@ -126,7 +126,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── Server (existing) ───────────────────────────────────────
     if let Some(Cmd::Server(server_options)) = &args.cmd {
-        loom_server::runtime::run(server_options.clone()).await?;
+        anureo_server::runtime::run(server_options.clone()).await?;
         return Ok(());
     }
 
@@ -142,7 +142,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         server_transport::run_acp_mode::run_acp_mode(&args, Some(remote_url.clone()))
             .await
             .map_err(|e| {
-                eprintln!("loom --remote: {e}");
+                eprintln!("anureo --remote: {e}");
                 std::process::exit(1);
             })?;
         return Ok(());
@@ -177,7 +177,7 @@ Remote ACP mode 是**客户端模式**，需要：
 ```rust
 // apps/cli/src/server_transport/mod.rs
 
-//! Transport layers for communicating with loom-server.
+//! Transport layers for communicating with anureo-server.
 //!
 //! # Modules
 //!
@@ -195,7 +195,7 @@ mod http;
 mod session;
 mod sse;
 
-pub use client::LoomServerClient;
+pub use client::anureoServerClient;
 pub use error::{TransportError, TransportResult};
 pub use http::HttpTransport;
 pub use session::{PromptRequest as HttpPromptRequest, PromptResponse as HttpPromptResponse, SessionCreateRequest, SessionInfo};
@@ -210,12 +210,12 @@ pub use run_acp_mode::run_acp_mode;
 
 ### `apps/cli/Cargo.toml`
 
-CLI 已依赖 `loom_acp`（通过 workspace）和 `agent_client_protocol`。如果没有，需要添加：
+CLI 已依赖 `anureo_acp`（通过 workspace）和 `agent_client_protocol`。如果没有，需要添加：
 
 ```toml
 [dependencies]
 # Existing
-loom_acp = { path = "../acp" }
+anureo_acp = { path = "../acp" }
 agent_client_protocol = { workspace = true }
 
 # WebSocket client (if not already present)
@@ -236,23 +236,23 @@ grep "agent_client_protocol" apps/cli/Cargo.toml
 grep "tokio-tungstenite" apps/cli/Cargo.toml
 ```
 
-如果 `agent_client_protocol` 不在 CLI 依赖中但 `loom_acp` 在，可以通过 `loom_acp` re-export：
+如果 `agent_client_protocol` 不在 CLI 依赖中但 `anureo_acp` 在，可以通过 `anureo_acp` re-export：
 
 ```rust
 // apps/acp/src/lib.rs — add re-export
 pub use agent_client_protocol;
 ```
 
-然后 CLI 使用 `loom_acp::agent_client_protocol::schema::v1::*`。
+然后 CLI 使用 `anureo_acp::agent_client_protocol::schema::v1::*`。
 
 ## 帮助文本
 
-`loom --help` 的输出应包含 `--remote`：
+`anureo --help` 的输出应包含 `--remote`：
 
 ```
 Options:
   ...
-  --remote [URL]          Run against a remote loom-server via ACP WebSocket
+  --remote [URL]          Run against a remote anureo-server via ACP WebSocket
                           Defaults to ws://127.0.0.1:3030/acp
   ...
 ```
@@ -269,7 +269,7 @@ mod tests {
 
     #[test]
     fn remote_flag_no_url() {
-        let args = Args::try_parse_from(["loom", "--remote", "hello"]).unwrap();
+        let args = Args::try_parse_from(["anureo", "--remote", "hello"]).unwrap();
         assert_eq!(
             args.remote.as_deref(),
             Some("ws://127.0.0.1:3030/acp")
@@ -279,7 +279,7 @@ mod tests {
     #[test]
     fn remote_flag_with_url() {
         let args = Args::try_parse_from([
-            "loom", "--remote", "ws://10.0.0.1:8080/acp", "hello",
+            "anureo", "--remote", "ws://10.0.0.1:8080/acp", "hello",
         ]).unwrap();
         assert_eq!(
             args.remote.as_deref(),
@@ -289,13 +289,13 @@ mod tests {
 
     #[test]
     fn no_remote_flag() {
-        let args = Args::try_parse_from(["loom", "hello"]).unwrap();
+        let args = Args::try_parse_from(["anureo", "hello"]).unwrap();
         assert!(args.remote.is_none());
     }
 
     #[test]
     fn remote_with_interactive() {
-        let args = Args::try_parse_from(["loom", "--remote", "-i"]).unwrap();
+        let args = Args::try_parse_from(["anureo", "--remote", "-i"]).unwrap();
         assert!(args.remote.is_some());
         assert!(args.interactive);
     }
@@ -303,7 +303,7 @@ mod tests {
     #[test]
     fn remote_conflicts_with_server_subcommand() {
         // --remote + server subcommand should fail
-        let result = Args::try_parse_from(["loom", "--remote", "server"]);
+        let result = Args::try_parse_from(["anureo", "--remote", "server"]);
         // clap should handle this via conflicts_with, or we validate in main.rs
         // assert!(result.is_err()); // if conflicts_with is set
     }
@@ -315,13 +315,13 @@ mod tests {
 ```rust
 #[cfg(test)]
 mod dispatch_tests {
-    // These require a running loom-server, so they're integration tests.
+    // These require a running anureo-server, so they're integration tests.
 
     #[tokio::test]
     #[ignore] // Run with: cargo test -- --ignored
     async fn test_remote_mode_dispatches_to_acp() {
         // 1. Start a test server
-        // 2. Run: loom --remote "hello"
+        // 2. Run: anureo --remote "hello"
         // 3. Verify output contains agent response
     }
 }

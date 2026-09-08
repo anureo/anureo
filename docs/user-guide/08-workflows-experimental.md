@@ -1,8 +1,8 @@
 # Workflows（实验性）
 
-> **实验性功能警告**：Loom workflow 是由 Agent tools 驱动的 Lua 多 Agent 编排能力，不是独立的 `loom workflow` CLI 子命令，也不是生产级 scheduler。它会启动真实的 Agent，可能读写项目文件、调用 shell/MCP 或产生其它外部副作用。请只在 disposable branch 或 disposable worktree 中试用，并在接受结果前检查实际 diff、测试和外部状态。
+> **实验性功能警告**：anureo workflow 是由 Agent tools 驱动的 Lua 多 Agent 编排能力，不是独立的 `anureo workflow` CLI 子命令，也不是生产级 scheduler。它会启动真实的 Agent，可能读写项目文件、调用 shell/MCP 或产生其它外部副作用。请只在 disposable branch 或 disposable worktree 中试用，并在接受结果前检查实际 diff、测试和外部状态。
 
-本文面向已经能运行 Loom Agent、希望把复杂任务拆成多个 Lua 阶段和 Agent 的开发者。普通 Agent session、`goal`、`task`、memory/review/curator 不在本文展开。
+本文面向已经能运行 anureo Agent、希望把复杂任务拆成多个 Lua 阶段和 Agent 的开发者。普通 Agent session、`goal`、`task`、memory/review/curator 不在本文展开。
 
 ## 1. 先确认运行边界
 
@@ -19,11 +19,11 @@ Workflow tools 由 Agent 运行时注册；当前源码注册了以下七个 too
 | 查看 captured Lua source | `workflow_source` | `instance` |
 | 列出可用 Lua 定义 | `workflow_files` | 无 |
 
-工具参数名以当前 tool schema 为准：status/events/source 的实现也接受文档中称为 `instance_dir` 的 instance 标识；新调用优先使用 schema 中的 `instance`。这些名称是 Agent tool calls，不应改写成假想的 `loom workflow ...` 命令。
+工具参数名以当前 tool schema 为准：status/events/source 的实现也接受文档中称为 `instance_dir` 的 instance 标识；新调用优先使用 schema 中的 `instance`。这些名称是 Agent tool calls，不应改写成假想的 `anureo workflow ...` 命令。
 
 开始前完成以下检查：
 
-1. 从正确的项目目录启动 Loom，并确认 Agent 的 working folder 是预期项目根目录。
+1. 从正确的项目目录启动 anureo，并确认 Agent 的 working folder 是预期项目根目录。
 2. 记录当前分支、`git status --short` 和已有 diff；workflow 不会替你创建隔离 worktree。
 3. 确认模型凭据、MCP、shell 和文件权限；workflow 中的 `agent()` 会继承运行时配置。
 4. 先用小型、无破坏性的 workflow 验证 tool 可见性和输出，再交给它修改文件。
@@ -92,21 +92,21 @@ end
 }
 ```
 
-这是 tool-call 参数示例，不是可直接在 PowerShell 中执行的命令。成功后保存返回的 `instance_dir`，例如 `loom-instance_...`。
+这是 tool-call 参数示例，不是可直接在 PowerShell 中执行的命令。成功后保存返回的 `instance_dir`，例如 `anureo-instance_...`。
 
 ### Saved workflow
 
-将 Lua 文件放在项目的 `.loom/workflows/`，再传文件名或名称：
+将 Lua 文件放在项目的 `.anureo/workflows/`，再传文件名或名称：
 
 ```text
-.loom/workflows/review.lua
+.anureo/workflows/review.lua
 ```
 
 ```json
 { "workflow": "review" }
 ```
 
-`workflow_files` 只列出当前 working folder 下 `.loom/workflows/` 中的 Lua 文件。resolver 当前搜索顺序是：项目 `.loom/workflows/<name>.lua`、用户 `$HOME/.config/loom/workflows/<name>.lua`、项目 working folder 下 `<name>.lua`，最后是传入的 path；存在的绝对 `.lua` path 也可直接使用。相同名称优先项目 `.loom/workflows/`。
+`workflow_files` 只列出当前 working folder 下 `.anureo/workflows/` 中的 Lua 文件。resolver 当前搜索顺序是：项目 `.anureo/workflows/<name>.lua`、用户 `$HOME/.config/anureo/workflows/<name>.lua`、项目 working folder 下 `<name>.lua`，最后是传入的 path；存在的绝对 `.lua` path 也可直接使用。相同名称优先项目 `.anureo/workflows/`。
 
 **安全提示**：workflow 文件中的 `agent()` prompt 可以导致真实修改。提交或复用前审查 source、目标路径、tool 权限和 prompt；不要把 token、密码或其它 secrets 写入 Lua、`args`、prompt、report 或日志。
 
@@ -176,7 +176,7 @@ workflow_list(status_filter="failed", limit=20)
 对可恢复的 failed 或 crash/interrupted instance，把原标识传给 `workflow_start` 的 `resume_from_id`：
 
 ```json
-{ "resume_from_id": "loom-instance_..." }
+{ "resume_from_id": "anureo-instance_..." }
 ```
 
 不要同时传 `script` 或 `workflow`；三种启动模式互斥。恢复会加载原 checkpoint 和 Agent conversation history，已完成 phase 可由 journal cache 跳过，进行中的 Agent 从最后成功的 turn 继续。它返回**新的** `instance_dir` 和 `resumed_from`；之后必须查询新的 instance，而不是旧的 snapshot。
@@ -191,13 +191,13 @@ workflow_list(status_filter="failed", limit=20)
 
 | 内容 | 路径（相对于 working folder） |
 | --- | --- |
-| workflow instance | `.loom/instances/<instance_dir>/` |
-| workflow 定义 | `.loom/workflows/` |
+| workflow instance | `.anureo/instances/<instance_dir>/` |
+| workflow 定义 | `.anureo/workflows/` |
 | 兼容读取的旧 runs | `.luft/runs/<instance_dir>/` |
 
 instance 可能包含 `checkpoint.json`、`events.jsonl`、captured `workflow.lua`、`instance.json`，以及较大的 report/Agent output 的有界或文件化表示。tool 响应会隐藏内部 source/reference/path 信息，但本地 artifacts 仍可能包含敏感 prompt、输出或项目路径。
 
-不要递归删除整个 `.loom`、`.luft` 或 `~/.loom` 来“清理 workflow”。先列出目标 instance、保存必要的 report/events、确认没有其它 session/skill/memory 共用目录，再使用当前版本明确支持的清理方式。删除 artifacts 不是撤销 Agent 已执行的文件、shell、MCP、网络或上传副作用。
+不要递归删除整个 `.anureo`、`.luft` 或 `~/.anureo` 来“清理 workflow”。先列出目标 instance、保存必要的 report/events、确认没有其它 session/skill/memory 共用目录，再使用当前版本明确支持的清理方式。删除 artifacts 不是撤销 Agent 已执行的文件、shell、MCP、网络或上传副作用。
 
 ## 8. 版本差异与源码核对点
 

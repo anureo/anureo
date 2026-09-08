@@ -1,20 +1,20 @@
-# Loom ACP CLI 扩展协议设计
+# anureo ACP CLI 扩展协议设计
 
 > **状态**：Draft，待评审
 > **日期**：2026-08-08
-> **范围**：让 `loom --acp` 通过 ACP WebSocket 访问完整 Loom CLI 能力
+> **范围**：让 `anureo --acp` 通过 ACP WebSocket 访问完整 anureo CLI 能力
 > **相关代码**：`apps/cli/src/args.rs`、`apps/cli/src/main.rs`、`apps/acp/src/ws_bridge.rs`、`apps/server/src/handlers/acp.rs`、`apps/server/src/acp_hub.rs`
 > **相关文档**：[acp-websocket.md](./acp-websocket.md)、[acp-websocket-todo.md](./acp-websocket-todo.md)
 > **官方依据**：[ACP Extensibility](https://agentclientprotocol.com/protocol/v1/extensibility)、[ACP Slash Commands](https://agentclientprotocol.com/protocol/v1/slash-commands)、[ACP Session Config Options](https://agentclientprotocol.com/protocol/v1/session-config-options)、[ACP Transports](https://agentclientprotocol.com/protocol/v1/transports)
 
 ## 1. 背景与问题
 
-Loom 当前同时存在两类入口：
+anureo 当前同时存在两类入口：
 
-1. `loom` CLI：直接执行 agent、管理 session、model、MCP、skills、memory、task、goal、review 等功能。
-2. `loom acp`：面向 IDE 的 ACP stdio bridge，将 ACP JSON-RPC 透传到 `loom-server` 的 `/acp` WebSocket。
+1. `anureo` CLI：直接执行 agent、管理 session、model、MCP、skills、memory、task、goal、review 等功能。
+2. `anureo acp`：面向 IDE 的 ACP stdio bridge，将 ACP JSON-RPC 透传到 `anureo-server` 的 `/acp` WebSocket。
 
-当前 `loom-server` 已经具备 ACP WebSocket、`AcpHub`、session 持久化、断线 replay 和 Bearer 鉴权。现有 ACP agent 主要覆盖对话生命周期：
+当前 `anureo-server` 已经具备 ACP WebSocket、`AcpHub`、session 持久化、断线 replay 和 Bearer 鉴权。现有 ACP agent 主要覆盖对话生命周期：
 
 ```text
 initialize
@@ -49,24 +49,24 @@ session/cancel
 - 长任务无法可靠取消、恢复和查询。
 - JSON 输出与终端文本输出难以保持一致。
 
-因此需要一个 Loom-specific ACP extension protocol。
+因此需要一个 anureo-specific ACP extension protocol。
 
 ## 2. 目标与非目标
 
 ### 2.1 目标
 
-- 支持 `loom --acp` 作为 ACP Client，通过 `/acp` WebSocket 执行 CLI 命令。
+- 支持 `anureo --acp` 作为 ACP Client，通过 `/acp` WebSocket 执行 CLI 命令。
 - 保持标准 ACP session/prompt/tool 生命周期兼容。
-- 让 client 可以发现 Loom 支持的命令、参数 schema、风险和执行模式。
+- 让 client 可以发现 anureo 支持的命令、参数 schema、风险和执行模式。
 - 为短命令提供 request/response 语义，为长任务提供 job 语义。
 - 复用现有 CLI service，而不是在 ACP handler 中复制业务逻辑。
 - 让权限、confirmation、working directory、session owner 和 auth 具有明确边界。
-- 对未知 Loom 扩展保持标准 JSON-RPC `-32601 Method not found` 行为。
+- 对未知 anureo 扩展保持标准 JSON-RPC `-32601 Method not found` 行为。
 
 ### 2.2 非目标
 
 - 不修改 ACP 标准方法的既有语义。
-- 不把 Loom 所有 CLI 命令提升为 ACP 标准协议。
+- 不把 anureo 所有 CLI 命令提升为 ACP 标准协议。
 - 不引入 `raw shell` 或任意 `argv` 远程执行接口。
 - 不在第一阶段实现跨多个 ACP server 的 command federation。
 - 不依赖 ACP v2 draft；本设计以当前 ACP v1 SDK 和 JSON-RPC 语义为基线。
@@ -76,12 +76,12 @@ session/cancel
 
 | 维度 | 决定 | 说明 |
 |---|---|---|
-| 扩展命名 | `_loom/...` | ACP 要求自定义 method 以 `_` 开头，避免与未来标准方法冲突 |
-| 能力声明 | `initialize.agentCapabilities._meta["loom.dev"]` | 不向标准 capability 对象添加未定义的 root-level 字段 |
-| 命令发现 | `_loom/cli/describe` | 返回结构化 command catalog 和 JSON Schema |
-| 命令执行 | `_loom/cli/execute` | 使用 `command + args`，不传 raw argv |
+| 扩展命名 | `_anureo/...` | ACP 要求自定义 method 以 `_` 开头，避免与未来标准方法冲突 |
+| 能力声明 | `initialize.agentCapabilities._meta["anureo.dev"]` | 不向标准 capability 对象添加未定义的 root-level 字段 |
+| 命令发现 | `_anureo/cli/describe` | 返回结构化 command catalog 和 JSON Schema |
+| 命令执行 | `_anureo/cli/execute` | 使用 `command + args`，不传 raw argv |
 | 短命令 | JSON-RPC request/response | 适用于 list/show/validate 等有限时长操作 |
-| 长命令 | Job | 立即返回 `jobId`，通过 `_loom/job/update` 推送状态 |
+| 长命令 | Job | 立即返回 `jobId`，通过 `_anureo/job/update` 推送状态 |
 | session 对齐 | 优先使用 ACP 标准方法 | `session/list`、`session/close`、`session/delete`、`session/set_config_option` 不重复实现 |
 | 用户快捷命令 | ACP slash commands | `/models`、`/review` 等仍通过 `session/prompt` 执行 |
 | 风险控制 | command metadata + server enforcement | client 展示 confirmation，server 不能只依赖 client 自律 |
@@ -99,19 +99,19 @@ ACP 官方扩展规范允许通过 `_meta` 附加自定义数据、使用 `_` �
 └──────────────────────────────┬───────────────────────────────┘
                                │
 ┌──────────────────────────────▼───────────────────────────────┐
-│ Loom ACP extension                                            │
-│ _loom/cli/describe                                            │
-│ _loom/cli/execute                                             │
-│ _loom/job/list / get / cancel / update                        │
+│ anureo ACP extension                                            │
+│ _anureo/cli/describe                                            │
+│ _anureo/cli/execute                                             │
+│ _anureo/job/list / get / cancel / update                        │
 └──────────────────────────────┬───────────────────────────────┘
                                │
 ┌──────────────────────────────▼───────────────────────────────┐
-│ Loom command registry                                         │
+│ anureo command registry                                         │
 │ models / tools / mcp / skills / memory / task / goal / review │
 └──────────────────────────────┬───────────────────────────────┘
                                │
 ┌──────────────────────────────▼───────────────────────────────┐
-│ Existing Loom services and stores                             │
+│ Existing anureo services and stores                             │
 │ config / SessionStore / AcpHub / MCP / workflow / task store │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -123,16 +123,16 @@ ACP 官方扩展规范允许通过 `_meta` 附加自定义数据、使用 `_` �
     └── session/prompt
 
 精确 CLI 控制面
-    └── _loom/cli/execute
+    └── _anureo/cli/execute
 ```
 
-`session/prompt` 适合自然语言和交互式 agent turn；`_loom/cli/execute` 适合必须精确表达的查询、配置修改和长任务控制。
+`session/prompt` 适合自然语言和交互式 agent turn；`_anureo/cli/execute` 适合必须精确表达的查询、配置修改和长任务控制。
 
 ## 5. 初始化与能力协商
 
 ### 5.1 Agent capability
 
-Loom 在标准 `initialize` response 中声明：
+anureo 在标准 `initialize` response 中声明：
 
 ```json
 {
@@ -141,7 +141,7 @@ Loom 在标准 `initialize` response 中声明：
   "result": {
     "protocolVersion": 1,
     "agentInfo": {
-      "name": "loom",
+      "name": "anureo",
       "version": "0.1.0"
     },
     "agentCapabilities": {
@@ -152,16 +152,16 @@ Loom 在标准 `initialize` response 中声明：
         "delete": {}
       },
       "_meta": {
-        "loom.dev": {
-          "extension": "loom-cli",
+        "anureo.dev": {
+          "extension": "anureo-cli",
           "version": "1",
           "protocolVersion": "2026-08-01",
-          "describeMethod": "_loom/cli/describe",
-          "executeMethod": "_loom/cli/execute",
+          "describeMethod": "_anureo/cli/describe",
+          "executeMethod": "_anureo/cli/execute",
           "jobMethods": [
-            "_loom/job/list",
-            "_loom/job/get",
-            "_loom/job/cancel"
+            "_anureo/job/list",
+            "_anureo/job/get",
+            "_anureo/job/cancel"
           ],
           "features": {
             "commandCatalog": true,
@@ -176,21 +176,21 @@ Loom 在标准 `initialize` response 中声明：
 }
 ```
 
-标准 ACP 的 session list/close/delete 等能力应直接使用对应标准字段和方法。Loom 私有能力只放在 `_meta["loom.dev"]` 下。
+标准 ACP 的 session list/close/delete 等能力应直接使用对应标准字段和方法。anureo 私有能力只放在 `_meta["anureo.dev"]` 下。
 
 ### 5.2 Client capability
 
-Loom CLI Client 在 `initialize` request 中声明自己的扩展能力：
+anureo CLI Client 在 `initialize` request 中声明自己的扩展能力：
 
 ```json
 {
   "clientInfo": {
-    "name": "loom-cli",
+    "name": "anureo-cli",
     "version": "0.1.0"
   },
   "clientCapabilities": {
     "_meta": {
-      "loom.dev": {
+      "anureo.dev": {
         "cliClient": true,
         "interactiveTerminal": true,
         "jsonOutput": true,
@@ -205,7 +205,7 @@ server 不应仅因为 client 声明了 capability 就授予权限。capability 
 
 ## 6. Command Catalog
 
-### 6.1 `_loom/cli/describe`
+### 6.1 `_anureo/cli/describe`
 
 请求：
 
@@ -213,7 +213,7 @@ server 不应仅因为 client 声明了 capability 就授予权限。capability 
 {
   "jsonrpc": "2.0",
   "id": 10,
-  "method": "_loom/cli/describe",
+  "method": "_anureo/cli/describe",
   "params": {
     "includeHidden": false,
     "includeSchemas": true,
@@ -238,7 +238,7 @@ server 不应仅因为 client 声明了 capability 就授予权限。capability 
   "jsonrpc": "2.0",
   "id": 10,
   "result": {
-    "extension": "loom-cli",
+    "extension": "anureo-cli",
     "version": "1",
     "schemaVersion": "2026-08-01",
     "commands": [
@@ -321,7 +321,7 @@ server 不应仅因为 client 声明了 capability 就授予权限。capability 
 
 ## 7. Command Execution
 
-### 7.1 `_loom/cli/execute`
+### 7.1 `_anureo/cli/execute`
 
 请求：
 
@@ -329,7 +329,7 @@ server 不应仅因为 client 声明了 capability 就授予权限。capability 
 {
   "jsonrpc": "2.0",
   "id": 20,
-  "method": "_loom/cli/execute",
+  "method": "_anureo/cli/execute",
   "params": {
     "command": "models.list",
     "args": {
@@ -443,7 +443,7 @@ server 不应仅因为 client 声明了 capability 就授予权限。capability 
 }
 ```
 
-业务错误使用 Loom 保留的 server error range：
+业务错误使用 anureo 保留的 server error range：
 
 | Code | 含义 |
 |---:|---|
@@ -489,13 +489,13 @@ task.continue
 
 ### 8.2 创建 Job
 
-请求仍使用 `_loom/cli/execute`：
+请求仍使用 `_anureo/cli/execute`：
 
 ```json
 {
   "jsonrpc": "2.0",
   "id": 30,
-  "method": "_loom/cli/execute",
+  "method": "_anureo/cli/execute",
   "params": {
     "command": "goal.run",
     "args": {
@@ -534,7 +534,7 @@ task.continue
 ```json
 {
   "jsonrpc": "2.0",
-  "method": "_loom/job/update",
+  "method": "_anureo/job/update",
   "params": {
     "jobId": "job_01JACPCLI0001",
     "command": "goal.run",
@@ -564,7 +564,7 @@ accepted → queued → running → completed
 ```json
 {
   "jsonrpc": "2.0",
-  "method": "_loom/job/update",
+  "method": "_anureo/job/update",
   "params": {
     "jobId": "job_01JACPCLI0001",
     "status": "completed",
@@ -580,9 +580,9 @@ accepted → queued → running → completed
 ### 8.4 Job 查询和取消
 
 ```text
-_loom/job/list
-_loom/job/get
-_loom/job/cancel
+_anureo/job/list
+_anureo/job/get
+_anureo/job/cancel
 ```
 
 取消请求：
@@ -591,7 +591,7 @@ _loom/job/cancel
 {
   "jsonrpc": "2.0",
   "id": 31,
-  "method": "_loom/job/cancel",
+  "method": "_anureo/job/cancel",
   "params": {
     "jobId": "job_01JACPCLI0001",
     "reason": "user_requested"
@@ -599,7 +599,7 @@ _loom/job/cancel
 }
 ```
 
-`_loom/job/cancel` 只取消 CLI job。session 内普通 prompt 继续使用 ACP 标准的 `session/cancel`。
+`_anureo/job/cancel` 只取消 CLI job。session 内普通 prompt 继续使用 ACP 标准的 `session/cancel`。
 
 Job 必须持久化最小元数据：
 
@@ -616,13 +616,13 @@ result_summary
 error_summary
 ```
 
-WebSocket 断开后 job 不能因为连接关闭而自动重复执行。client 重连后使用 `_loom/job/get` 或 `_loom/job/list` 恢复状态。
+WebSocket 断开后 job 不能因为连接关闭而自动重复执行。client 重连后使用 `_anureo/job/get` 或 `_anureo/job/list` 恢复状态。
 
 ## 9. CLI 命令映射
 
 ### 9.1 标准 ACP 方法优先
 
-| Loom CLI 语义 | 协议入口 |
+| anureo CLI 语义 | 协议入口 |
 |---|---|
 | 对话 | `session/prompt` |
 | 取消当前 prompt | `session/cancel` |
@@ -633,9 +633,9 @@ WebSocket 断开后 job 不能因为连接关闭而自动重复执行。client �
 | session delete | `session/delete` |
 | model/mode/effort | `session/set_config_option` |
 
-ACP 的 session config options 已被设计为可扩展的 model、mode、reasoning 等 session-level selector，应优先用它表达 `--model`、`--tier`、`--effort`，而不是增加 `_loom/model/set`。[Session Config Options](https://agentclientprotocol.com/protocol/v1/session-config-options)
+ACP 的 session config options 已被设计为可扩展的 model、mode、reasoning 等 session-level selector，应优先用它表达 `--model`、`--tier`、`--effort`，而不是增加 `_anureo/model/set`。[Session Config Options](https://agentclientprotocol.com/protocol/v1/session-config-options)
 
-### 9.2 Loom extension command registry
+### 9.2 anureo extension command registry
 
 第一阶段建议注册：
 
@@ -762,13 +762,13 @@ token 必须绑定 owner、command、args 摘要和有效期，不能只绑定 c
 
 继续复用现有 `/acp` 的：
 
-- `LOOM_AUTH_TOKEN` Bearer token。
+- `ANUREO_AUTH_TOKEN` Bearer token。
 - `SessionOwner`。
 - `AcpHub` owner isolation。
 - WebSocket 最大消息/帧大小限制。
 - browser `Origin` 校验。
 
-`loom --acp` 的 WebSocket Client 应与现有 `apps/acp/src/ws_bridge.rs` 复用 auth header 和连接逻辑。
+`anureo --acp` 的 WebSocket Client 应与现有 `apps/acp/src/ws_bridge.rs` 复用 auth header 和连接逻辑。
 
 ## 11. 并发、幂等和断线
 
@@ -791,7 +791,7 @@ Job continues
     ↓
 Client reconnect
     ↓
-_loom/job/get(jobId)
+_anureo/job/get(jobId)
 ```
 
 不得因为 client 重连而重新执行 `goal.run`、`review.run` 或 `task.create`。
@@ -825,18 +825,18 @@ apps/acp/src/extensions/
 | 文件 | 职责 |
 |---|---|
 | `mod.rs` | 注册 extension handlers |
-| `capabilities.rs` | 生成 `_meta["loom.dev"]` capability |
+| `capabilities.rs` | 生成 `_meta["anureo.dev"]` capability |
 | `cli.rs` | 实现 describe/execute JSON-RPC handler |
 | `jobs.rs` | Job store、状态机和 update notification |
 | `schema.rs` | command metadata 和 input/output schema |
-| `errors.rs` | JSON-RPC error 与 Loom error mapping |
+| `errors.rs` | JSON-RPC error 与 anureo error mapping |
 
 ### 12.2 Command Registry
 
 建议新增可被 CLI 和 ACP 共用的 registry：
 
 ```rust
-pub trait LoomCommand: Send + Sync {
+pub trait anureoCommand: Send + Sync {
     fn name(&self) -> &'static str;
     fn describe(&self) -> CommandDescription;
 
@@ -864,7 +864,7 @@ Clap CLI handler ────────┐
 ACP extension handler ───┘
 ```
 
-不要让 ACP handler 调用 `std::process::Command` 重新启动 `loom` 自身，也不要从 ACP request 拼接成 shell command。
+不要让 ACP handler 调用 `std::process::Command` 重新启动 `anureo` 自身，也不要从 ACP request 拼接成 shell command。
 
 ### 12.3 Job Store
 
@@ -885,9 +885,9 @@ pub struct AcpJob {
 }
 ```
 
-第一阶段允许内存 store + process lifetime；如果目标是 server restart 后恢复，则需要把 job metadata 持久化到 Loom home，并为运行中的 process 增加 recovery 状态。该能力应单独作为后续阶段，不应假定仅凭 ACP reconnect 就能恢复 OS process。
+第一阶段允许内存 store + process lifetime；如果目标是 server restart 后恢复，则需要把 job metadata 持久化到 anureo home，并为运行中的 process 增加 recovery 状态。该能力应单独作为后续阶段，不应假定仅凭 ACP reconnect 就能恢复 OS process。
 
-## 13. `loom --acp` Client 设计
+## 13. `anureo --acp` Client 设计
 
 CLI 侧建议新增：
 
@@ -899,10 +899,10 @@ apps/acp/src/ws_connection.rs
 入口示例：
 
 ```bash
-loom --acp "检查当前项目"
-loom --acp --acp-url ws://127.0.0.1:3030/acp "列出模型"
-loom --acp -s sess_123 "继续上次任务"
-loom --acp --json "执行 models.list"
+anureo --acp "检查当前项目"
+anureo --acp --acp-url ws://127.0.0.1:3030/acp "列出模型"
+anureo --acp -s sess_123 "继续上次任务"
+anureo --acp --json "执行 models.list"
 ```
 
 CLI ACP Client 的连接流程：
@@ -916,9 +916,9 @@ initialize
 否则：session/new
     ↓
 普通自然语言：session/prompt
-精确命令：_loom/cli/execute
+精确命令：_anureo/cli/execute
     ↓
-消费 session/update 或 _loom/job/update
+消费 session/update 或 _anureo/job/update
     ↓
 输出 text / json
 ```
@@ -937,9 +937,9 @@ initialize
 
 ### Phase 1：只读 command extension
 
-- 新增 `_meta["loom.dev"]` capability。
-- 新增 `_loom/cli/describe`。
-- 新增 `_loom/cli/execute`。
+- 新增 `_meta["anureo.dev"]` capability。
+- 新增 `_anureo/cli/describe`。
+- 新增 `_anureo/cli/execute`。
 - 实现：
   - `models.list`
   - `models.show`
@@ -967,8 +967,8 @@ initialize
 ### Phase 4：Job 系统
 
 - 新增 `AcpJobStore`。
-- 实现 `_loom/job/update`。
-- 实现 `_loom/job/get/list/cancel`。
+- 实现 `_anureo/job/update`。
+- 实现 `_anureo/job/get/list/cancel`。
 - 接入 `goal`、`review`、`task`、`curator`。
 - 测试断线后 job 不重复执行，重连后可查询状态。
 
@@ -984,7 +984,7 @@ initialize
 | 文件 | 改动类型 | 说明 |
 |---|---|---|
 | `apps/cli/src/args.rs` | 修改 | 增加 `--acp`、`--acp-url`，校验与 subcommand 的组合 |
-| `apps/cli/src/main.rs` | 修改 | 分流到 ACP Client，保留现有 `loom acp` bridge |
+| `apps/cli/src/main.rs` | 修改 | 分流到 ACP Client，保留现有 `anureo acp` bridge |
 | `apps/acp/src/client.rs` | 新增 | ACP Client request/response 和 prompt/job 消费 |
 | `apps/acp/src/ws_connection.rs` | 新增/抽取 | WS 连接、探活、auth、server 拉起、重连 |
 | `apps/acp/src/extensions/mod.rs` | 新增 | extension handler 注册 |
@@ -1006,7 +1006,7 @@ initialize
 
 | 测试 | 验证点 |
 |---|---|
-| `initialize_advertises_loom_extension` | `_meta["loom.dev"]` 存在且版本正确 |
+| `initialize_advertises_anureo_extension` | `_meta["anureo.dev"]` 存在且版本正确 |
 | `describe_returns_command_catalog` | catalog、schema、风险字段完整 |
 | `describe_filters_category` | category 过滤和 cursor 行为 |
 | `execute_models_list` | 查询命令返回结构化 data |
@@ -1031,65 +1031,65 @@ initialize
 
 ```powershell
 cargo test -p acp
-cargo test -p loom-server --test acp_ws_e2e
-cargo test -p cli
+cargo test -p anureo-server --test acp_ws_e2e
+cargo test -p anureo-cli
 cargo test --workspace
-cargo run -p cli -- --acp "检查当前项目"
+cargo run -p anureo-cli -- --acp "检查当前项目"
 ```
 
 ### 16.1 Node.js BDD E2E
 
-Node.js 黑盒测试放在 `e2e/`，不依赖 Rust 内部类型。测试直接启动已构建的 `loom` binary，通过 `loom acp` 的 stdin/stdout 与 ACP server 的 `/acp` WebSocket 间接验证真实链路。
+Node.js 黑盒测试放在 `e2e/`，不依赖 Rust 内部类型。测试直接启动已构建的 `anureo` binary，通过 `anureo acp` 的 stdin/stdout 与 ACP server 的 `/acp` WebSocket 间接验证真实链路。
 
 ```text
 Node test runner
     │ stdin/stdout
     ▼
-loom acp
+anureo acp
     │ WebSocket
     ▼
-loom server /acp
+anureo server /acp
 ```
 
 当前落地的 living specification：
 
 ```text
-e2e/features/acp/loom-acp-stdio.feature
+e2e/features/acp/anureo-acp-stdio.feature
 e2e/features/acp/cli-acp-client.feature
 ```
 
 当前可执行的 Node BDD tests：
 
 ```text
-e2e/tests/acp-bdd/loom-acp-stdio.test.mjs
+e2e/tests/acp-bdd/anureo-acp-stdio.test.mjs
 e2e/tests/acp-bdd/cli-acp-client.test.mjs
 ```
 
 运行：
 
 ```powershell
-cargo build -p cli
+cargo build -p anureo-cli
 npm --prefix e2e run test:bdd:acp
 ```
 
-`loom acp` 的 initialize、bridge 重启和 session/load 场景必须通过；`loom --acp` 的 session 创建、恢复、JSON 输出和 prompt streaming 场景也必须通过。prompt 场景使用 deterministic Node ACP WebSocket fixture，验证 CLI Client 的 ACP 协议行为而不依赖真实模型 provider。
+`anureo acp` 的 initialize、bridge 重启和 session/load 场景必须通过；`anureo --acp` 的 session 创建、恢复、JSON 输出和 prompt streaming 场景也必须通过。prompt 场景使用 deterministic Node ACP WebSocket fixture，验证 CLI Client 的 ACP 协议行为而不依赖真实模型 provider。
 
 ## 17. 向后兼容性
 
 ### 17.1 对普通 ACP Client
 
 - 普通 ACP Client 仍可只使用 `initialize`、`session/new`、`session/prompt`。
-- 不认识 `_loom/...` 的 client 不受影响。
+- 不认识 `_anureo/...` 的 client 不受影响。
 - 不支持扩展时，server 继续对标准 ACP 请求提供服务。
 - 未识别的 custom notification 应忽略；未知 custom request 返回标准 method-not-found。
 
-### 17.2 对现有 `loom acp`
+### 17.2 对现有 `anureo acp`
 
 保持：
 
 ```bash
-loom acp
-loom acp ws://127.0.0.1:3030/acp
+anureo acp
+anureo acp ws://127.0.0.1:3030/acp
 ```
 
 它继续作为 IDE stdio bridge，不改为 CLI command executor。
@@ -1097,8 +1097,8 @@ loom acp ws://127.0.0.1:3030/acp
 新增：
 
 ```bash
-loom --acp "message"
-loom --acp --acp-url ws://host:port/acp "message"
+anureo --acp "message"
+anureo --acp --acp-url ws://host:port/acp "message"
 ```
 
 ### 17.3 扩展版本
@@ -1106,11 +1106,11 @@ loom --acp --acp-url ws://host:port/acp "message"
 扩展版本不改变 ACP `protocolVersion`。client 应根据：
 
 ```text
-agentCapabilities._meta["loom.dev"].version
-agentCapabilities._meta["loom.dev"].protocolVersion
+agentCapabilities._meta["anureo.dev"].version
+agentCapabilities._meta["anureo.dev"].protocolVersion
 ```
 
-决定是否调用某个 command。command catalog 是运行时权威来源，client 不应仅根据 Loom 二进制版本推断 command 存在。
+决定是否调用某个 command。command catalog 是运行时权威来源，client 不应仅根据 anureo 二进制版本推断 command 存在。
 
 ## 18. 未决问题
 
@@ -1118,7 +1118,7 @@ agentCapabilities._meta["loom.dev"].protocolVersion
 |---|---|
 | `CommandRegistry` 放在 `apps/cli` 还是新 crate | 第一阶段放 `apps/cli`，若 server 直接复用困难再下沉到 `foundation/cli-command` |
 | job 是否跨 server restart 恢复 | 第一阶段不承诺；先保证 WebSocket reconnect 不重复执行 |
-| confirmation 是否纳入 ACP 标准 permission | 第一阶段使用 Loom extension error/token；后续评估 ACP permission request |
+| confirmation 是否纳入 ACP 标准 permission | 第一阶段使用 anureo extension error/token；后续评估 ACP permission request |
 | 是否暴露完整 skill 内容 | 默认只返回 metadata，内容通过显式 `skills.show` 查询 |
 | MCP 配置是否允许远程修改 | 默认关闭；需要显式 server policy 和高风险 confirmation |
 | `output: text` 是否保留 | 保留为展示兼容字段，但结构化 `data` 是正式契约 |
@@ -1129,13 +1129,13 @@ agentCapabilities._meta["loom.dev"].protocolVersion
 
 本设计完成的最低判断标准：
 
-1. `initialize` 能发现 `loom.dev` extension。
-2. client 能通过 `_loom/cli/describe` 获取命令及参数 schema。
+1. `initialize` 能发现 `anureo.dev` extension。
+2. client 能通过 `_anureo/cli/describe` 获取命令及参数 schema。
 3. `models.list`、`tools.list`、`mcp.list` 至少三个 query command 可通过 WebSocket 执行。
 4. 非法 command、非法参数、权限拒绝均返回结构化 JSON-RPC error。
 5. 至少一个 mutation command 支持 confirmation 和 workspace boundary 校验。
 6. 至少一个长任务返回 job，并支持 update、get、cancel。
 7. CLI 本地入口和 ACP 入口使用相同 command service，不复制业务逻辑。
-8. 不认识 Loom extension 的 ACP Client 仍能正常执行标准 ACP 对话。
+8. 不认识 anureo extension 的 ACP Client 仍能正常执行标准 ACP 对话。
 9. WebSocket 断线重连不会重复执行已接受的 job。
-10. `cargo test -p acp`、`cargo test -p loom-server --test acp_ws_e2e` 和 `cargo test -p cli` 通过。
+10. `cargo test -p acp`、`cargo test -p anureo-server --test acp_ws_e2e` 和 `cargo test -p anureo-cli` 通过。

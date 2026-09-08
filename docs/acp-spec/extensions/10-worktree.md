@@ -1,6 +1,6 @@
 # Worktree
 
-> 命名空间: `_loomdesk.dev/worktree/*`
+> 命名空间: `_anureo.dev/worktree/*`
 > Capability key: `worktree`
 
 ## Capability
@@ -82,7 +82,7 @@ pub struct WorktreeBootstrapStatusParams {
 
 ---
 
-### `_loomdesk.dev/worktree/list`
+### `_anureo.dev/worktree/list`
 
 | 项目 | 内容 |
 |---|---|
@@ -134,7 +134,7 @@ pub struct WorktreeBootstrapStatusParams {
 
 ---
 
-### `_loomdesk.dev/worktree/get`
+### `_anureo.dev/worktree/get`
 
 | 项目 | 内容 |
 |---|---|
@@ -177,7 +177,7 @@ pub struct WorktreeBootstrapStatusParams {
 
 ---
 
-### `_loomdesk.dev/worktree/validate`
+### `_anureo.dev/worktree/validate`
 
 | 项目 | 内容 |
 |---|---|
@@ -222,7 +222,7 @@ pub struct WorktreeBootstrapStatusParams {
 
 ---
 
-### `_loomdesk.dev/worktree/preview`
+### `_anureo.dev/worktree/preview`
 
 | 项目 | 内容 |
 |---|---|
@@ -256,7 +256,7 @@ pub struct WorktreeBootstrapStatusParams {
 
 **逻辑说明:**
 - 预览 worktree 创建后的预期结果，不实际执行。
-- `bootstrapPlan` 根据 `.loomdesk/bootstrap.json` 或项目配置生成。
+- `bootstrapPlan` 根据 `.anureo/bootstrap.json` 或项目配置生成。
 - 如果分支冲突，返回 warning 但不报错（因为不实际创建）。
 
 **Error:**
@@ -268,7 +268,7 @@ pub struct WorktreeBootstrapStatusParams {
 
 ---
 
-### `_loomdesk.dev/worktree/bootstrap_status`
+### `_anureo.dev/worktree/bootstrap_status`
 
 | 项目 | 内容 |
 |---|---|
@@ -310,7 +310,7 @@ pub struct WorktreeBootstrapStatusParams {
 
 ---
 
-### `_loomdesk.dev/worktree/create`
+### `_anureo.dev/worktree/create`
 
 | 项目 | 内容 |
 |---|---|
@@ -368,7 +368,7 @@ pub struct WorktreeBootstrapStatusParams {
 
 ---
 
-### `_loomdesk.dev/worktree/delete`
+### `_anureo.dev/worktree/delete`
 
 | 项目 | 内容 |
 |---|---|
@@ -415,14 +415,14 @@ pub struct WorktreeBootstrapStatusParams {
 
 ## Notifications
 
-### `_loomdesk.dev/worktree/changed`
+### `_anureo.dev/worktree/changed`
 
 当 worktree 列表发生变化（创建、删除、分支切换、dirty 状态变化）时推送。
 
 ```json
 {
   "jsonrpc": "2.0",
-  "method": "_loomdesk.dev/worktree/changed",
+  "method": "_anureo.dev/worktree/changed",
   "params": {
     "change": "created",
     "path": "/home/user/project/.worktrees/feature-new"
@@ -451,4 +451,4 @@ pub struct WorktreeBootstrapStatusParams {
 
 | Notification | Authoritative method |
 |---|---|
-| `_loomdesk.dev/worktree/changed` | `_loomdesk.dev/worktree/list` |
+| `_anureo.dev/worktree/changed` | `_anureo.dev/worktree/list` |

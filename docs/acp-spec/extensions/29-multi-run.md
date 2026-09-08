@@ -1,6 +1,6 @@
 # Multi-Run（批量会话执行）
 
-> 命名空间: `_loomdesk.dev/multi-run/*`
+> 命名空间: `_anureo.dev/multi-run/*`
 > Capability key: `multi-run`
 
 ## Capability
@@ -37,14 +37,14 @@ Multi-Run coordinator (server-side)
 
 ## Methods
 
-### `_loomdesk.dev/multi-run/create`
+### `_anureo.dev/multi-run/create`
 
 | 项目 | 内容 |
 |---|---|
 | 方向 | Client → Server request |
 | 能力 | `multi-run.create` |
 | 权限 | Server-side authorization（需要写权限 scope） |
-| 进度 | 长时操作，支持 `_loomdesk.dev/multi-run/progress` notification（`08-cross-cutting-patterns.md` §3） |
+| 进度 | 长时操作，支持 `_anureo.dev/multi-run/progress` notification（`08-cross-cutting-patterns.md` §3） |
 | 幂等 | 支持 `idempotencyKey` |
 
 **Request:**
@@ -170,7 +170,7 @@ pub enum MultiRunStatus {
 4. `stopOnError: true` 时，任一 run 失败后取消所有未开始的 run。
 5. `stopOnError: false`（默认）时，即使部分 run 失败也继续执行其余 run。
 6. 每个 sub-session 的 `session/update` 正常通过 ACP 流传输；Multi-Run 不拦截或修改 update。
-7. Sub-session metadata 写入 `metadata.openchamber.multirun`（`08-cross-cutting-patterns.md` §5），记录关联的 multi-run ID。
+7. Sub-session metadata 写入 `metadata.anureo.multirun`（`08-cross-cutting-patterns.md` §5），记录关联的 multi-run ID。
 8. `idempotencyKey` 相同时返回已存在的 multi-run 状态。
 
 | Error code | 说明 | 触发条件 |
@@ -183,7 +183,7 @@ pub enum MultiRunStatus {
 
 ---
 
-### `_loomdesk.dev/multi-run/cancel`
+### `_anureo.dev/multi-run/cancel`
 
 | 项目 | 内容 |
 |---|---|
@@ -246,7 +246,7 @@ pub struct MultiRunCancelResponse {
 
 ---
 
-### `_loomdesk.dev/multi-run/status`
+### `_anureo.dev/multi-run/status`
 
 | 项目 | 内容 |
 |---|---|
@@ -376,7 +376,7 @@ pub struct MultiRunError {
 
 ## Notifications
 
-### `_loomdesk.dev/multi-run/changed`
+### `_anureo.dev/multi-run/changed`
 
 | 项目 | 内容 |
 |---|---|
@@ -386,7 +386,7 @@ pub struct MultiRunError {
 ```json
 {
   "jsonrpc": "2.0",
-  "method": "_loomdesk.dev/multi-run/changed",
+  "method": "_anureo.dev/multi-run/changed",
   "params": {
     "id": "mr_xyz789",
     "status": "partially_completed",

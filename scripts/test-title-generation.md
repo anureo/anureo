@@ -13,7 +13,7 @@
 ### 场景 1：正常标题生成
 
 **步骤：**
-1. 启动 loom server
+1. 启动 anureo server
 2. 创建新的 session
 3. 发送第一轮用户消息
 4. 等待 agent 响应完成
@@ -70,17 +70,17 @@
 
 ```powershell
 # 1. 启动 dev server
-cargo run -p cli -- server --port 3031 --home .loom-home --pid-file .loom-home/loom-server.pid
+cargo run -p anureo-cli -- server --port 3031 --home .anureo-home --pid-file .anureo-home/anureo-server.pid
 
 # 2. 在另一个终端启动 ACP agent
-cargo run -p cli -- acp
+cargo run -p anureo-cli -- acp
 
 # 3. 发送测试消息并观察日志
 # 查看 title 生成相关的日志（warn! 级别会记录失败情况）
 
 # 4. 检查数据库
-# 使用 SQLite 工具查看 .loom-home/agents.db
-sqlite3 .loom-home/agents.db "SELECT session_id, title, created_at FROM acp_sessions ORDER BY created_at DESC LIMIT 5;"
+# 使用 SQLite 工具查看 .anureo-home/agents.db
+sqlite3 .anureo-home/agents.db "SELECT session_id, title, created_at FROM acp_sessions ORDER BY created_at DESC LIMIT 5;"
 ```
 
 ### 方法 2：单元测试
@@ -136,16 +136,16 @@ ws.onmessage = (event) => {
 
 ```powershell
 # 查看最近的 session 和标题
-sqlite3 .loom-home/agents.db "SELECT session_id, title, created_at FROM acp_sessions ORDER BY created_at DESC LIMIT 10;"
+sqlite3 .anureo-home/agents.db "SELECT session_id, title, created_at FROM acp_sessions ORDER BY created_at DESC LIMIT 10;"
 
 # 检查没有标题的 session
-sqlite3 .loom-home/agents.db "SELECT session_id, created_at FROM acp_sessions WHERE title IS NULL;"
+sqlite3 .anureo-home/agents.db "SELECT session_id, created_at FROM acp_sessions WHERE title IS NULL;"
 
 # 查看 server 日志中的标题生成警告
-Get-Content .loom-home/loom-server.log | Select-String "Title generation"
+Get-Content .anureo-home/anureo-server.log | Select-String "Title generation"
 
 # 实时监控日志
-Get-Content .loom-home/loom-server.log -Wait -Tail 50 | Select-String "title|Title"
+Get-Content .anureo-home/anureo-server.log -Wait -Tail 50 | Select-String "title|Title"
 ```
 
 ## 常见问题排查

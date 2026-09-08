@@ -8,7 +8,7 @@
 
 ## 1. 目标与边界
 
-将 `GET /acp` 从“每条 WebSocket 连接启动一个 `loom acp` 子进程”的临时桥接，替换为 server 进程内、可重连的 ACP transport。
+将 `GET /acp` 从“每条 WebSocket 连接启动一个 `anureo acp` 子进程”的临时桥接，替换为 server 进程内、可重连的 ACP transport。
 
 本轮完成后，单一逻辑 CLI 在断线后重新连接，或在 server 重启后重新启动，均能够加载原 ACP session、继续使用原 thread 与配置，并收到可恢复的最终状态。实现范围只覆盖 loopback / 单主体的正确性基础；多主体隔离、配额和完整运营指标放入后续加固阶段。
 
@@ -18,8 +18,8 @@
 
 | 维度 | 当前实现 | 本方案决定 |
 | --- | --- | --- |
-| `/acp` | ~~spawn `loom acp` 子进程，断线即退出~~ → **已改为进程内分发** | ✅ 直接从 `AppState.acp_hub` 获取持久 agent |
-| 进程模型 | ~~WebSocket 连接拥有 agent 子进程~~ → **已消除** | ✅ ACP handler 不 spawn 任何 `loom`/ACP 子进程；一个 server 进程内管理所有 ACP session |
+| `/acp` | ~~spawn `anureo acp` 子进程，断线即退出~~ → **已改为进程内分发** | ✅ 直接从 `AppState.acp_hub` 获取持久 agent |
+| 进程模型 | ~~WebSocket 连接拥有 agent 子进程~~ → **已消除** | ✅ ACP handler 不 spawn 任何 `anureo`/ACP 子进程；一个 server 进程内管理所有 ACP session |
 | session 状态 | 跟随子进程连接生命周期 | `AcpHub` 持有 session/run 状态 |
 | server 重启 | 内存状态丢失 | session 元数据与可恢复 run/checkpoint 状态写入持久 store；启动时恢复为可 load/continue 的 session |
 | client bridge | `GLOBAL_BRIDGE` 进程级单例 | 每个 ACP connection/session 显式注入 bridge |
@@ -33,8 +33,8 @@
 
 1. ~~定义 `AcpConnection`：保存 connection id、认证主体（当前可为 local anonymous）、capabilities、notification sink、connection generation 和 client bridge。~~
 2. ~~将 `ClientBridge` 从 `GLOBAL_BRIDGE` 移为 session/run 构建参数；fs 与 terminal tool 必须按 session 查找当前 connection bridge。~~
-3. ~~将 `/acp` handler 改为：upgrade → 初始化 connection → `AcpHub::attach` → 以 SDK connection dispatch ACP 请求 → 任务结束时 detach；删除子进程、stdio line bridge 和 `LOOM_ACP_BINARY` 依赖。~~
-   - **实现**：`handlers/acp.rs` 通过 `AcpHub::attach()` 获取持久 agent，构建 WS ↔ `Lines` transport 适配器，调用 `loom_acp::run_agent_connection()` 驱动 ACP JSON-RPC dispatch。
+3. ~~将 `/acp` handler 改为：upgrade → 初始化 connection → `AcpHub::attach` → 以 SDK connection dispatch ACP 请求 → 任务结束时 detach；删除子进程、stdio line bridge 和 `ANUREO_ACP_BINARY` 依赖。~~
+   - **实现**：`handlers/acp.rs` 通过 `AcpHub::attach()` 获取持久 agent，构建 WS ↔ `Lines` transport 适配器，调用 `anureo_acp::run_agent_connection()` 驱动 ACP JSON-RPC dispatch。
    - **核心函数**：`stdio_loop.rs::run_agent_connection()` 提取为公共 API，接受任意 `Lines` 传输层（stdin 或 WebSocket），内含全部 handler 注册 + notification drain task + `connect_with` 驱动。
    - **测试**：`acp_ws_mega_e2e.rs` 覆盖 initialize → session/new → disconnect → reconnect → session/load 全链路（通过）。
 4. 为两个并发 WebSocket client 增加 fs/terminal 请求隔离测试。 _(待做)_
@@ -44,7 +44,7 @@
 ### Phase B — 持久 session 与 prompt 串行（P0）
 
 1. 让 `AcpHub` 以 session id 索引 `SessionRuntime`，保存 thread id、cwd、MCP 配置、model/mode、active cancellation、owner 与当前 bridge generation。
-2. 将 `LoomAcpAgent` 分解为无连接的 session/run core 与连接专属 adapter；新建、加载、prompt、cancel 都经由 hub。
+2. 将 `anureoAcpAgent` 分解为无连接的 session/run core 与连接专属 adapter；新建、加载、prompt、cancel 都经由 hub。
 3. 每个 session 采用 actor 或 mutex-backed command queue；正在 prompt 时的第二个 prompt 返回稳定的 JSON-RPC error code/message。
 4. 保留 `session/cancel` 为唯一立即取消路径。
 5. 新增 `AcpSessionStore`（复用现有 SQLite/checkpoint 基础设施优先），原子持久化 session runtime 元数据、最后 checkpoint/thread、run 状态与可恢复错误；`AcpHub` 初始化时加载这些记录。
@@ -55,8 +55,8 @@
 ### Phase C — 断线、恢复与权限（P1）
 
 1. 为每 session 维护单调 event cursor 与容量/TTL 可配置的 update ring buffer；关键状态转换同时落入持久 store，内存 buffer 仅用于低延迟重放。
-2. 在 `_meta.eventCursor` / `_meta.resumeFrom` 中提供 Loom 扩展；无法协商扩展的 client 至少收到当前状态快照。
-3. 默认 `disconnect_policy=persist`，仅 `LOOM_ACP_DISCONNECT_POLICY=cancel` 时取消该连接拥有的 run；无重连 session/run 的 TTL 清理必须释放 MCP/PTY 资源。
+2. 在 `_meta.eventCursor` / `_meta.resumeFrom` 中提供 anureo 扩展；无法协商扩展的 client 至少收到当前状态快照。
+3. 默认 `disconnect_policy=persist`，仅 `ANUREO_ACP_DISCONNECT_POLICY=cancel` 时取消该连接拥有的 run；无重连 session/run 的 TTL 清理必须释放 MCP/PTY 资源。
 4. 定义 `PendingPermission`，绑定 session、run、owner、connection generation、deadline。离线时暂停，不自动允许；超时拒绝并发送可诊断状态。
 
 验收：运行中断线后 run 继续；重连能重放遗漏 update 或获得最终状态；权限等待不会在断线后执行。
@@ -94,13 +94,13 @@
 
 ## 5. Workflow 执行约束
 
-- 可执行 workflow：`.loom/workflows/acp-websocket-persistent.lua`。
-- Loom 先完成任务拆分与风险检查，随后自动执行；任一测试门槛失败立即停止。
+- 可执行 workflow：`.anureo/workflows/acp-websocket-persistent.lua`。
+- anureo 先完成任务拆分与风险检查，随后自动执行；任一测试门槛失败立即停止。
 - workflow 将 Phase A–E 拆给多个职责明确的开发 agent，所有 agent 的模型固定为 `huoshan/deepseek-v4-flash-260425`。
 - workflow 最大并发为 `1`；agent 与 phase 均严格串行，后续 phase 以前一 phase 的测试通过为前置条件。
 - 每个 phase 独立 worktree/分支，禁止自动 commit、merge、push 或修改本设计文档。
 - 每 phase 完成后记录 diff、测试结果与未决风险；只有前置测试通过才自动进入下一 phase。
-- `/acp` 及其连接生命周期中不得 spawn `loom`、`loom acp` 或任何 ACP agent 子进程；server restart recovery 作为 Phase B/C 的强制验收项。
+- `/acp` 及其连接生命周期中不得 spawn `anureo`、`anureo acp` 或任何 ACP agent 子进程；server restart recovery 作为 Phase B/C 的强制验收项。
 
 启动时必须使用 `workflow_start` 的 `concurrency: 1`；Lua 脚本不使用 `parallel` 或 `pipeline`，因此多个 development agent 不会并发写入同一 worktree。
 

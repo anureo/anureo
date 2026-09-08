@@ -32,7 +32,7 @@ models_dev/
 | Feature | 启用内容 | 额外依赖 |
 |---|---|---|
 | *(default)* | Schema 类型 + Parser（纯 serde/serde_json） | 无 |
-| `resolver` | `ModelsDevResolver` + `HttpClient` + `ReqwestHttpClient` | reqwest, tokio, async-trait, loom-http-retry, tracing |
+| `resolver` | `ModelsDevResolver` + `HttpClient` + `ReqwestHttpClient` | reqwest, tokio, async-trait, anureo-http-retry, tracing |
 | `tier` | 启用 `resolver` + tier 分级 | toml, thiserror |
 
 不含 `resolver` feature 时，模块只有类型定义和解析器，零网络依赖。
@@ -298,7 +298,7 @@ pub trait HttpClient: Send + Sync {
 }
 ```
 
-`ReqwestHttpClient` 是生产实现，内置重试逻辑（`loom_http_retry`，瞬态错误自动退避重试）。测试时注入 `MockHttpClient`。
+`ReqwestHttpClient` 是生产实现，内置重试逻辑（`anureo_http_retry`，瞬态错误自动退避重试）。测试时注入 `MockHttpClient`。
 
 ### ModelsDevResolver
 

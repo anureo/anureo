@@ -1,6 +1,6 @@
 # MCP 管理
 
-> 命名空间: `_loomdesk.dev/mcp/*`
+> 命名空间: `_anureo.dev/mcp/*`
 > Capability key: `mcp`
 
 ## 设计原则
@@ -91,7 +91,7 @@ pub struct McpDisableParams {
 
 ---
 
-### `_loomdesk.dev/mcp/list`
+### `_anureo.dev/mcp/list`
 
 | 项目 | 内容 |
 |---|---|
@@ -167,7 +167,7 @@ pub struct McpDisableParams {
 
 ---
 
-### `_loomdesk.dev/mcp/get`
+### `_anureo.dev/mcp/get`
 
 | 项目 | 内容 |
 |---|---|
@@ -226,7 +226,7 @@ pub struct McpDisableParams {
 
 ---
 
-### `_loomdesk.dev/mcp/configure`
+### `_anureo.dev/mcp/configure`
 
 | 项目 | 内容 |
 |---|---|
@@ -288,7 +288,7 @@ pub struct McpDisableParams {
 
 ---
 
-### `_loomdesk.dev/mcp/enable`
+### `_anureo.dev/mcp/enable`
 
 | 项目 | 内容 |
 |---|---|
@@ -329,7 +329,7 @@ pub struct McpDisableParams {
 
 ---
 
-### `_loomdesk.dev/mcp/disable`
+### `_anureo.dev/mcp/disable`
 
 | 项目 | 内容 |
 |---|---|
@@ -373,14 +373,14 @@ pub struct McpDisableParams {
 
 ## Notifications
 
-### `_loomdesk.dev/mcp/status_changed`
+### `_anureo.dev/mcp/status_changed`
 
 当 MCP server 状态发生变化（连接、断开、错误、工具列表更新）时推送。
 
 ```json
 {
   "jsonrpc": "2.0",
-  "method": "_loomdesk.dev/mcp/status_changed",
+  "method": "_anureo.dev/mcp/status_changed",
   "params": {
     "id": "filesystem",
     "status": "disconnected",
@@ -408,4 +408,4 @@ pub struct McpDisableParams {
 
 | Notification | Authoritative method |
 |---|---|
-| `_loomdesk.dev/mcp/status_changed` | `_loomdesk.dev/mcp/list` |
+| `_anureo.dev/mcp/status_changed` | `_anureo.dev/mcp/list` |

@@ -2,7 +2,7 @@
 
 > **基准**: LangGraph v1.2.7 (`libs/langgraph/`, 2025-08 main 分支)
 > **来源**: GitHub 源码直接抓取
-> **用途**: 为 Loom stream-event 对齐提供结构参考
+> **用途**: 为 anureo stream-event 对齐提供结构参考
 
 ---
 
@@ -14,7 +14,7 @@
 4. [stream/ 子包深度分析](#4-stream-子包深度分析)
 5. [分层职责总结](#5-分层职责总结)
 6. [设计特征](#6-设计特征)
-7. [与 Loom stream-event 结构对比](#7-与-loom-stream-event-结构对比)
+7. [与 anureo stream-event 结构对比](#7-与-anureo-stream-event-结构对比)
 
 ---
 
@@ -666,7 +666,7 @@ class AsyncSubgraphRunStream:
 
 ## 6. 设计特征
 
-1. **`types.py` 是唯一的类型中心** — 所有公共类型集中在一个文件，不像 Loom 分散在 `stream_event.rs` + `event.rs` + `metadata.rs` + `message.rs` 四个文件
+1. **`types.py` 是唯一的类型中心** — 所有公共类型集中在一个文件，不像 anureo 分散在 `stream_event.rs` + `event.rs` + `metadata.rs` + `message.rs` 四个文件
 
 2. **`stream/` 是独立子包** — 6 个文件职责严格分离：
    - 协议定义 (`_types.py`) / 转换 (`_convert.py`) / 调度 (`_mux.py`)
@@ -676,7 +676,7 @@ class AsyncSubgraphRunStream:
 
 4. **`pregel/` 和 `stream/` 解耦** — Pregel 引擎只产出 `StreamPart`（Layer 1），`stream/` 层负责包装、变换和投影（Layer 2-3）
 
-5. **checkpoint 独立为包** — `langgraph-checkpoint` 可单独发布和复用，Loom 的 checkpoint 目前耦合在 foundation 中
+5. **checkpoint 独立为包** — `langgraph-checkpoint` 可单独发布和复用，anureo 的 checkpoint 目前耦合在 foundation 中
 
 6. **Transformer 在编译期注册** — `graph.compile(transformers=[...])` 而非运行时动态添加
 
@@ -690,12 +690,12 @@ class AsyncSubgraphRunStream:
 
 ---
 
-## 7. 与 Loom stream-event 结构对比
+## 7. 与 anureo stream-event 结构对比
 
 ### 7.1 目录结构对比
 
 ```
-LangGraph (Python)                        Loom (Rust)
+LangGraph (Python)                        anureo (Rust)
 ─────────────────                         ───────────
 langgraph/                                stream-event/
 ├── types.py              (类型中心)      ├── stream_event.rs    (StreamEvent<S>)
@@ -720,12 +720,12 @@ langgraph/                                stream-event/
 
 ### 7.2 职责分布对比
 
-| 职责 | LangGraph | Loom | 差异 |
+| 职责 | LangGraph | anureo | 差异 |
 |------|-----------|------|------|
 | 类型定义 | `types.py` 单文件集中 | 分散在 4 个文件 | **LangGraph 更集中** |
-| 事件转换 | `_convert.py` (~30 行) | `convert.rs` (~1038 行) | **Loom 更臃肿** |
-| 中间件层 | `_mux.py` + `transformers.py` | 无 | **Loom 缺失** |
-| 消费端模型 | `run_stream.py` (多投影) | 无 (giant match) | **Loom 缺失** |
+| 事件转换 | `_convert.py` (~30 行) | `convert.rs` (~1038 行) | **anureo 更臃肿** |
+| 中间件层 | `_mux.py` + `transformers.py` | 无 | **anureo 缺失** |
+| 消费端模型 | `run_stream.py` (多投影) | 无 (giant match) | **anureo 缺失** |
 | 事件通道 | `stream_channel.py` (单消费者 queue) | `mpsc::Sender` | 不同设计 |
 | 私有实现 | `_internal/` 子包 | 无 (全部 public) | **LangGraph 更严格** |
 | Checkpoint | 独立包 `langgraph-checkpoint` | 内嵌在 `metadata.rs` | **LangGraph 可复用** |
@@ -739,7 +739,7 @@ StreamMode, StreamPart (8 个 TypedDict), ProtocolEvent,
 Command, Interrupt, StateSnapshot, GraphOutput, StreamWriter
 ```
 
-Loom 的类型分散在 5 个文件中：
+anureo 的类型分散在 5 个文件中：
 
 ```
 stream_event.rs   → StreamEvent<S> (22 变体)
@@ -764,7 +764,7 @@ def convert_to_protocol_event(part: StreamPart) -> ProtocolEvent:
     return {"type": "event", "method": part_dict["type"], "params": params}
 ```
 
-Loom 的 `convert.rs` 有 ~1038 行，因为需要：
+anureo 的 `convert.rs` 有 ~1038 行，因为需要：
 1. `StreamEvent<S>` → `ProtocolEvent` (泛型擦除 + 字段重命名, ~190 行 match)
 2. `StreamEvent<S>` → Format A JSON (Debug 格式化 + 序列化, ~137 行 match)
 3. `ProtocolEventEnvelope` 类型定义
@@ -772,7 +772,7 @@ Loom 的 `convert.rs` 有 ~1038 行，因为需要：
 
 ### 7.5 结构化建议
 
-基于 LangGraph 的结构，Loom stream-event 可考虑：
+基于 LangGraph 的结构，anureo stream-event 可考虑：
 
 | 改进方向 | 当前 | 参考 LangGraph | 优先级 |
 |---------|------|---------------|--------|

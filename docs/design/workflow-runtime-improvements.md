@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Make Loom workflows predictable for long-running, multi-agent tasks. A workflow
+Make anureo workflows predictable for long-running, multi-agent tasks. A workflow
 must validate invalid plans before spending tokens, emit a complete terminal
 event sequence, preserve enough state to resume safely, and make failures
 actionable without manually inspecting JSONL event logs.

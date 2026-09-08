@@ -1,4 +1,4 @@
-# Loom Telegram Bot
+# anureo Telegram Bot
 
 多 Bot 管理框架，单进程运行多个 AI 对话机器人。
 

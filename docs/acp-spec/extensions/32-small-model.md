@@ -1,6 +1,6 @@
 # Small Model（轻量 AI 生成服务）
 
-> 命名空间: `_loomdesk.dev/small-model/*`
+> 命名空间: `_anureo.dev/small-model/*`
 > Capability key: `small-model`
 
 ## Capability
@@ -20,7 +20,7 @@
 
 ### 与标准 Session 的区别
 
-| 维度 | 标准 `session/prompt` | `_loomdesk.dev/small-model/generate` |
+| 维度 | 标准 `session/prompt` | `_anureo.dev/small-model/generate` |
 |---|---|---|
 | Agent turn | 是 | **否** |
 | `session/update` | 产生 | **不产生** |
@@ -48,7 +48,7 @@ small-model/generate request
 
 ## Methods
 
-### `_loomdesk.dev/small-model/describe`
+### `_anureo.dev/small-model/describe`
 
 | 项目 | 内容 |
 |---|---|
@@ -124,7 +124,7 @@ pub struct SmallModelDescribeResponse {
 
 ---
 
-### `_loomdesk.dev/small-model/generate`
+### `_anureo.dev/small-model/generate`
 
 | 项目 | 内容 |
 |---|---|

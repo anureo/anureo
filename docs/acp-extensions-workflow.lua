@@ -1,5 +1,5 @@
 -- ============================================================
--- Loom ACP Extension Full Implementation Workflow
+-- anureo ACP Extension Full Implementation Workflow
 -- ============================================================
 -- Per-domain pipeline (8 stages):
 --   1. Architecture design
@@ -74,7 +74,7 @@ local DOMAINS = {
   { wave = 2, name = "notification", spec = "18-notification.md", module = "notification",
     methods = "register, unregister, list, update, mark_read, mark_all_read, changed", ref = "" },
   { wave = 2, name = "skills", spec = "20-skills.md", module = "skills",
-    methods = "list, get, install, uninstall, enable, disable, changed", ref = "Loom skill system" },
+    methods = "list, get, install, uninstall, enable, disable, changed", ref = "anureo skill system" },
   { wave = 2, name = "session-folder", spec = "21-session-folder.md", module = "session_folder",
     methods = "list, get, create, update, delete, move, changed", ref = "apps/acp/src/session_repository.rs" },
   { wave = 2, name = "snippet", spec = "22-snippet-command.md", module = "snippet",
@@ -94,7 +94,7 @@ local DOMAINS = {
   { wave = 2, name = "tunnel", spec = "28-tunnel.md", module = "tunnel",
     methods = "list, get, create, close, status, changed", ref = "" },
   { wave = 2, name = "multi-run", spec = "29-multi-run.md", module = "multi_run",
-    methods = "create, cancel, status, list, get, changed, progress", ref = "Loom workflow system (luft)" },
+    methods = "create, cancel, status, list, get, changed, progress", ref = "anureo workflow system (luft)" },
   { wave = 2, name = "settings", spec = "30-settings.md", module = "settings",
     methods = "load, save, get, set, reset, changed", ref = "apps/acp/src/session_config_store.rs" },
   { wave = 2, name = "session-assist", spec = "31-session-assist.md", module = "session_assist",
@@ -270,7 +270,7 @@ local TEST_REVIEW_SCHEMA = {
 -- ============================================================
 
 local QUICK_FIX_PROMPT = [[
-You are fixing two small issues in the Loom ACP backend (Rust).
+You are fixing two small issues in the anureo ACP backend (Rust).
 
 ## Task 1: Fix fork capability advertisement
 
@@ -280,7 +280,7 @@ In `apps/acp/src/agent.rs` around line 436, `SessionCapabilities` does not inclu
 
 In `apps/server/src/handlers/acp.rs`, add structured tracing logs at auth failure and connection lifecycle points.
 
-## Verify: `cargo check -p loom-acp && cargo check -p loom-server`
+## Verify: `cargo check -p anureo-acp && cargo check -p anureo-server`
 Do NOT add comments. Follow existing code style.
 ]]
 
@@ -295,7 +295,7 @@ local function make_module_list()
 end
 
 local FRAMEWORK_PROMPT = string.format(
-[[You are building the `_loomdesk.dev/*` extension framework for the Loom ACP backend.
+[[You are building the `_anureo.dev/*` extension framework for the anureo ACP backend.
 
 ## Spec references (READ FIRST)
 - `docs/acp-spec/08-cross-cutting-patterns.md` — §1 pagination, §2 auth, §3 progress, §4 capability, §8 error codes, §9 framework design
@@ -310,9 +310,9 @@ local FRAMEWORK_PROMPT = string.format(
 
 ## Dispatch integration
 
-Intercept messages whose `method` starts with `_loomdesk.dev/` BEFORE standard dispatch. Create a `Lines` wrapper that:
+Intercept messages whose `method` starts with `_anureo.dev/` BEFORE standard dispatch. Create a `Lines` wrapper that:
 1. Reads each JSON-RPC line, parses `method`
-2. If `_loomdesk.dev/*`: route to `ExtensionRegistry::dispatch()`
+2. If `_anureo.dev/*`: route to `ExtensionRegistry::dispatch()`
 3. Otherwise: pass through to `Agent.builder()` dispatch
 
 Read `agent_client_protocol` crate 0.15.1 source (`~/.cargo/registry/src/`) to understand `Lines` trait.
@@ -324,7 +324,7 @@ apps/acp/src/extensions/
 ├── mod.rs          ExtensionRegistry, ExtensionHandler trait, ExtensionContext, ExtensionError, dispatch()
 ├── capability.rs   CapabilityManager — snapshot + capability_changed
 ├── pagination.rs   PaginationParams, PaginatedResult, cursor encode/decode
-├── progress.rs     ProgressReporter — loomdesk_progress via session/update
+├── progress.rs     ProgressReporter — anureo_progress via session/update
 ├── auth.rs         three-layer gate: capability → policy → confirm
 └── boundary.rs     directory/worktree boundary validation
 ```
@@ -360,7 +360,7 @@ pub struct ExtensionError { pub code: i32, pub message: String, pub data: Option
 ## Error codes (§8): -32601 method_not_found, -32602 invalid_params, -32001 capability_not_supported, -32002 forbidden, -32003 not_found, -32004 timeout, -32005 conflict, -32006 partial_failure, -32007 directory_boundary_violation
 
 ## DO NOT implement domain handlers — framework + stubs only.
-## Verify: `cargo check -p loom-acp` must pass.
+## Verify: `cargo check -p anureo-acp` must pass.
 ]], make_module_list())
 
 -- ============================================================
@@ -429,7 +429,7 @@ Check the design against ALL of the following. For each issue found, be specific
 
 1. **Spec compliance**: Does the design cover EVERY method in the spec? Are param/result field names correct? Are error codes matching §8?
 
-2. **Framework alignment**: Does the struct correctly implement ExtensionHandler? Does the dispatch routing match `_loomdesk.dev/%s/<method>`? Is the capability JSON shape correct?
+2. **Framework alignment**: Does the struct correctly implement ExtensionHandler? Does the dispatch routing match `_anureo.dev/%s/<method>`? Is the capability JSON shape correct?
 
 3. **Edge cases**: Missing pagination on list methods? Missing boundary checks on filesystem operations? Missing session_id context? What about empty results vs fetch failures?
 
@@ -724,12 +724,12 @@ local COMPILE_GATE_PROMPT = [[
 You are a compile gate. Compile-check the framework + Wave 1 domains and fix any issues.
 
 ```bash
-cargo check -p loom-acp
+cargo check -p anureo-acp
 ```
 
 Fix ALL errors. You may modify framework files and Wave 1 domain files. Do NOT remove module declarations from mod.rs.
 
-After fixing: `cargo check -p loom-acp` must pass. Report what you fixed.
+After fixing: `cargo check -p anureo-acp` must pass. Report what you fixed.
 ]]
 
 local REGISTER_PROMPT = [[
@@ -741,21 +741,21 @@ Wire all extension domain handlers into ExtensionRegistry.
 4. Call it during AcpRuntime construction in `apps/acp/src/runtime.rs`.
 5. Update `agent.rs` initialize() to pull capabilities from registry.
 
-```cargo check -p loom-acp && cargo check -p loom-server```
+```cargo check -p anureo-acp && cargo check -p anureo-server```
 ]]
 
 local RELAY_PROMPT = [[
 Add `/acp` to the Relay WebSocket allowlist in `apps/server/src/`. Search for "relay", "allowlist", "tunnel".
-Read `docs/acp-spec/07-transport.md`. `cargo check -p loom-server`
+Read `docs/acp-spec/07-transport.md`. `cargo check -p anureo-server`
 ]]
 
 local VERIFY_PROMPT = [[
 Final verification.
 
-1. `cargo check -p loom-acp && cargo check -p loom-server && cargo clippy -p loom-acp -- -D warnings`
-2. `cargo test -p loom-acp -- extensions && cargo test -p loom-acp`
-3. Verify initialize() has `.fork(...)` and `_meta["loomdesk.dev"]` lists all domains
-4. Verify `_loomdesk.dev/*` routes to ExtensionRegistry in stdio_loop.rs
+1. `cargo check -p anureo-acp && cargo check -p anureo-server && cargo clippy -p anureo-acp -- -D warnings`
+2. `cargo test -p anureo-acp -- extensions && cargo test -p anureo-acp`
+3. Verify initialize() has `.fork(...)` and `_meta["anureo.dev"]` lists all domains
+4. Verify `_anureo.dev/*` routes to ExtensionRegistry in stdio_loop.rs
 5. Verify register.rs cross-checks against files in extensions/
 6. Fix any issues. Report findings.
 ]]

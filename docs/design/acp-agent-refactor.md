@@ -1,14 +1,14 @@
-# LoomAcpAgent 拆分设计
+# anureoAcpAgent 拆分设计
 
 > **状态**：✅ 已实施。单 `GLOBAL_BRIDGE` 已删除，替换为 per-session bridge registry。
 
 ## 问题
 
-`LoomAcpAgent` 目前是一个 monolithic struct，混合了两类生命周期截然不同的状态：
+`anureoAcpAgent` 目前是一个 monolithic struct，混合了两类生命周期截然不同的状态：
 
 ```rust
 // apps/acp/src/agent.rs:102
-pub struct LoomAcpAgent {
+pub struct anureoAcpAgent {
     // ── 连接无关（session 级，持久） ──
     pub(crate) sessions: SessionStore,          // thread ID, cwd, history, checkpoint
     pub(crate) agent_registry: AgentRegistry,   // agent profiles, modes
@@ -292,7 +292,7 @@ prompt 执行中
 
 ## stdio 模式的兼容
 
-`loom acp` stdio 入口也使用 `run_agent_connection`。拆分后：
+`anureo acp` stdio 入口也使用 `run_agent_connection`。拆分后：
 
 - stdio 连接创建一个 `AcpConnection`，`bridge` 字段设为 `AcpClientBridge`（底层 `ConnectionTo<Client>` 来自 stdin/stdout）
 - `active` 标记在 stdin EOF 时由 shutdown signal 触发 `deactivate()`
@@ -351,7 +351,7 @@ let conn_shared: Arc<RwLock<Option<Arc<AcpConnection>>>> = Arc::new(RwLock::new(
 - 新增 `SessionStore::set_connection(session_id, conn)` 方法，写入 `entry.connection`
 - `begin_prompt` 可选检查 session 是否有活跃连接
 
-### Step 3：`LoomAcpAgent` 拆分
+### Step 3：`anureoAcpAgent` 拆分
 
 - 提取 `SessionCore`（sessions, agent_registry, config_store, model_provider）
 - ACP handler 方法从 `&self` 变为 `&SessionCore`
@@ -374,7 +374,7 @@ let conn_shared: Arc<RwLock<Option<Arc<AcpConnection>>>> = Arc::new(RwLock::new(
 
 ### Step 6：`AcpHub` 改造
 
-- `AcpHub` 持有 `Arc<SessionCore>` 而非 `Arc<LoomAcpAgent>`
+- `AcpHub` 持有 `Arc<SessionCore>` 而非 `Arc<anureoAcpAgent>`
 - `attach_with` 创建新的 `AcpConnection`
 - WS 断开时调用 `conn.deactivate()`
 - 重连时替换 `SessionEntry.connection`
@@ -410,5 +410,5 @@ let conn_shared: Arc<RwLock<Option<Arc<AcpConnection>>>> = Arc::new(RwLock::new(
 
 **未完成**（后续可选）：
 
-- `LoomAcpAgent` 拆为 `SessionCore` + `AcpConnection`（当前 bridge registry 已实现隔离）
-- `AcpHub` 持有 `Arc<SessionCore>` 而非 `Arc<LoomAcpAgent>`（当前 `AcpHub` 持有 agent 已足够）
+- `anureoAcpAgent` 拆为 `SessionCore` + `AcpConnection`（当前 bridge registry 已实现隔离）
+- `AcpHub` 持有 `Arc<SessionCore>` 而非 `Arc<anureoAcpAgent>`（当前 `AcpHub` 持有 agent 已足够）

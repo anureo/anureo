@@ -1,11 +1,11 @@
-# Loom Browser Extension
+# anureo Browser Extension
 
-Browser automation for Loom Agent via MCP. Control any Chromium browser (Chrome, Edge, Brave) with screenshots, clicks, typing, and more.
+Browser automation for anureo Agent via MCP. Control any Chromium browser (Chrome, Edge, Brave) with screenshots, clicks, typing, and more.
 
 ## Architecture
 
 ```
-Loom Agent ←stdio MCP→ mcp-server.js ←TCP 18765→ native-host.js ←Native Messaging→ Chrome Extension
+anureo Agent ←stdio MCP→ mcp-server.js ←TCP 18765→ native-host.js ←Native Messaging→ Chrome Extension
 ```
 
 - `extension/` — Chrome MV3 extension (background.js + content.js)
@@ -39,7 +39,7 @@ Close **all** browser windows and reopen. The extension needs a fresh start to c
 
 ### 4. Verify
 
-When Loom Agent starts in a project with `.loom/mcp.json`, it auto-connects. Look for the "MCP" tab group appearing in your browser.
+When anureo Agent starts in a project with `.anureo/mcp.json`, it auto-connects. Look for the "MCP" tab group appearing in your browser.
 
 ## Available MCP Tools
 
@@ -62,7 +62,7 @@ When Loom Agent starts in a project with `.loom/mcp.json`, it auto-connects. Loo
 
 ## Quick Example
 
-Ask Loom Agent:
+Ask anureo Agent:
 > "Open reddit.com in the browser and take a screenshot"
 
 The agent will:
@@ -73,4 +73,4 @@ The agent will:
 
 ## Credits
 
-Based on [open-claude-in-chrome](https://github.com/noemica-io/open-claude-in-chrome) by noemica.io, adapted for Loom Agent.
+Based on [open-claude-in-chrome](https://github.com/noemica-io/open-claude-in-chrome) by noemica.io, adapted for anureo Agent.

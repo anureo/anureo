@@ -50,8 +50,8 @@ A workflow is a Lua script that orchestrates one or more agents. Unlike a single
 └───────────┬───────────────────┬──────────────────┘
             │                   │
 ┌───────────▼───────────┐ ┌─────▼──────────────────┐
-│   LoomAgentBackend     │ │   On-disk Instance     │
-│  - AgentConfig setup   │ │  .loom/instances/<id>/ │
+│   anureoAgentBackend     │ │   On-disk Instance     │
+│  - AgentConfig setup   │ │  .anureo/instances/<id>/ │
 │  - Schema injection    │ │   ├── instance.json    │
 │  - Tool filtering      │ │   ├── checkpoint.json  │
 │  - Token tracking      │ │   ├── events.jsonl     │
@@ -60,7 +60,7 @@ A workflow is a Lua script that orchestrates one or more agents. Unlike a single
                           └─────────────────────────┘
 ```
 
-The **Luft engine** executes Lua scripts and provides the DSL. The **LoomAgentBackend** bridges Luft's `AgentBackend` trait to Loom's agent execution. The **WorkflowRuntime** manages instance paths, cancellation, and finalization.
+The **Luft engine** executes Lua scripts and provides the DSL. The **anureoAgentBackend** bridges Luft's `AgentBackend` trait to anureo's agent execution. The **WorkflowRuntime** manages instance paths, cancellation, and finalization.
 
 ---
 
@@ -196,7 +196,7 @@ Hint resource limits for the current phase. Soft limits — the engine may excee
 Calls another saved `.lua` workflow as a sub-step. Use to compose larger workflows from smaller ones.
 
 ```lua
-local audit = workflow(".loom/workflows/goal-audit.lua", {
+local audit = workflow(".anureo/workflows/goal-audit.lua", {
   objective = ctx.objective,
   coding_output = coding_result.output,
   history = ctx.history,
@@ -228,13 +228,13 @@ local decoded = json.decode(encoded)
 `workflow_start` accepts three mutually exclusive modes:
 
 - **`script`**: inline Lua source
-- **`workflow`**: path to a `.lua` file under `.loom/workflows/`
+- **`workflow`**: path to a `.lua` file under `.anureo/workflows/`
 - **`resume_from_id`**: instance identifier to resume a prior run
 
 ```lua
 -- From file
 workflow_start({
-  workflow = ".loom/workflows/audit.lua",
+  workflow = ".anureo/workflows/audit.lua",
   args = { target = "src/auth.rs" },
 })
 
@@ -247,8 +247,8 @@ workflow_start({
 The engine:
 1. Resolves the workflow source (file or inline)
 2. Injects `args` as a Lua global
-3. Creates an instance directory under `.loom/instances/<id>/`
-4. Builds a Luft engine with the `LoomAgentBackend`
+3. Creates an instance directory under `.anureo/instances/<id>/`
+4. Builds a Luft engine with the `anureoAgentBackend`
 5. Returns `{ instance_dir, status: "running" }` immediately
 6. Spawns a background task for finalization
 
@@ -296,7 +296,7 @@ When the workflow reaches a terminal state (completed / failed / cancelled), the
 ### 4.1 Directory Structure
 
 ```
-.loom/instances/<instance-dir>/
+.anureo/instances/<instance-dir>/
 ├── instance.json       # Final summary (after terminal state)
 ├── checkpoint.json     # Runtime state (checkpoint during execution)
 ├── events.jsonl        # Event stream (one JSON object per line)
@@ -440,7 +440,7 @@ end
 
 ### 5.4 Pattern 4: Iterative Goal Loop
 
-For goal-driven tasks that need multiple iterations of coding + audit + steering. See `.loom/workflows/goal-run.lua` for the full implementation.
+For goal-driven tasks that need multiple iterations of coding + audit + steering. See `.anureo/workflows/goal-run.lua` for the full implementation.
 
 ```lua
 function main()
@@ -611,7 +611,7 @@ Returns: `{ instance_dir, workflow_source, truncated }`
 
 ### 7.7 `workflow_files`
 
-No arguments. Returns list of available `.lua` workflow files under `.loom/workflows/`.
+No arguments. Returns list of available `.lua` workflow files under `.anureo/workflows/`.
 
 ---
 
@@ -837,7 +837,7 @@ end
 
 ### Example D: Goal System (Iterative Loop)
 
-See `.loom/workflows/goal-run.lua` for the full 367-line implementation. The key pattern is:
+See `.anureo/workflows/goal-run.lua` for the full 367-line implementation. The key pattern is:
 
 ```lua
 function main()
@@ -878,4 +878,4 @@ end
 
 - `docs/guides/workflows.md` — User guide for starting and observing workflows
 - `docs/design/workflow-runtime-improvements.md` — Design decisions on checkpoint, resume, and event closure
-- `docs/design/goal-system-workflow.md` — Goal system design using workflow orchestration
+- `docs/goal/goal-system-workflow.md` — Goal system design using workflow orchestration

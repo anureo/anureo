@@ -9,12 +9,12 @@
 
 ## 概述
 
-Reverse-RPC 是 Agent 向 Client 发起的请求。在 Loom 的 prompt 执行过程中，Agent 可能需要：
+Reverse-RPC 是 Agent 向 Client 发起的请求。在 anureo 的 prompt 执行过程中，Agent 可能需要：
 - 请求用户授权（permission）
 - 读写文件（filesystem）
 - 执行终端命令（terminal）
 
-这些操作由 Client（LoomDesk）执行，Agent 通过 JSON-RPC request 等待结果。
+这些操作由 Client（Anureo）执行，Agent 通过 JSON-RPC request 等待结果。
 
 ### 能力检查
 

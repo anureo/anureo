@@ -1,8 +1,8 @@
-# Loom Java JNI Framework 与 Maven 发布方案
+# anureo Java JNI Framework 与 Maven 发布方案
 
 > **状态**: 提案
 > **日期**: 2026-08-21
-> **范围**: 为 Loom 增加可嵌入 JVM 的 Java SDK、JNI runtime 与 Maven 发布链路
+> **范围**: 为 anureo 增加可嵌入 JVM 的 Java SDK、JNI runtime 与 Maven 发布链路
 > **相关代码**: `agent/agent-core/src/run/runner.rs`、`apps/cli`、`apps/server`、`apps/acp`
 > **交叉参考**: [Tauri 桌面应用集成方案](../tauri-integration.md)、[开发环境](../../dev/dev-environment.md)
 
@@ -10,21 +10,21 @@
 
 ## 1. 背景与目标
 
-Loom 目前以 CLI、HTTP server 和 ACP agent 的形式提供能力。Java 生态中的调用方若要使用 Loom，只能管理外部进程或自行对接 HTTP/ACP；无法把 agent runtime 作为 Maven dependency 嵌入自身 JVM。
+anureo 目前以 CLI、HTTP server 和 ACP agent 的形式提供能力。Java 生态中的调用方若要使用 anureo，只能管理外部进程或自行对接 HTTP/ACP；无法把 agent runtime 作为 Maven dependency 嵌入自身 JVM。
 
-本方案增加一套 Java framework，使调用方可通过 Maven 引入 Loom，并在进程内调用 Rust runtime：
+本方案增加一套 Java framework，使调用方可通过 Maven 引入 anureo，并在进程内调用 Rust runtime：
 
 ```xml
 <dependency>
-  <groupId>dev.loom</groupId>
-  <artifactId>loom-java-api</artifactId>
+  <groupId>dev.anureo</groupId>
+  <artifactId>anureo-java-api</artifactId>
   <version>0.5.0</version>
 </dependency>
 ```
 
 目标：
 
-1. 为 Java 17+ 提供稳定、异步、可取消的 Loom agent API。
+1. 为 Java 17+ 提供稳定、异步、可取消的 anureo agent API。
 2. 将 Rust runtime 作为按平台发布的 native library 自动加载。
 3. 复用现有 agent/tool/skill/config/llm 能力，而不将 CLI、Server 或 ACP 的应用层行为带入嵌入式模式。
 4. 建立 Maven Local、Nexus Central 等仓库的可重复发布流程。
@@ -45,7 +45,7 @@ Loom 目前以 CLI、HTTP server 和 ACP agent 的形式提供能力。Java 生�
 |---|---|---|
 | Java baseline | Java 17 | 使用 records、sealed types 与 `AutoCloseable`，兼顾 LTS 覆盖率 |
 | native bridge | JNI | 由 Rust `jni` crate 导出最小方法集合 |
-| Rust 稳定层 | 新增 `loom-sdk-core` | 隔离 Java SDK 与 `agent-core` 内部实现 |
+| Rust 稳定层 | 新增 `anureo-sdk-core` | 隔离 Java SDK 与 `agent-core` 内部实现 |
 | 事件传输 | JSON envelope | JNI 只传字符串，Java 层转换为强类型 event |
 | 并发模型 | 进程级单例 Tokio runtime | 禁止每个调用创建 runtime 或嵌套 `block_on` |
 | native 分发 | 一个 natives JAR 内嵌支持平台库 | 一行 Maven dependency；首版优先可靠性 |
@@ -58,18 +58,18 @@ Loom 目前以 CLI、HTTP server 和 ACP agent 的形式提供能力。Java 生�
 Java application
   │ Maven dependency
   ▼
-loom-java-api.jar
-  ├─ LoomClient / LoomRequest / LoomRun / LoomEvent
+anureo-java-api.jar
+  ├─ anureoClient / anureoRequest / anureoRun / anureoEvent
   ├─ CompletableFuture、事件回调、取消与异常模型
   └─ NativeLoader：选择、验证、解压、加载动态库
   │ JNI
   ▼
-loom_jni.dll / libloom_jni.so / libloom_jni.dylib
+anureo_jni.dll / libanureo_jni.so / libanureo_jni.dylib
   ├─ JVM 边界、句柄表、callback 线程附着
   └─ 进程内 Tokio runtime
   │
   ▼
-loom-sdk-core
+anureo-sdk-core
   ├─ 稳定请求/结果/事件/错误 façade
   └─ 基于 agent::run::run_agent_from_config 执行
   │
@@ -80,24 +80,24 @@ agent / tool / skill / config / llm / checkpoint
 新增目录结构：
 
 ```text
-foundation/loom-sdk-core/          # Rust 语言无关 embedding façade
+foundation/anureo-sdk-core/          # Rust 语言无关 embedding façade
 apps/jni/                          # cdylib 与 JNI 边界
 java/
-├── loom-java-api/                 # Java 公共 API 与 NativeLoader
-├── loom-java-natives/             # 动态库资源与打包规则
-├── loom-java-bom/                 # 可选的版本约束 BOM
+├── anureo-java-api/                 # Java 公共 API 与 NativeLoader
+├── anureo-java-natives/             # 动态库资源与打包规则
+├── anureo-java-bom/                 # 可选的版本约束 BOM
 ├── build.gradle.kts
 └── settings.gradle.kts
 ```
 
-`loom-sdk-core` 与 `apps/jni` 均加入根 `Cargo.toml` workspace；`loom-sdk-core` 不得依赖 `apps/cli`、`apps/server` 或 `apps/acp`。
+`anureo-sdk-core` 与 `apps/jni` 均加入根 `Cargo.toml` workspace；`anureo-sdk-core` 不得依赖 `apps/cli`、`apps/server` 或 `apps/acp`。
 
 ## 4. Rust Embedding API
 
-`foundation/loom-sdk-core` 负责把易变的内部运行模型收敛为稳定接口：
+`foundation/anureo-sdk-core` 负责把易变的内部运行模型收敛为稳定接口：
 
 ```rust
-pub struct LoomRequest {
+pub struct anureoRequest {
     pub message: String,
     pub working_directory: PathBuf,
     pub model: Option<String>,
@@ -108,7 +108,7 @@ pub struct LoomRequest {
     pub session_id: Option<String>,
 }
 
-pub enum LoomEvent {
+pub enum anureoEvent {
     RunStarted { run_id: String },
     TextDelta { text: String },
     ToolCallStarted { name: String, arguments: Value },
@@ -116,27 +116,27 @@ pub enum LoomEvent {
     Warning { code: String, message: String },
     Completed { reply: String, reasoning: Option<String> },
     Cancelled,
-    Failed { code: LoomErrorCode, message: String },
+    Failed { code: anureoErrorCode, message: String },
 }
 
-pub struct LoomEngine;
+pub struct anureoEngine;
 
-impl LoomEngine {
-    pub fn new(config: LoomEngineConfig) -> Result<Self, LoomError>;
+impl anureoEngine {
+    pub fn new(config: anureoEngineConfig) -> Result<Self, anureoError>;
 
     pub async fn run(
         &self,
-        request: LoomRequest,
+        request: anureoRequest,
         cancellation: CancellationToken,
-        on_event: impl FnMut(LoomEvent) + Send + 'static,
-    ) -> Result<LoomResult, LoomError>;
+        on_event: impl FnMut(anureoEvent) + Send + 'static,
+    ) -> Result<anureoResult, anureoError>;
 }
 ```
 
 该 crate 的实现职责：
 
 1. 把 SDK 请求转换为现有 `ReactBuildConfig`、`RunCmd` 和 `RunParams`。
-2. 将 `TypedAnyStreamEvent` 转换成稳定的 `LoomEvent`。
+2. 将 `TypedAnyStreamEvent` 转换成稳定的 `anureoEvent`。
 3. 将 `CancellationToken` 接到既有 `RunCancellation`。
 4. 归一化 build、run、config、LLM/network 等错误，避免 Rust 错误字符串成为 Java API。
 5. 第一版仅提供 React；DUP、ToT、GoT 不进入默认公开 API。
@@ -146,10 +146,10 @@ impl LoomEngine {
 Java 不保存 Rust 指针。native 层以不透明 `long` handle 管理所有对象：
 
 ```text
-Java LoomClient       ↔ clientHandle: long
-Java LoomRun          ↔ runHandle: long
+Java anureoClient       ↔ clientHandle: long
+Java anureoRun          ↔ runHandle: long
 Java listener         ↔ JNI GlobalRef
-Rust ClientRegistry   ↔ handle → Arc<LoomEngine>
+Rust ClientRegistry   ↔ handle → Arc<anureoEngine>
 Rust RunRegistry      ↔ handle → CancellationToken / task state
 ```
 
@@ -159,7 +159,7 @@ Rust RunRegistry      ↔ handle → CancellationToken / task state
 final class NativeBindings {
   static native long createClient(String configJson);
   static native long startRun(long clientHandle, String requestJson,
-                              LoomEventListener listener);
+                              anureoEventListener listener);
   static native String awaitRun(long runHandle);
   static native void cancelRun(long runHandle);
   static native void closeRun(long runHandle);
@@ -168,7 +168,7 @@ final class NativeBindings {
 }
 ```
 
-JNI 方法是 Rust `cdylib` 的唯一公开 ABI。每个导出函数须在 FFI 边界使用 `catch_unwind`，将 panic 转换为 Java `LoomNativeException`；任何 Rust panic、Java exception 或错误对象均不得跨越 JNI 边界。
+JNI 方法是 Rust `cdylib` 的唯一公开 ABI。每个导出函数须在 FFI 边界使用 `catch_unwind`，将 panic 转换为 Java `anureoNativeException`；任何 Rust panic、Java exception 或错误对象均不得跨越 JNI 边界。
 
 ### 5.1 线程与 callback
 
@@ -186,47 +186,47 @@ Rust worker 向 Java listener 发送事件时：
 
 ### 5.2 取消与资源回收
 
-`LoomRun.cancel()` 调用 native `cancelRun`，触发协作式 `CancellationToken`：等待模型请求和工具执行抵达可中断点。它不是 hard kill，Java 文档必须说明外部进程/网络调用不会保证立即结束。
+`anureoRun.cancel()` 调用 native `cancelRun`，触发协作式 `CancellationToken`：等待模型请求和工具执行抵达可中断点。它不是 hard kill，Java 文档必须说明外部进程/网络调用不会保证立即结束。
 
-`LoomClient`、`LoomRun` 均实现 `AutoCloseable`，使用者通过 `try-with-resources` 关闭。可使用 `Cleaner` 做泄漏兜底，但不得依赖 finalizer/Cleaner 作为确定性的资源释放机制。
+`anureoClient`、`anureoRun` 均实现 `AutoCloseable`，使用者通过 `try-with-resources` 关闭。可使用 `Cleaner` 做泄漏兜底，但不得依赖 finalizer/Cleaner 作为确定性的资源释放机制。
 
 ## 6. Java API
 
 Java 公开模块：
 
 ```text
-dev.loom.api
-├── LoomClient / LoomClientBuilder
-├── LoomRequest / LoomRun / LoomResult
-├── LoomEvent / LoomEventListener
+dev.anureo.api
+├── anureoClient / anureoClientBuilder
+├── anureoRequest / anureoRun / anureoResult
+├── anureoEvent / anureoEventListener
 ├── ToolPolicy
-├── LoomException
-├── LoomConfigurationException
-├── LoomNativeLoadException
-└── LoomCancelledException
+├── anureoException
+├── anureoConfigurationException
+├── anureoNativeLoadException
+└── anureoCancelledException
 ```
 
 示例：
 
 ```java
-try (LoomClient loom = LoomClient.builder()
+try (anureoClient anureo = anureoClient.builder()
     .apiKey(System.getenv("OPENAI_API_KEY"))
     .baseUrl(System.getenv("OPENAI_BASE_URL"))
     .workingDirectory(Path.of("C:/work/demo"))
     .model("gpt-5.2")
     .build()) {
 
-  LoomRun run = loom.run(
-      LoomRequest.of("分析这个项目并给出重构建议"),
+  anureoRun run = anureo.run(
+      anureoRequest.of("分析这个项目并给出重构建议"),
       event -> System.out.println(event.type() + ": " + event.data())
   );
 
-  LoomResult result = run.await();
+  anureoResult result = run.await();
   System.out.println(result.reply());
 }
 ```
 
-异步入口提供 `CompletableFuture<LoomResult>`。事件跨 JNI 时使用版本化 JSON 信封，Java 层再转为 sealed event 类型：
+异步入口提供 `CompletableFuture<anureoResult>`。事件跨 JNI 时使用版本化 JSON 信封，Java 层再转为 sealed event 类型：
 
 ```json
 {
@@ -245,15 +245,15 @@ try (LoomClient loom = LoomClient.builder()
 配置优先级：
 
 ```text
-LoomClientBuilder 显式参数
-  > Java system properties（loom.*）
+anureoClientBuilder 显式参数
+  > Java system properties（anureo.*）
   > 环境变量（OPENAI_API_KEY / OPENAI_BASE_URL）
-  > 项目 Loom 配置
+  > 项目 anureo 配置
 ```
 
-推荐公开 `loom.apiKey`、`loom.baseUrl`、`loom.model`、`loom.home`、`loom.log.level`。API key 仅短暂复制到 native 层，错误、事件和 tracing 中必须脱敏。
+推荐公开 `anureo.apiKey`、`anureo.baseUrl`、`anureo.model`、`anureo.home`、`anureo.log.level`。API key 仅短暂复制到 native 层，错误、事件和 tracing 中必须脱敏。
 
-SDK 默认 state home 与 CLI/Server 开发 home 隔离：Windows 为 `%LOCALAPPDATA%\\Loom`，macOS 为 `~/Library/Application Support/Loom`，Linux 为 `~/.local/share/loom`。调用方可显式 `builder.home(...)`。
+SDK 默认 state home 与 CLI/Server 开发 home 隔离：Windows 为 `%LOCALAPPDATA%\\anureo`，macOS 为 `~/Library/Application Support/anureo`，Linux 为 `~/.local/share/anureo`。调用方可显式 `builder.home(...)`。
 
 嵌入式运行不能继承用户机器的全部 agent 权限：
 
@@ -271,24 +271,24 @@ SDK 默认 state home 与 CLI/Server 开发 home 隔离：Windows 为 `%LOCALAPP
 建议首发坐标：
 
 ```text
-dev.loom:loom-java-api:0.5.0
-dev.loom:loom-java-natives:0.5.0
-dev.loom:loom-java-bom:0.5.0
+dev.anureo:anureo-java-api:0.5.0
+dev.anureo:anureo-java-natives:0.5.0
+dev.anureo:anureo-java-bom:0.5.0
 ```
 
-`loom-java-natives` 中将各平台动态库作为 JAR resource：
+`anureo-java-natives` 中将各平台动态库作为 JAR resource：
 
 ```text
-META-INF/loom/natives/
-├── windows-x86_64/loom_jni.dll
-├── windows-aarch64/loom_jni.dll
-├── linux-x86_64/libloom_jni.so
-├── linux-aarch64/libloom_jni.so
-├── macos-aarch64/libloom_jni.dylib
-└── macos-x86_64/libloom_jni.dylib
+META-INF/anureo/natives/
+├── windows-x86_64/anureo_jni.dll
+├── windows-aarch64/anureo_jni.dll
+├── linux-x86_64/libanureo_jni.so
+├── linux-aarch64/libanureo_jni.so
+├── macos-aarch64/libanureo_jni.dylib
+└── macos-x86_64/libanureo_jni.dylib
 ```
 
-`NativeLoader` 根据 `os.name`、`os.arch` 选择文件，校验 SHA-256，解压至 `${java.io.tmpdir}/loom/<version>/<hash>/` 后以绝对路径调用 `System.load()`。Windows 使用 version/hash 子目录，以免 DLL 文件锁阻断升级。
+`NativeLoader` 根据 `os.name`、`os.arch` 选择文件，校验 SHA-256，解压至 `${java.io.tmpdir}/anureo/<version>/<hash>/` 后以绝对路径调用 `System.load()`。Windows 使用 version/hash 子目录，以免 DLL 文件锁阻断升级。
 
 Maven classifier 可用于分平台 artifact，但 Maven 在构建依赖图阶段无法可靠地按运行时平台自动选择 classifier。故第一版使用全平台 natives JAR，以保障一行 dependency 可用；native 包过大后，再为企业用户提供 classifier + Maven/Gradle OS detector 的可选发行方式。
 
@@ -329,7 +329,7 @@ OS × JDK JNI integration test
 Nexus Central staging 与 release
 ```
 
-优先在原生 GitHub Actions runner 上构建，而非只依赖交叉编译。Loom 所依赖的 SQLite、PTY、TLS 和系统能力可能具有 target-specific 行为，必须在产物运行平台验证。
+优先在原生 GitHub Actions runner 上构建，而非只依赖交叉编译。anureo 所依赖的 SQLite、PTY、TLS 和系统能力可能具有 target-specific 行为，必须在产物运行平台验证。
 
 ## 10. 实施计划
 
@@ -344,7 +344,7 @@ Nexus Central staging 与 release
 
 ### Phase 1：Rust Embedding Core
 
-1. 新增 `foundation/loom-sdk-core`。
+1. 新增 `foundation/anureo-sdk-core`。
 2. 包装 `run_agent_from_config`，完成请求、结果、事件和错误模型。
 3. 接通 `RunCancellation`。
 4. 默认 React agent，并添加 mock LLM 的纯 Rust 测试。
@@ -353,7 +353,7 @@ Nexus Central staging 与 release
 
 ### Phase 2：Java SDK MVP
 
-1. 完成 `LoomClient`、`LoomRun`、`LoomRequest` 和 event API。
+1. 完成 `anureoClient`、`anureoRun`、`anureoRequest` 和 event API。
 2. 实现异步结果、回调、取消与 `AutoCloseable`。
 3. 实现 native 解压、哈希、锁和版本校验。
 4. 首先发布 Windows x86_64。
@@ -385,11 +385,11 @@ Nexus Central staging 与 release
 | Windows DLL 锁定 | 按版本/hash 解压目录加载 |
 | CLI 与 SDK 数据冲突 | SDK 专用 home，调用方可显式配置 |
 | Shell/MCP 的安全风险 | 默认关闭，`ToolPolicy` 显式授权 |
-| 内部 Rust 重构破坏 Java | `loom-sdk-core` 作为唯一稳定适配层 |
+| 内部 Rust 重构破坏 Java | `anureo-sdk-core` 作为唯一稳定适配层 |
 | native JAR 体积增加 | 初期优先可靠性，后续可添加 classifier 发行 |
 
 ## 12. 向后兼容性
 
-Java public API 遵循 SemVer；JNI native 方法只增不改。事件 JSON 使用 `schemaVersion`，允许新增字段但不改变已有字段语义。Rust 内部 crate 无 Java 兼容性承诺，由 `loom-sdk-core` 隔离。
+Java public API 遵循 SemVer；JNI native 方法只增不改。事件 JSON 使用 `schemaVersion`，允许新增字段但不改变已有字段语义。Rust 内部 crate 无 Java 兼容性承诺，由 `anureo-sdk-core` 隔离。
 
-Java API、native bridge 与其依赖的 Loom runtime 使用相同发布版本。加载时 native 与 Java 版本不一致必须失败，而不是在未知 ABI 下继续执行。
+Java API、native bridge 与其依赖的 anureo runtime 使用相同发布版本。加载时 native 与 Java 版本不一致必须失败，而不是在未知 ABI 下继续执行。

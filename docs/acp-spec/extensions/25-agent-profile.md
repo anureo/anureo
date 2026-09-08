@@ -1,6 +1,6 @@
 # Agent Profile 管理
 
-> **命名空间**: `_loomdesk.dev/agent/*`
+> **命名空间**: `_anureo.dev/agent/*`
 > **Capability key**: `agent`
 > **实现状态**: ❌ 未实现
 
@@ -19,14 +19,14 @@
 }
 ```
 
-- Client 必须在 `initialize` 时声明 `agentCapabilities._meta["loomdesk.dev"].agent` 的 method 粒度。
+- Client 必须在 `initialize` 时声明 `agentCapabilities._meta["anureo.dev"].agent` 的 method 粒度。
 - **与 `session/set_mode` 的关系**: `session/set_mode` 负责运行时切换当前 session 的 agent mode（即时生效）；本扩展负责 agent profile 的持久化 CRUD（配置管理）。Profile 定义了可用的 agent mode、其系统 prompt、工具集、模型配置等。
 
 ---
 
 ## Methods
 
-### `_loomdesk.dev/agent/list`
+### `_anureo.dev/agent/list`
 
 | 项目 | 内容 |
 |---|---|
@@ -41,7 +41,7 @@
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "_loomdesk.dev/agent/list",
+  "method": "_anureo.dev/agent/list",
   "params": {
     "cursor": null,
     "limit": 50
@@ -193,7 +193,7 @@ pub struct AgentListResponse {
 
 ---
 
-### `_loomdesk.dev/agent/create`
+### `_anureo.dev/agent/create`
 
 | 项目 | 内容 |
 |---|---|
@@ -208,7 +208,7 @@ pub struct AgentListResponse {
 {
   "jsonrpc": "2.0",
   "id": 2,
-  "method": "_loomdesk.dev/agent/create",
+  "method": "_anureo.dev/agent/create",
   "params": {
     "clientRequestId": "req-agent-create-001",
     "name": "architect",
@@ -289,7 +289,7 @@ pub struct AgentCreateRequest {
 
 ---
 
-### `_loomdesk.dev/agent/update`
+### `_anureo.dev/agent/update`
 
 | 项目 | 内容 |
 |---|---|
@@ -303,7 +303,7 @@ pub struct AgentCreateRequest {
 {
   "jsonrpc": "2.0",
   "id": 3,
-  "method": "_loomdesk.dev/agent/update",
+  "method": "_anureo.dev/agent/update",
   "params": {
     "id": "agent_architect",
     "displayName": "Software Architect",
@@ -378,7 +378,7 @@ pub struct AgentUpdateRequest {
 
 ---
 
-### `_loomdesk.dev/agent/delete`
+### `_anureo.dev/agent/delete`
 
 | 项目 | 内容 |
 |---|---|
@@ -392,7 +392,7 @@ pub struct AgentUpdateRequest {
 {
   "jsonrpc": "2.0",
   "id": 4,
-  "method": "_loomdesk.dev/agent/delete",
+  "method": "_anureo.dev/agent/delete",
   "params": {
     "id": "agent_architect"
   }
@@ -446,12 +446,12 @@ pub struct AgentDeleteResponse {
 
 ## Notifications
 
-### `_loomdesk.dev/agent/changed`
+### `_anureo.dev/agent/changed`
 
 ```json
 {
   "jsonrpc": "2.0",
-  "method": "_loomdesk.dev/agent/changed",
+  "method": "_anureo.dev/agent/changed",
   "params": {
     "change": "created | updated | deleted",
     "id": "agent_architect"

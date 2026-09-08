@@ -1,13 +1,13 @@
 # Files
 
-> 命名空间: `_loomdesk.dev/files/*`
+> 命名空间: `_anureo.dev/files/*`
 > Capability key: `files`
 
 ## 设计原则
 
 - **标准 `fs/*` 负责 Agent 的文件读写**：ACP 标准 `fs/read_text_file` 和 `fs/write_text_file` 是 Agent → Client reverse-RPC，用于 Agent 运行时的文件操作。
-- **`_loomdesk.dev/files/*` 负责 LoomDesk 文件浏览器**：以下扩展方法为 UI 文件浏览器提供目录列表、搜索、metadata 等只读功能，以及有限的写操作。
-- **`_loomdesk.dev/files/read` 是明确禁止的 method**：文件读取必须使用标准 `fs/read_text_file`。如果 client 调用 `_loomdesk.dev/files/read`，server 返回 `method_not_found`。
+- **`_anureo.dev/files/*` 负责 Anureo 文件浏览器**：以下扩展方法为 UI 文件浏览器提供目录列表、搜索、metadata 等只读功能，以及有限的写操作。
+- **`_anureo.dev/files/read` 是明确禁止的 method**：Web UI 的 server-side 文本读取使用 `_anureo.dev/files/read_text_file`；标准 `fs/read_text_file` 仍只用于 Agent → Client reverse-RPC。
 - **目录/Worktree 边界强制执行**：所有操作必须限定在当前 directory/worktree 范围内。Server 从 authoritative runtime/worktree state 解析最终路径，不接受 client 传入的任意绝对路径。
 
 ## Capability
@@ -20,6 +20,7 @@
     "stat": true,
     "create_directory": true,
     "read_file_binary": true,
+    "read_text_file": true,
     "write_file": true,
     "delete": true,
     "rename": true,
@@ -116,7 +117,7 @@ pub struct ReadBinaryParams {
 
 ---
 
-### `_loomdesk.dev/files/list`
+### `_anureo.dev/files/list`
 
 | 项目 | 内容 |
 |---|---|
@@ -195,7 +196,7 @@ pub struct ReadBinaryParams {
 
 ---
 
-### `_loomdesk.dev/files/search`
+### `_anureo.dev/files/search`
 
 | 项目 | 内容 |
 |---|---|
@@ -256,7 +257,7 @@ pub struct ReadBinaryParams {
 
 ---
 
-### `_loomdesk.dev/files/stat`
+### `_anureo.dev/files/stat`
 
 | 项目 | 内容 |
 |---|---|
@@ -303,7 +304,7 @@ pub struct ReadBinaryParams {
 
 ---
 
-### `_loomdesk.dev/files/create_directory`
+### `_anureo.dev/files/create_directory`
 
 | 项目 | 内容 |
 |---|---|
@@ -350,7 +351,56 @@ pub struct ReadBinaryParams {
 
 ---
 
-### `_loomdesk.dev/files/read_file_binary`
+### `_anureo.dev/files/read_text_file`
+
+| 项目 | 内容 |
+|---|---|
+| 方向 | Client → Agent request |
+| 能力 | `files.read_text_file` |
+| 权限 | Server policy（只读） |
+
+**Request:**
+
+```json
+{ "path": "config/settings.json", "optional": false }
+```
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `path` | string | 相对当前 working directory 的路径 |
+| `optional` | boolean? | 为 `true` 时，不存在返回 `found=false`，不产生 error frame |
+
+**Response:**
+
+```json
+{
+  "path": "config/settings.json",
+  "content": "{\"enabled\":true}",
+  "encoding": "utf-8",
+  "size": 17,
+  "found": true
+}
+```
+
+可选文件不存在时：
+
+```json
+{
+  "path": "config/settings.json",
+  "content": "",
+  "encoding": "utf-8",
+  "size": 0,
+  "found": false
+}
+```
+
+- `path` 相对当前 session working directory，禁止绝对路径和路径穿越。
+- 默认最大 1 MiB；目录、非 UTF-8 文件和越界返回明确错误。不存在文件仅在 `optional != true` 时返回 `not_found`。
+- 该方法用于 Web UI 读取 server-side 文本；Agent 文件操作仍使用标准 reverse-RPC `fs/read_text_file`。
+
+---
+
+### `_anureo.dev/files/read_file_binary`
 
 | 项目 | 内容 |
 |---|---|
@@ -399,7 +449,7 @@ pub struct ReadBinaryParams {
 
 ---
 
-### `_loomdesk.dev/files/write_file`
+### `_anureo.dev/files/write_file`
 
 | 项目 | 内容 |
 |---|---|
@@ -449,7 +499,7 @@ pub struct ReadBinaryParams {
 
 ---
 
-### `_loomdesk.dev/files/delete`
+### `_anureo.dev/files/delete`
 
 | 项目 | 内容 |
 |---|---|
@@ -496,7 +546,7 @@ pub struct ReadBinaryParams {
 
 ---
 
-### `_loomdesk.dev/files/rename`
+### `_anureo.dev/files/rename`
 
 | 项目 | 内容 |
 |---|---|
@@ -540,7 +590,7 @@ pub struct ReadBinaryParams {
 
 ---
 
-### `_loomdesk.dev/files/reveal_path`
+### `_anureo.dev/files/reveal_path`
 
 | 项目 | 内容 |
 |---|---|
@@ -579,7 +629,7 @@ pub struct ReadBinaryParams {
 
 ---
 
-### `_loomdesk.dev/files/exec_commands`
+### `_anureo.dev/files/exec_commands`
 
 | 项目 | 内容 |
 |---|---|
@@ -646,7 +696,7 @@ pub struct ReadBinaryParams {
 
 ---
 
-### `_loomdesk.dev/files/download_file`
+### `_anureo.dev/files/download_file`
 
 | 项目 | 内容 |
 |---|---|
@@ -667,7 +717,7 @@ pub struct ReadBinaryParams {
 ```json
 {
   "path": "reports/output.pdf",
-  "downloadUrl": "blob:loomdesk/download/abc123",
+  "downloadUrl": "blob:anureo/download/abc123",
   "mimeType": "application/pdf",
   "size": 1048576,
   "expiresAt": "2025-08-19T11:00:00Z"
@@ -691,14 +741,14 @@ pub struct ReadBinaryParams {
 
 ## Notifications
 
-### `_loomdesk.dev/files/changed`
+### `_anureo.dev/files/changed`
 
 当文件系统发生变化（外部编辑、git 操作、server 内部写入）时推送。
 
 ```json
 {
   "jsonrpc": "2.0",
-  "method": "_loomdesk.dev/files/changed",
+  "method": "_anureo.dev/files/changed",
   "params": {
     "change": "modified",
     "path": "src/main.rs"
@@ -718,8 +768,7 @@ pub struct ReadBinaryParams {
 
 | Method | 状态 | 替代 |
 |---|---|---|
-| `_loomdesk.dev/files/read` | **FORBIDDEN** | 标准 `fs/read_text_file` |
-| `_loomdesk.dev/files/read_text_file` | **FORBIDDEN** | 标准 `fs/read_text_file` |
+| `_anureo.dev/files/read` | **FORBIDDEN** | `_anureo.dev/files/read_text_file` |
 
 Server 对禁止的 method 返回 `method_not_found`。文件文本读取必须通过标准 ACP `fs/read_text_file`（Agent → Client reverse-RPC）。
 
@@ -735,4 +784,4 @@ Server 对禁止的 method 返回 `method_not_found`。文件文本读取必须�
 
 | Notification | Authoritative method |
 |---|---|
-| `_loomdesk.dev/files/changed` | `_loomdesk.dev/files/list`（当前目录） |
+| `_anureo.dev/files/changed` | `_anureo.dev/files/list`（当前目录） |

@@ -1,6 +1,6 @@
 # Snippet 与 Command 管理
 
-> **命名空间**: `_loomdesk.dev/snippet/*`、`_loomdesk.dev/command/*`
+> **命名空间**: `_anureo.dev/snippet/*`、`_anureo.dev/command/*`
 > **Capability key**: `snippet`、`command`
 > **实现状态**: ❌ 未实现
 
@@ -25,7 +25,7 @@
 }
 ```
 
-- Client 必须在 `initialize` 时声明 `agentCapabilities._meta["loomdesk.dev"].snippet` 和 `.command` 的 method 粒度。
+- Client 必须在 `initialize` 时声明 `agentCapabilities._meta["anureo.dev"].snippet` 和 `.command` 的 method 粒度。
 - 未声明的 method 对 UI 隐藏，对 request 返回 `capability_not_supported`。
 - `session/update` 中的 `available_commands_update` 只通知可用 command 列表的变化（如 command 被新增/删除/启停后，UI 显示的 slash command 列表更新）；实际的 CRUD 由本扩展负责。
 
@@ -33,7 +33,7 @@
 
 ## 第一部分: Snippet
 
-### `_loomdesk.dev/snippet/list`
+### `_anureo.dev/snippet/list`
 
 | 项目 | 内容 |
 |---|---|
@@ -48,7 +48,7 @@
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "_loomdesk.dev/snippet/list",
+  "method": "_anureo.dev/snippet/list",
   "params": {
     "cursor": null,
     "limit": 50
@@ -146,7 +146,7 @@ pub struct SnippetListResponse {
 
 ---
 
-### `_loomdesk.dev/snippet/create`
+### `_anureo.dev/snippet/create`
 
 | 项目 | 内容 |
 |---|---|
@@ -161,7 +161,7 @@ pub struct SnippetListResponse {
 {
   "jsonrpc": "2.0",
   "id": 2,
-  "method": "_loomdesk.dev/snippet/create",
+  "method": "_anureo.dev/snippet/create",
   "params": {
     "clientRequestId": "req-abc-123",
     "name": "Explain Error",
@@ -236,7 +236,7 @@ pub struct SnippetCreateRequest {
 
 ---
 
-### `_loomdesk.dev/snippet/update`
+### `_anureo.dev/snippet/update`
 
 | 项目 | 内容 |
 |---|---|
@@ -250,7 +250,7 @@ pub struct SnippetCreateRequest {
 {
   "jsonrpc": "2.0",
   "id": 3,
-  "method": "_loomdesk.dev/snippet/update",
+  "method": "_anureo.dev/snippet/update",
   "params": {
     "id": "snip_001",
     "name": "Explain Error (Updated)",
@@ -309,7 +309,7 @@ pub struct SnippetUpdateRequest {
 
 ---
 
-### `_loomdesk.dev/snippet/delete`
+### `_anureo.dev/snippet/delete`
 
 | 项目 | 内容 |
 |---|---|
@@ -323,7 +323,7 @@ pub struct SnippetUpdateRequest {
 {
   "jsonrpc": "2.0",
   "id": 4,
-  "method": "_loomdesk.dev/snippet/delete",
+  "method": "_anureo.dev/snippet/delete",
   "params": {
     "id": "snip_001"
   }
@@ -376,9 +376,9 @@ pub struct SnippetDeleteResponse {
 
 ## 第二部分: Command 管理
 
-> **与 `session/update` 的关系**: `session/update` 中的 `available_commands_update` 只通知可用 command 列表的变化（如新增/删除/启停 command 后，UI 显示的 slash command 列表更新）。实际的 command CRUD 由本扩展的 `_loomdesk.dev/command/*` 方法负责。
+> **与 `session/update` 的关系**: `session/update` 中的 `available_commands_update` 只通知可用 command 列表的变化（如新增/删除/启停 command 后，UI 显示的 slash command 列表更新）。实际的 command CRUD 由本扩展的 `_anureo.dev/command/*` 方法负责。
 
-### `_loomdesk.dev/command/list`
+### `_anureo.dev/command/list`
 
 | 项目 | 内容 |
 |---|---|
@@ -393,7 +393,7 @@ pub struct SnippetDeleteResponse {
 {
   "jsonrpc": "2.0",
   "id": 5,
-  "method": "_loomdesk.dev/command/list",
+  "method": "_anureo.dev/command/list",
   "params": {
     "cursor": null,
     "limit": 50
@@ -498,7 +498,7 @@ pub struct CommandListResponse {
 
 ---
 
-### `_loomdesk.dev/command/create`
+### `_anureo.dev/command/create`
 
 | 项目 | 内容 |
 |---|---|
@@ -513,7 +513,7 @@ pub struct CommandListResponse {
 {
   "jsonrpc": "2.0",
   "id": 6,
-  "method": "_loomdesk.dev/command/create",
+  "method": "_anureo.dev/command/create",
   "params": {
     "clientRequestId": "req-def-456",
     "name": "/test",
@@ -593,7 +593,7 @@ pub struct CommandCreateRequest {
 
 ---
 
-### `_loomdesk.dev/command/update`
+### `_anureo.dev/command/update`
 
 | 项目 | 内容 |
 |---|---|
@@ -607,7 +607,7 @@ pub struct CommandCreateRequest {
 {
   "jsonrpc": "2.0",
   "id": 7,
-  "method": "_loomdesk.dev/command/update",
+  "method": "_anureo.dev/command/update",
   "params": {
     "id": "cmd_001",
     "description": "Run the full test suite with coverage",
@@ -670,7 +670,7 @@ pub struct CommandUpdateRequest {
 
 ---
 
-### `_loomdesk.dev/command/delete`
+### `_anureo.dev/command/delete`
 
 | 项目 | 内容 |
 |---|---|
@@ -684,7 +684,7 @@ pub struct CommandUpdateRequest {
 {
   "jsonrpc": "2.0",
   "id": 8,
-  "method": "_loomdesk.dev/command/delete",
+  "method": "_anureo.dev/command/delete",
   "params": {
     "id": "cmd_001"
   }
@@ -736,12 +736,12 @@ pub struct CommandDeleteResponse {
 
 ## Notifications
 
-### `_loomdesk.dev/snippet/changed`
+### `_anureo.dev/snippet/changed`
 
 ```json
 {
   "jsonrpc": "2.0",
-  "method": "_loomdesk.dev/snippet/changed",
+  "method": "_anureo.dev/snippet/changed",
   "params": {
     "change": "created | updated | deleted",
     "id": "snip_001"
@@ -757,12 +757,12 @@ pub struct CommandDeleteResponse {
 - Client 收到后必须调用 `snippet/list` 进行完整 resync。
 - 未识别的 notification params 必须安全忽略。
 
-### `_loomdesk.dev/command/changed`
+### `_anureo.dev/command/changed`
 
 ```json
 {
   "jsonrpc": "2.0",
-  "method": "_loomdesk.dev/command/changed",
+  "method": "_anureo.dev/command/changed",
   "params": {
     "change": "created | updated | deleted",
     "id": "cmd_001"

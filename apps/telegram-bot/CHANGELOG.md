@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Message formatting: MarkdownV2 + HTML with fallback (`formatting/`)
 - Dependency injection via `traits.rs` + `handler_deps.rs`
 - Retry mechanism for Telegram API calls (`streaming/retry.rs`)
-- Configuration from `~/.loom/telegram-bot.toml` with `${ENV}` interpolation
+- Configuration from `~/.anureo/telegram-bot.toml` with `${ENV}` interpolation
 - Streaming message handler with throttled edits (`streaming/message_handler.rs`)
 
 ### Changed
@@ -31,4 +31,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 8 `unwrap()` calls in `retry.rs` critical path (potential panic under network instability)
 - `download.rs` lacks path traversal validation
 - `retry.rs` uses fixed 1s delay without exponential backoff
-- Compilation blocked by upstream `ToolCallContent.len()` error in `loom` crate
+- Compilation blocked by upstream `ToolCallContent.len()` error in `anureo` crate

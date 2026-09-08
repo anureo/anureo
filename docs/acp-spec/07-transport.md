@@ -26,7 +26,7 @@ ws://<host>:<port>/acp
 
 ### 1.3 Origin 校验
 
-环境变量 `LOOM_ACP_ALLOWED_ORIGINS`（逗号分隔）控制允许的 origin。
+环境变量 `ANUREO_ACP_ALLOWED_ORIGINS`（逗号分隔）控制允许的 origin。
 
 | 配置 | 行为 |
 |---|---|
@@ -48,9 +48,9 @@ Authorization: Bearer <token>
 
 | 配置 | 行为 |
 |---|---|
-| `LOOM_AUTH_TOKEN` 未设置 | principal = `"local-anonymous"` |
-| `LOOM_AUTH_TOKEN` 已设置 + token 匹配 | principal = `"token-{hash}"`（hash = token 十六进制的高 64 位） |
-| `LOOM_AUTH_TOKEN` 已设置 + token 不匹配 | principal = `"local-anonymous"` |
+| `ANUREO_AUTH_TOKEN` 未设置 | principal = `"local-anonymous"` |
+| `ANUREO_AUTH_TOKEN` 已设置 + token 匹配 | principal = `"token-{hash}"`（hash = token 十六进制的高 64 位） |
+| `ANUREO_AUTH_TOKEN` 已设置 + token 不匹配 | principal = `"local-anonymous"` |
 
 SessionOwner 创建:
 - `SessionOwner::anonymous()` → `"local-anonymous"`
@@ -72,18 +72,18 @@ agent_client_protocol::Lines::new(outgoing, incoming)
 ### 2.1 使用方式
 
 ```bash
-loom acp [url]
+anureo acp [url]
 # 默认 url: ws://127.0.0.1:3030/acp
 ```
 
 ### 2.2 架构
 
 ```text
-Client (LoomDesk)
+Client (Anureo)
   ←→ stdio (newline-delimited JSON) ←→
-    loom_acp ws_bridge
+    anureo_acp ws_bridge
       ←→ WebSocket ←→
-        loom server /acp
+        anureo server /acp
 ```
 
 `ws_bridge.rs` 实现 stdio↔WebSocket 双向桥接：
@@ -129,7 +129,7 @@ Relay 在 ACP 之外提供 E2EE tunnel，内部传输原始 ACP JSON-RPC message
 ```rust
 // apps/server/src/acp_hub.rs
 pub struct AcpHub {
-    runtime: Mutex<Option<Arc<loom_acp::runtime::AcpRuntime>>>,
+    runtime: Mutex<Option<Arc<anureo_acp::runtime::AcpRuntime>>>,
     // ...
 }
 ```
@@ -155,7 +155,7 @@ attach_with(principal)
 | `Persist`（默认） | session 保留；如 `idle_ttl_secs > 0`，超时后取消 generation |
 | `Cancel` | 立即取消所有绑定 session 的 active generation |
 
-配置: `LOOM_ACP_DISCONNECT_POLICY=cancel|persist`
+配置: `ANUREO_ACP_DISCONNECT_POLICY=cancel|persist`
 
 ### 4.4 统计
 

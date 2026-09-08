@@ -2,7 +2,7 @@
 
 > 来源：models.dev `/api.json` 快照（2025-08-19，共 177 个 provider）
 > 目的：把各模型提供商 API 文档中的 HTTP 状态码 / 业务错误码汇总为一份统一参考，
-> 用于 Loom 多 provider 场景下的错误分类、重试策略与用户可读错误消息。
+> 用于 anureo 多 provider 场景下的错误分类、重试策略与用户可读错误消息。
 
 ## 1. 总览：177 个 provider 按 API 风格分类
 

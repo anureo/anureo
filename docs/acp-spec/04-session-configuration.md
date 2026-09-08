@@ -12,7 +12,7 @@
 |---|---|
 | 方向 | Client → Agent request |
 | 能力 | 无额外要求 |
-| Loom 状态 | ✅ 已实现 |
+| anureo 状态 | ✅ 已实现 |
 
 ### Request
 
@@ -95,7 +95,7 @@ pub struct SessionConfig {
 |---|---|
 | 方向 | Client → Agent request |
 | 能力 | 无额外要求 |
-| Loom 状态 | ✅ 已实现 |
+| anureo 状态 | ✅ 已实现 |
 
 ### Request
 
@@ -136,7 +136,7 @@ pub struct SessionConfig {
 
 ### Agent Profile
 
-Loom 的 agent profile 通过 `AgentRegistry` 管理。每个 profile 定义：
+anureo 的 agent profile 通过 `AgentRegistry` 管理。每个 profile 定义：
 - 系统提示词模板
 - 可用工具集
 - 行为参数

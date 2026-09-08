@@ -1,14 +1,14 @@
-# Loom 贡献与 Review 流程
+# anureo 贡献与 Review 流程
 
 > **状态**：基于当前源码的贡献者说明
 > **相关代码**：`README.md`、`.github/workflows`、`agent/agent-core`、`apps/cli`、`apps/acp`、`apps/server`、`foundation/config`、`foundation/checkpoint-sqlite-store`、`agent/tool/tool-workflow`
-> **适用范围**：Loom workspace 的 Rust、CLI、ACP、HTTP/SSE、配置、checkpoint/store 与 workflow 改动
+> **适用范围**：anureo workspace 的 Rust、CLI、ACP、HTTP/SSE、配置、checkpoint/store 与 workflow 改动
 
-本文面向 Loom 贡献者和 reviewer。结论只来自当前仓库及列出的设计、分析、协议和 spec 文件；没有源码证据的 API、路由、配置项或 CI 门禁不在本文中当作已实现能力。
+本文面向 anureo 贡献者和 reviewer。结论只来自当前仓库及列出的设计、分析、协议和 spec 文件；没有源码证据的 API、路由、配置项或 CI 门禁不在本文中当作已实现能力。
 
 ## 1. 提交前先确认范围
 
-Loom 是 local-first AI Agent runtime，入口包括 CLI、IDE 的 ACP 和 server。根 `Cargo.toml` 是 Rust 2021、`resolver = "2"` 的 virtual workspace，当前 workspace 版本为 `0.5.0`。先确认改动属于哪一层：
+anureo 是 local-first AI Agent runtime，入口包括 CLI、IDE 的 ACP 和 server。根 `Cargo.toml` 是 Rust 2021、`resolver = "2"` 的 virtual workspace，当前 workspace 版本为 `0.5.0`。先确认改动属于哪一层：
 
 | 层 | 当前职责 | Review 时重点检查 |
 | --- | --- | --- |
@@ -19,9 +19,9 @@ Loom 是 local-first AI Agent runtime，入口包括 CLI、IDE 的 ACP 和 serve
 | `apps/acp` | ACP `0.15.1` 协议适配与 IDE transport | capability gate、ACP wire 行为、session/cancel 与 e2e target |
 | `apps/server` | Axum HTTP+SSE、WebSocket、PTY 和 OpenCode-compatible 外部入口 | route/handler、状态码、SSE envelope、认证 middleware 与黑盒测试注入 |
 
-贡献前应查看目标 crate 的 `Cargo.toml`，确认 package/lib/bin 名称和 feature。比如 CLI package/bin 是 `cli`/`loom`，ACP package/lib 是 `acp`/`loom_acp`，server bin 是 `loom-server`；server 的 `test-support` 只用于黑盒测试的 deterministic LLM 注入，生产 routes 不选择它。
+贡献前应查看目标 crate 的 `Cargo.toml`，确认 package/lib/bin 名称和 feature。比如 CLI package/bin 是 `cli`/`anureo`，ACP package/lib 是 `acp`/`anureo_acp`，server bin 是 `anureo-server`；server 的 `test-support` 只用于黑盒测试的 deterministic LLM 注入，生产 routes 不选择它。
 
-README 建议首次运行前核对 effective working directory、model 和 tool permissions；修改任务可使用 `--worktree` 隔离 Git worktree。不要把 `LOOM_HOME`、`.env` 或 worktree 语义写成未在当前代码中确认的全局约定。
+README 建议首次运行前核对 effective working directory、model 和 tool permissions；修改任务可使用 `--worktree` 隔离 Git worktree。不要把 `ANUREO_HOME`、`.env` 或 worktree 语义写成未在当前代码中确认的全局约定。
 
 ## 2. 从入口追踪到运行时
 
@@ -73,15 +73,15 @@ workflows、browser extension、task modes 在 README 中明确标为实验性�
 
 ## 3. 配置、持久化与协议改动的 review 规则
 
-`foundation/config` 的实际配置优先级是：已有进程环境 > 项目 `.env` > `[default].provider` 选中的 `[[providers]]` > `config.toml` 的 `[env]`。`LOOM_HOME` 可改变用户目录；配置报告会 mask secret-like key。新增配置必须追踪到实际 consumer，并补优先级、provider 未找到、secret masking 和环境恢复测试；不能只因为 TOML 模型有字段就宣称运行时已经使用。
+`foundation/config` 的实际配置优先级是：已有进程环境 > 项目 `.env` > `[default].provider` 选中的 `[[providers]]` > `config.toml` 的 `[env]`。`ANUREO_HOME` 可改变用户目录；配置报告会 mask secret-like key。新增配置必须追踪到实际 consumer，并补优先级、provider 未找到、secret masking 和环境恢复测试；不能只因为 TOML 模型有字段就宣称运行时已经使用。
 
 checkpoint 和 Store 语义不同：前者服务 thread/run 状态快照、resume/replay/branch，后者服务跨运行的 durable 数据。`checkpoint-sqlite-store` 提供 SQLite-backed 实现。新增持久化字段要说明迁移/旧数据行为、进程重启和失败写入语义，不能把长期 memory 当作 checkpoint resume state。
 
 server 协议改动必须同时核对 route、handler、wire envelope 和探针。当前协议文档确认 v1 裸路径与 v2 `/api/*` 路径并存，`/global/event`、`/api/event` 和 `/api/session/:id/event` 是不同 SSE 边界；`/api/skill` 虽已注册，当前 handler 仍返回空列表，不能写成已有完整 skill registry。
 
-`scripts/check-protocol.ps1` 与 `.sh` 会按当前配置启动 `cargo run -p loom-server -- serve --host 127.0.0.1 --port ...`，检查 health、bootstrap routes、v1/v2 SSE、session create/update/read/shell/abort/delete 以及若干 stub surface；支持 `LOOM_PROTOCOL_NO_BOOT`，脚本还提供端口、base URL 和 authorization 覆盖。它们当前对 DELETE session 期望 204，但 `CURRENT-CONTRACT.md`/`CURRENT-STATE-AUDIT.md` 记录的 handler 行为是 200 `{"success":true}`，所以执行前必须先统一契约，不能据脚本存在就报告 protocol gate 全绿。
+`scripts/check-protocol.ps1` 与 `.sh` 会按当前配置启动 `cargo run -p anureo-server -- serve --host 127.0.0.1 --port ...`，检查 health、bootstrap routes、v1/v2 SSE、session create/update/read/shell/abort/delete 以及若干 stub surface；支持 `ANUREO_PROTOCOL_NO_BOOT`，脚本还提供端口、base URL 和 authorization 覆盖。它们当前对 DELETE session 期望 204，但 `CURRENT-CONTRACT.md`/`CURRENT-STATE-AUDIT.md` 记录的 handler 行为是 200 `{"success":true}`，所以执行前必须先统一契约，不能据脚本存在就报告 protocol gate 全绿。
 
-SSE 测试应区分 legacy wrapper、v2 durable/live envelope、session cursor、replay、session isolation、restart 和 keepalive。`SERVER-SSE-INTEGRATION-TEST-PLAN.md` 要求使用真实 Axum Router 或 loopback TCP 读取原始 SSE bytes，并通过 Loom 自身 `MockLlm`/`MultiRoundMockLlm` 驱动 agent；不能用 translator 单测或“连接返回 200”代替端到端 wire 验证。该计划仍明确列出持久化重启、append failure、broadcast lag/reconnect、legacy keepalive、tool/failure/cancel 场景等未完成项。
+SSE 测试应区分 legacy wrapper、v2 durable/live envelope、session cursor、replay、session isolation、restart 和 keepalive。`SERVER-SSE-INTEGRATION-TEST-PLAN.md` 要求使用真实 Axum Router 或 loopback TCP 读取原始 SSE bytes，并通过 anureo 自身 `MockLlm`/`MultiRoundMockLlm` 驱动 agent；不能用 translator 单测或“连接返回 200”代替端到端 wire 验证。该计划仍明确列出持久化重启、append failure、broadcast lag/reconnect、legacy keepalive、tool/failure/cancel 场景等未完成项。
 
 ## 4. 测试与验证顺序
 
@@ -97,14 +97,14 @@ cargo test --workspace
 
 针对不同改动补充：
 
-- CLI：`cargo build -p cli`、`cargo test -p cli`；涉及 Tool 展示时覆盖 `list_tools`/`show_tool` 的 formatter tests。
+- CLI：`cargo build -p anureo-cli`、`cargo test -p anureo-cli`；涉及 Tool 展示时覆盖 `list_tools`/`show_tool` 的 formatter tests。
 - ACP：`cargo test -p acp`，并检查 manifest 声明的 `e2e_mega` 与 `e2e` test target；文件 Tool 要覆盖 capability gate、Text/Diff、错误和 round-trip。
 - server：运行 crate tests 和 server integration tests；协议改动再运行对应平台的 `scripts/check-protocol.ps1` 或 `.sh`，但先处理上文 DELETE 状态码不一致。
-- config：`cargo test -p config`；涉及环境变量时使用临时目录并恢复全局环境，避免并行测试共享 `LOOM_HOME`。
-- workflow：`cargo test -p tool-workflow`；必要时运行 `cargo test -p tool-workflow --test instance_smoke -- --nocapture`。fixture smoke test 由 `LOOM_TEST_INSTANCES_DIR` 控制，未设置时按源码设计跳过。
+- config：`cargo test -p config`；涉及环境变量时使用临时目录并恢复全局环境，避免并行测试共享 `ANUREO_HOME`。
+- workflow：`cargo test -p tool-workflow`；必要时运行 `cargo test -p tool-workflow --test instance_smoke -- --nocapture`。fixture smoke test 由 `ANUREO_TEST_INSTANCES_DIR` 控制，未设置时按源码设计跳过。
 - SQLite/checkpoint：覆盖临时数据库、重启后的读取、thread/checkpoint key、Store 与 Checkpointer 的边界；不要只测内存实现。
 
-`.nextest.toml` 定义了 `default` 与 `ci` profile：default 使用 `num-cpus` test threads，普通慢测 10 秒超时并最多终止 3 次；`e2e_`、`loom-acp` 有更长超时；ci profile 使用 8 threads、60 秒慢测超时。若环境安装 cargo-nextest，可用 `cargo nextest run` 采用这些配置；它不是当前 GitHub workflow 中已声明的命令。`.github/workflows/rust-release.yml` 在 PR 和 main/master push 上实际执行的是 stable toolchain、cache 和 `cargo build --release`；仓库当前没有在该 workflow 中声明 fmt、clippy、test 或 protocol gate 步骤。reviewer 应把本地验证结果与 CI 实际步骤分开记录。
+`.nextest.toml` 定义了 `default` 与 `ci` profile：default 使用 `num-cpus` test threads，普通慢测 10 秒超时并最多终止 3 次；`e2e_`、`anureo-acp` 有更长超时；ci profile 使用 8 threads、60 秒慢测超时。若环境安装 cargo-nextest，可用 `cargo nextest run` 采用这些配置；它不是当前 GitHub workflow 中已声明的命令。`.github/workflows/rust-release.yml` 在 PR 和 main/master push 上实际执行的是 stable toolchain、cache 和 `cargo build --release`；仓库当前没有在该 workflow 中声明 fmt、clippy、test 或 protocol gate 步骤。reviewer 应把本地验证结果与 CI 实际步骤分开记录。
 
 ## 5. Review 检查清单
 
@@ -121,7 +121,7 @@ cargo test --workspace
 - [ ] 成功、输入错误、底层错误、取消/超时和边界输出均有测试。
 - [ ] 协议测试断言 HTTP status、headers、SSE frame、event name、payload 字段、cursor 和 session isolation。
 - [ ] mock 测试没有调用真实 Provider；server black-box 使用 test-only 注入路径。
-- [ ] 环境变量、临时数据库、端口和 `LOOM_HOME` 在测试间隔离，并在结束时清理/恢复。
+- [ ] 环境变量、临时数据库、端口和 `ANUREO_HOME` 在测试间隔离，并在结束时清理/恢复。
 - [ ] 设计文档中的“已完成”与当前测试/源码一致；实验性、stub、待验收项有明确标签。
 
 ### 5.3 文档与变更说明

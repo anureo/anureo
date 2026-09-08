@@ -1,6 +1,6 @@
 # Quota 与 Provider 凭据管理
 
-> **命名空间**: `_loomdesk.dev/quota/*`
+> **命名空间**: `_anureo.dev/quota/*`
 > **Capability key**: `quota`
 > **实现状态**: ❌ 未实现
 
@@ -20,7 +20,7 @@
 }
 ```
 
-- Client 必须在 `initialize` 时声明 `agentCapabilities._meta["loomdesk.dev"].quota` 的 method 粒度。
+- Client 必须在 `initialize` 时声明 `agentCapabilities._meta["anureo.dev"].quota` 的 method 粒度。
 - **与 `session/update` 的关系**: `session/update` 中的 `usage_update` 覆盖单个 session 内的 token usage（input/output tokens、cache hits 等）；本扩展覆盖 billing/quota 维度（账户级用量统计、余额查询）和 provider 凭据管理。
 - **安全约束**: Provider secret（API key 的完整值）不出现在任何 response 中。`provider/list` 只返回脱敏标识（如 `sk-****-1234`）。
 
@@ -28,7 +28,7 @@
 
 ## Methods
 
-### `_loomdesk.dev/quota/usage`
+### `_anureo.dev/quota/usage`
 
 | 项目 | 内容 |
 |---|---|
@@ -42,7 +42,7 @@
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "_loomdesk.dev/quota/usage",
+  "method": "_anureo.dev/quota/usage",
   "params": {
     "range": "current_month",
     "provider": "openai",
@@ -200,7 +200,7 @@ pub struct QuotaUsageResponse {
 
 ---
 
-### `_loomdesk.dev/quota/balance`
+### `_anureo.dev/quota/balance`
 
 | 项目 | 内容 |
 |---|---|
@@ -214,7 +214,7 @@ pub struct QuotaUsageResponse {
 {
   "jsonrpc": "2.0",
   "id": 2,
-  "method": "_loomdesk.dev/quota/balance",
+  "method": "_anureo.dev/quota/balance",
   "params": {}
 }
 ```
@@ -294,7 +294,7 @@ pub struct QuotaLimits {
 
 ---
 
-### `_loomdesk.dev/quota/provider/list`
+### `_anureo.dev/quota/provider/list`
 
 | 项目 | 内容 |
 |---|---|
@@ -309,7 +309,7 @@ pub struct QuotaLimits {
 {
   "jsonrpc": "2.0",
   "id": 3,
-  "method": "_loomdesk.dev/quota/provider/list",
+  "method": "_anureo.dev/quota/provider/list",
   "params": {}
 }
 ```
@@ -414,7 +414,7 @@ pub struct ProviderListResponse {
 
 ---
 
-### `_loomdesk.dev/quota/provider/save`
+### `_anureo.dev/quota/provider/save`
 
 | 项目 | 内容 |
 |---|---|
@@ -429,7 +429,7 @@ pub struct ProviderListResponse {
 {
   "jsonrpc": "2.0",
   "id": 4,
-  "method": "_loomdesk.dev/quota/provider/save",
+  "method": "_anureo.dev/quota/provider/save",
   "params": {
     "clientRequestId": "req-save-prov-001",
     "id": "prov_001",
@@ -518,7 +518,7 @@ pub struct ProviderSaveRequest {
 
 ---
 
-### `_loomdesk.dev/quota/provider/delete`
+### `_anureo.dev/quota/provider/delete`
 
 | 项目 | 内容 |
 |---|---|
@@ -532,7 +532,7 @@ pub struct ProviderSaveRequest {
 {
   "jsonrpc": "2.0",
   "id": 5,
-  "method": "_loomdesk.dev/quota/provider/delete",
+  "method": "_anureo.dev/quota/provider/delete",
   "params": {
     "id": "prov_002"
   }
@@ -588,7 +588,7 @@ pub struct ProviderDeleteResponse {
 
 ## Notifications
 
-本扩展域不定义独立 notification。Provider 凭据变更可能影响 `_loomdesk.dev/capability_changed`（如删除默认 provider 后部分功能不可用），但 quota/usage 数据变化通过 `session/update` 的 `usage_update` 或 client 主动轮询获取。
+本扩展域不定义独立 notification。Provider 凭据变更可能影响 `_anureo.dev/capability_changed`（如删除默认 provider 后部分功能不可用），但 quota/usage 数据变化通过 `session/update` 的 `usage_update` 或 client 主动轮询获取。
 
 ---
 

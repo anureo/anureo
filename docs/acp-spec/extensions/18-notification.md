@@ -1,6 +1,6 @@
 # Notification 扩展
 
-> 命名空间: `_loomdesk.dev/notification/*`
+> 命名空间: `_anureo.dev/notification/*`
 > Capability key: `notification`
 > 实现状态: ❌ 未实现
 
@@ -38,7 +38,7 @@
 
 ## Methods
 
-### `_loomdesk.dev/notification/vapid_public_key`
+### `_anureo.dev/notification/vapid_public_key`
 
 | 项目 | 内容 |
 |---|---|
@@ -54,7 +54,7 @@
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "_loomdesk.dev/notification/vapid_public_key",
+  "method": "_anureo.dev/notification/vapid_public_key",
   "params": {}
 }
 ```
@@ -105,7 +105,7 @@ pub struct VapidPublicKeyResponse {
 
 ---
 
-### `_loomdesk.dev/notification/subscribe`
+### `_anureo.dev/notification/subscribe`
 
 | 项目 | 内容 |
 |---|---|
@@ -121,7 +121,7 @@ pub struct VapidPublicKeyResponse {
 {
   "jsonrpc": "2.0",
   "id": 2,
-  "method": "_loomdesk.dev/notification/subscribe",
+  "method": "_anureo.dev/notification/subscribe",
   "params": {
     "subscription": {
       "endpoint": "https://fcm.googleapis.com/fcm/send/abc123...",
@@ -206,7 +206,7 @@ pub struct NotificationSubscribeResponse {
 
 ---
 
-### `_loomdesk.dev/notification/unsubscribe`
+### `_anureo.dev/notification/unsubscribe`
 
 | 项目 | 内容 |
 |---|---|
@@ -222,7 +222,7 @@ pub struct NotificationSubscribeResponse {
 {
   "jsonrpc": "2.0",
   "id": 3,
-  "method": "_loomdesk.dev/notification/unsubscribe",
+  "method": "_anureo.dev/notification/unsubscribe",
   "params": {
     "subscriptionId": "sub-001"
   }
@@ -280,7 +280,7 @@ pub struct NotificationUnsubscribeResponse {
 
 ---
 
-### `_loomdesk.dev/notification/set_visibility`
+### `_anureo.dev/notification/set_visibility`
 
 | 项目 | 内容 |
 |---|---|
@@ -296,7 +296,7 @@ pub struct NotificationUnsubscribeResponse {
 {
   "jsonrpc": "2.0",
   "id": 4,
-  "method": "_loomdesk.dev/notification/set_visibility",
+  "method": "_anureo.dev/notification/set_visibility",
   "params": {
     "visible": true,
     "sessionId": "session-abc123"
@@ -353,7 +353,7 @@ pub struct NotificationSetVisibilityResponse {
 
 ---
 
-### `_loomdesk.dev/notification/apns_register`
+### `_anureo.dev/notification/apns_register`
 
 | 项目 | 内容 |
 |---|---|
@@ -369,10 +369,10 @@ pub struct NotificationSetVisibilityResponse {
 {
   "jsonrpc": "2.0",
   "id": 5,
-  "method": "_loomdesk.dev/notification/apns_register",
+  "method": "_anureo.dev/notification/apns_register",
   "params": {
     "token": "a1b2c3d4e5f6...hex-device-token...",
-    "bundleId": "dev.loomdesk.ios",
+    "bundleId": "dev.anureo.ios",
     "sessionId": "session-abc123"
   }
 }
@@ -437,7 +437,7 @@ pub struct ApnsRegisterResponse {
 
 ---
 
-### `_loomdesk.dev/notification/apns_unregister`
+### `_anureo.dev/notification/apns_unregister`
 
 | 项目 | 内容 |
 |---|---|
@@ -453,7 +453,7 @@ pub struct ApnsRegisterResponse {
 {
   "jsonrpc": "2.0",
   "id": 6,
-  "method": "_loomdesk.dev/notification/apns_unregister",
+  "method": "_anureo.dev/notification/apns_unregister",
   "params": {
     "deviceId": "device-001"
   }
@@ -506,7 +506,7 @@ pub struct ApnsUnregisterResponse {
 
 ---
 
-### `_loomdesk.dev/notification/test`
+### `_anureo.dev/notification/test`
 
 | 项目 | 内容 |
 |---|---|
@@ -522,11 +522,11 @@ pub struct ApnsUnregisterResponse {
 {
   "jsonrpc": "2.0",
   "id": 7,
-  "method": "_loomdesk.dev/notification/test",
+  "method": "_anureo.dev/notification/test",
   "params": {
     "channel": "web_push",
     "title": "Test Notification",
-    "body": "This is a test from LoomDesk."
+    "body": "This is a test from Anureo."
   }
 }
 ```

@@ -1,13 +1,13 @@
-# Loom 架构与依赖边界
+# anureo 架构与依赖边界
 
 > **状态**：基于当前源码的贡献者说明
 > **相关代码**：`Cargo.toml`、`agent/agent-core`、`agent/tool`、`foundation`、`apps`
 
-本文面向 Loom 贡献者，说明当前 workspace 中各层的职责、运行时调用路径和可扩展位置。所有结论均以本文列出的源码为准；没有在这些源码中出现的 API、命令或配置行为不作为已实现能力描述。
+本文面向 anureo 贡献者，说明当前 workspace 中各层的职责、运行时调用路径和可扩展位置。所有结论均以本文列出的源码为准；没有在这些源码中出现的 API、命令或配置行为不作为已实现能力描述。
 
 ### 阅读前提与术语速览
 
-第一次参与 Loom 的 Rust 贡献者可以先读[`仓库地图`](./01-environment-and-repository-map.md)、[`Agent 执行模型`](./03-agent-execution-model.md)、[`Tool/MCP/Skill 开发`](./07-tool-mcp-and-skill-development.md)、[`配置与持久化`](./08-configuration-and-persistence.md)、[`测试、调试与可观测性`](./09-testing-debugging-and-observability.md)和[`端到端功能 walkthrough`](./10-end-to-end-feature-walkthrough.md)。本文假定读者知道 Rust workspace、trait、async/await 和单元测试；不假定知道 Loom 的运行术语：ReAct 是“模型思考/调用工具/继续”的循环，DUP/ToT/GoT 是三种 agent pattern，BSP 是 Pregel 使用的批量同步并行模型，ACP 是 IDE 等客户端与 Agent 通信的协议，LSP 是语言服务器协议，XDG 是用户配置/数据目录约定，SSE 是服务器推送事件，Pregel 是图 runtime，`stream mode` 是 graph 暴露的事件订阅类别。配置、ACP 和测试的背景分别见上述链接。
+第一次参与 anureo 的 Rust 贡献者可以先读[`仓库地图`](./01-environment-and-repository-map.md)、[`Agent 执行模型`](./03-agent-execution-model.md)、[`Tool/MCP/Skill 开发`](./07-tool-mcp-and-skill-development.md)、[`配置与持久化`](./08-configuration-and-persistence.md)、[`测试、调试与可观测性`](./09-testing-debugging-and-observability.md)和[`端到端功能 walkthrough`](./10-end-to-end-feature-walkthrough.md)。本文假定读者知道 Rust workspace、trait、async/await 和单元测试；不假定知道 anureo 的运行术语：ReAct 是“模型思考/调用工具/继续”的循环，DUP/ToT/GoT 是三种 agent pattern，BSP 是 Pregel 使用的批量同步并行模型，ACP 是 IDE 等客户端与 Agent 通信的协议，LSP 是语言服务器协议，XDG 是用户配置/数据目录约定，SSE 是服务器推送事件，Pregel 是图 runtime，`stream mode` 是 graph 暴露的事件订阅类别。配置、ACP 和测试的背景分别见上述链接。
 
 调用链中的源码入口：[`agent-core/src/agent/mod.rs`](../../agent/agent-core/src/agent/mod.rs) → [`agent-core/src/run/runner.rs`](../../agent/agent-core/src/run/runner.rs) → [`tool-core/src/registry.rs`](../../agent/tool/tool-core/src/registry.rs) / [`foundation/llm/src/lib.rs`](../../foundation/llm/src/lib.rs) → [`foundation/graph-core/src/lib.rs`](../../foundation/graph-core/src/lib.rs) / [`foundation/pregel/src/lib.rs`](../../foundation/pregel/src/lib.rs) → [`foundation/checkpoint/src/lib.rs`](../../foundation/checkpoint/src/lib.rs)。应用适配入口是 [`apps/cli/src/lib.rs`](../../apps/cli/src/lib.rs)、[`apps/acp/src/lib.rs`](../../apps/acp/src/lib.rs) 和 [`apps/server/src/lib.rs`](../../apps/server/src/lib.rs)。
 
@@ -57,7 +57,7 @@ Agent 或工具代码需要模型调用时，应依赖这些 trait/type；不要
 已有进程环境 > 项目 .env > [default].provider 选中的 [[providers]] > config.toml 的 [env]
 ```
 
-代码只在 key 尚未存在于进程环境时写入环境变量；provider 名称使用大小写不敏感匹配，找不到选中的 provider 时 provider map 为空。provider 没有 `OPENAI_BASE_URL` 时，源码会先看 `LOOM_MODELS_DEV_API_JSON`，否则请求 `MODELS_DEV_URL`，缺省 URL 为 `https://models.dev/api.json`。这是当前实现的 fallback，不是本文建议新增的稳定 discovery API。
+代码只在 key 尚未存在于进程环境时写入环境变量；provider 名称使用大小写不敏感匹配，找不到选中的 provider 时 provider map 为空。provider 没有 `OPENAI_BASE_URL` 时，源码会先看 `ANUREO_MODELS_DEV_API_JSON`，否则请求 `MODELS_DEV_URL`，缺省 URL 为 `https://models.dev/api.json`。这是当前实现的 fallback，不是本文建议新增的稳定 discovery API。
 
 配置报告会通过 `is_secret_key` 和 `mask_value` 遮蔽 key/token/secret/password/credential/auth 等敏感值。日志和诊断应使用 `value_masked` 或 `summary()`，不得直接输出 API key。
 
@@ -168,7 +168,7 @@ workspace 中存在 `agent/tool/tool-workflow`，当前 `lib.rs` 公开 `Workflo
 
 ### 5.2 ACP
 
-`apps/acp/src/lib.rs` 明确将 ACP 定义为 Agent-side adapter：`run_stdio_loop()` 使用 `agent_client_protocol::AgentSideConnection` 在 stdin/stdout 上处理 JSON-RPC，stderr 仅用于日志；`LoomAcpAgent` 实现 ACP `Agent`，`SessionStore` 维护 session 与 thread/cancel 状态，`content_blocks_to_message` 负责内容转换，`stream_bridge` 将 Loom stream event 转成 ACP `SessionUpdate`。
+`apps/acp/src/lib.rs` 明确将 ACP 定义为 Agent-side adapter：`run_stdio_loop()` 使用 `agent_client_protocol::AgentSideConnection` 在 stdin/stdout 上处理 JSON-RPC，stderr 仅用于日志；`anureoAcpAgent` 实现 ACP `Agent`，`SessionStore` 维护 session 与 thread/cancel 状态，`content_blocks_to_message` 负责内容转换，`stream_bridge` 将 anureo stream event 转成 ACP `SessionUpdate`。
 
 单次 prompt 的源码契约可概括为：
 
@@ -225,7 +225,7 @@ cargo test --workspace
 | --- | --- |
 | graph/Pregel | graph compile、节点/条件路由、stream completion、取消、retry 或 Pregel task 状态 |
 | Agent runner | fresh build、checkpoint 命中/未命中、resume 不重复追加 user message、最终 `Values` 缺失、取消与错误映射 |
-| config | 优先级、unknown provider、provider fallback、`LOOM_MODELS_DEV_API_JSON`、secret masking；测试需恢复进程环境变量并使用源码已有的环境锁模式 |
+| config | 优先级、unknown provider、provider fallback、`ANUREO_MODELS_DEV_API_JSON`、secret masking；测试需恢复进程环境变量并使用源码已有的环境锁模式 |
 | tool-core | filter、call_filter、dry_run、yaml spec override、显式/复用 `ToolCallContext`、missing tool |
 | tool-basic | working folder canonicalize、非目录错误；默认 `allow_outside = false`，拒绝 `..`、绝对路径和 symlink escape；另验证 `true` 仅在受审计场景放开，并覆盖读写、编辑、apply-patch、移动、删除、创建目录的共同开关 |
 | workflow | 七个 tool name/spec、runtime 路径、start/cancel/status/events/files 的行为和持久化 |
@@ -233,7 +233,7 @@ cargo test --workspace
 | ACP | initialize、session/new、prompt、stream update、permission、unknown session、cancelled stop reason |
 | server | 只在阅读具体 route/handler 后运行对应 integration tests；`lib.rs` 本身不定义 route 契约 |
 
-测试配置时要特别小心环境变量是进程全局状态；`foundation/config/src/lib.rs` 的测试通过 `CONFIG_TEST_LOCK` 串行化并恢复变量。不要把真实 secret 写入 fixture 或日志。涉及外部 models.dev 请求时，优先使用源码支持的 `LOOM_MODELS_DEV_API_JSON` 进行确定性测试。
+测试配置时要特别小心环境变量是进程全局状态；`foundation/config/src/lib.rs` 的测试通过 `CONFIG_TEST_LOCK` 串行化并恢复变量。不要把真实 secret 写入 fixture 或日志。涉及外部 models.dev 请求时，优先使用源码支持的 `ANUREO_MODELS_DEV_API_JSON` 进行确定性测试。
 
 ## 8. 常见坑
 
@@ -244,7 +244,7 @@ cargo test --workspace
 - 在 Tokio runtime 中随意调用 `register_sync`：该函数自身创建独立线程/runtime并 join，优先使用异步注册。
 - 误把 registry 的最近一次 context 当成 per-call 隔离：无显式 context 的调用可能复用共享 context。
 - 让具体文件工具自行接受任意路径：`register_file_tools` 会 canonicalize working folder，并集中传递 `allow_outside`。
-- 把 ACP transport 和 Loom graph 混为一层：ACP 负责 JSON-RPC、session、permission 和 stream translation，Agent core 才负责运行逻辑。
+- 把 ACP transport 和 anureo graph 混为一层：ACP 负责 JSON-RPC、session、permission 和 stream translation，Agent core 才负责运行逻辑。
 - 从 `apps/server/src/lib.rs` 的模块名推测 HTTP API：route、SSE、auth 和 translator 的行为不在该文件中。
 - 把 workflow tools 当成稳定公共 API：当前实现存在且有单元测试，但本文将其标记为实验性；任何兼容性承诺都必须有对应源码和测试证据。
 - 直接打印配置值：`ConfigLoadReport` 的设计就是 masked display；新增日志必须沿用 masked value。

@@ -147,7 +147,7 @@ trace=1f18cb05  16:20:49 START  → 无 DONE（5min 后连接被切断）
 |-------|------|--------|----------|------|
 | canary | minimax-m2.7 | 225K | 108s | ✅ |
 | oc-inventory | minimax-m2.7 | 522K | 364s | ✅ |
-| loom-inventory | minimax-m2.7 | 744K | 588s | ✅ |
+| anureo-inventory | minimax-m2.7 | 744K | 588s | ✅ |
 
 成功 agent 运行时间均 < 10 分钟，失败 agent 均 > 10 分钟。
 

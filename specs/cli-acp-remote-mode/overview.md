@@ -5,7 +5,7 @@
 
 ## 目标
 
-为 CLI 增加 ACP（Agent Client Protocol）远程模式。CLI 作为 ACP 客户端，通过 WebSocket 连接 loom-server，使用 ACP JSON-RPC 协议发送 prompt、接收流式响应，由 loom-server 远程执行 agent 逻辑。
+为 CLI 增加 ACP（Agent Client Protocol）远程模式。CLI 作为 ACP 客户端，通过 WebSocket 连接 anureo-server，使用 ACP JSON-RPC 协议发送 prompt、接收流式响应，由 anureo-server 远程执行 agent 逻辑。
 
 ## 动机
 
@@ -13,21 +13,21 @@
 
 | 模式 | 命令 | Agent 执行位置 | 传输方式 |
 |------|------|---------------|---------|
-| Local（默认） | `loom "msg"` | 进程内 | 无（直接调用 ReAct graph） |
-| Server | `loom server` | N/A（启动服务器） | HTTP + WebSocket |
-| ACP Bridge | `loom acp [url]` | loom-server | stdio↔WebSocket 透传 |
+| Local（默认） | `anureo "msg"` | 进程内 | 无（直接调用 ReAct graph） |
+| Server | `anureo server` | N/A（启动服务器） | HTTP + WebSocket |
+| ACP Bridge | `anureo acp [url]` | anureo-server | stdio↔WebSocket 透传 |
 
-`loom acp` 是纯透传中继，专为 IDE 集成设计——它不理解 JSON-RPC 语义，只逐行转发。CLI 缺少一种**主动作为 ACP 客户端**与 loom-server 交互的能力。
+`anureo acp` 是纯透传中继，专为 IDE 集成设计——它不理解 JSON-RPC 语义，只逐行转发。CLI 缺少一种**主动作为 ACP 客户端**与 anureo-server 交互的能力。
 
 此外 `server_transport/run_server_mode.rs` 实现了 HTTP/SSE 远程客户端，但**未接入 `main.rs`**，属于死代码。
 
 ## 约束
 
-- 不修改 `loom acp` 的 stdio 透传行为（IDE 集成不受影响）
-- 不修改 loom-server 的 ACP Agent 实现（服务端协议不变）
-- 复用 `ws_bridge.rs` 的 auto-spawn 逻辑（自动检测/启动 loom-server）
+- 不修改 `anureo acp` 的 stdio 透传行为（IDE 集成不受影响）
+- 不修改 anureo-server 的 ACP Agent 实现（服务端协议不变）
+- 复用 `ws_bridge.rs` 的 auto-spawn 逻辑（自动检测/启动 anureo-server）
 - 复用 `apps/cli/src/display/` 的渲染层（流式 markdown、tool preview）
-- ACP 协议消息类型优先从 `loom_acp` crate 复用，避免重复定义
+- ACP 协议消息类型优先从 `anureo_acp` crate 复用，避免重复定义
 
 ## 详细设计文档
 
@@ -45,23 +45,23 @@
 
 ```bash
 # 单次执行（remote ACP 模式）
-loom --remote "实现一个二分查找"
+anureo --remote "实现一个二分查找"
 
 # 指定 server 地址
-loom --remote ws://192.168.1.100:3030/acp "review this code"
+anureo --remote ws://192.168.1.100:3030/acp "review this code"
 
 # 交互式 REPL（复用同一 ACP session）
-loom --remote -i
+anureo --remote -i
 
 # JSON 流输出
-loom --remote --json "list files"
+anureo --remote --json "list files"
 ```
 
 ## 目标架构
 
 ```
 ┌──────────┐                                               ┌──────────────┐
-│ loom CLI │ ── ACP JSON-RPC over WebSocket ──────────────► │ loom-server  │
+│ anureo CLI │ ── ACP JSON-RPC over WebSocket ──────────────► │ anureo-server  │
 │ (ACP     │   initialize / session/new / session/prompt   │ (ACP Agent)  │
 │  Client) │ ◄── session/update (流式) / response ──────── │              │
 │          │                                               │  ReAct Graph │
@@ -74,7 +74,7 @@ loom --remote --json "list files"
 
 ```
                     ┌─────────────────────────────────┐
-                    │         loom CLI main()         │
+                    │         anureo CLI main()         │
                     └───────────────┬─────────────────┘
                                     │
                     ┌───────────────┼───────────────┐
@@ -91,7 +91,7 @@ loom --remote --json "list files"
             └──────────────┘ └──────────────┘
                                       │
                     ┌─────────────────┴──────────────┐
-                    │           loom-server           │
+                    │           anureo-server           │
                     │  (ACP Agent + HTTP API + SSE)   │
                     └────────────────────────────────┘
 ```
@@ -103,7 +103,7 @@ apps/cli/src/server_transport/
 ├── mod.rs                      # 模块声明（新增 acp_client, run_acp_mode）
 ├── http.rs                     # HTTP transport（existing）
 ├── sse.rs                      # SSE stream（existing）
-├── client.rs                   # LoomServerClient（existing）
+├── client.rs                   # anureoServerClient（existing）
 ├── session.rs                  # HTTP session types（existing）
 ├── error.rs                    # TransportError（existing）
 ├── acp_client.rs               # ★ NEW: ACP WebSocket client
@@ -118,7 +118,7 @@ apps/acp/src/
 
 | 组件 | 复用来源 | 说明 |
 |------|---------|------|
-| WebSocket 连接管理 | `ws_bridge.rs` 的 `ensure_server_ready`, `probe_server`, `spawn_server` | 自动检测/启动 loom-server |
+| WebSocket 连接管理 | `ws_bridge.rs` 的 `ensure_server_ready`, `probe_server`, `spawn_server` | 自动检测/启动 anureo-server |
 | ACP 协议消息类型 | `agent_client_protocol::schema::v1::*` | 复用已有 Rust 类型定义 |
 | Display 渲染 | `apps/cli/src/display/` | 流式 markdown、tool preview |
 | Args 解析 | `apps/cli/src/args.rs` | 新增 `--remote` flag |
@@ -132,7 +132,7 @@ apps/acp/src/
 
 ## 优势
 
-1. **零额外依赖**：ACP WebSocket 协议已在 loom-server 端完整实现，客户端只需实现 JSON-RPC 发送/接收
+1. **零额外依赖**：ACP WebSocket 协议已在 anureo-server 端完整实现，客户端只需实现 JSON-RPC 发送/接收
 2. **完整功能**：ACP 协议支持流式输出、工具调用展示、session 管理、模型切换——比 HTTP/SSE 模式功能更完整
-3. **一致性**：IDE 用户（通过 `loom acp`）和 CLI 用户（通过 `loom --remote`）共享同一 server 实例和 session 存储
+3. **一致性**：IDE 用户（通过 `anureo acp`）和 CLI 用户（通过 `anureo --remote`）共享同一 server 实例和 session 存储
 4. **自动启动**：复用 `ws_bridge` 的 auto-spawn 逻辑，用户无需手动启动 server

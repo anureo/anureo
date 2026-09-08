@@ -7,7 +7,7 @@
 | 症状 | 原因 | 解决方案 |
 |------|------|---------|
 | Bot 启动后无响应 | Token 无效或网络不通 | 检查 Token 和代理设置 |
-| `ConfigError` 启动失败 | 配置文件缺失或格式错误 | 检查 `~/.loom/telegram-bot.toml` |
+| `ConfigError` 启动失败 | 配置文件缺失或格式错误 | 检查 `~/.anureo/telegram-bot.toml` |
 | 消息不回复 | 群聊中未 @Bot | 检查 Mention 过滤逻辑 |
 | "请稍等" 提示 | 前一轮 Agent 未完成 | 等待当前轮完成，或重启 |
 | 流式消息卡住 | Telegram API 频率限制 | 调整 `edit_throttle_ms` |
@@ -31,7 +31,7 @@
 
 ```bash
 # 检查配置文件是否存在
-ls ~/.loom/telegram-bot.toml
+ls ~/.anureo/telegram-bot.toml
 
 # 验证环境变量
 echo $TELEGRAM_BOT_TOKEN
@@ -57,7 +57,7 @@ edit_throttle_ms = 500
 
 ### Docker 部署问题
 
-1. 确认 `LOOM_CONFIG_PATH` 指向正确的配置目录
+1. 确认 `ANUREO_CONFIG_PATH` 指向正确的配置目录
 2. 确认容器内可访问该路径（Docker volume 挂载正确）
 3. 检查 `.env` 文件中的 Bot Token
 
@@ -66,7 +66,7 @@ edit_throttle_ms = 500
 docker-compose logs assistant
 
 # 检查配置挂载
-docker-compose exec assistant ls /root/.loom/
+docker-compose exec assistant ls /root/.anureo/
 ```
 
 ## 相关链接

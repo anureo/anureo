@@ -1,6 +1,6 @@
 # Diagnostics 诊断
 
-> **命名空间**: `_loomdesk.dev/diagnostics/*`
+> **命名空间**: `_anureo.dev/diagnostics/*`
 > **Capability key**: `diagnostics`
 > **实现状态**: ❌ 未实现
 
@@ -17,14 +17,14 @@
 }
 ```
 
-- Client 必须在 `initialize` 时声明 `agentCapabilities._meta["loomdesk.dev"].diagnostics` 的 method 粒度。
+- Client 必须在 `initialize` 时声明 `agentCapabilities._meta["anureo.dev"].diagnostics` 的 method 粒度。
 - **安全约束**: 诊断导出不得包含 token、secret、完整 API key 或用户文件内容。日志路径必须由 server 解析，不接受 client 传入的绝对路径。
 
 ---
 
 ## Methods
 
-### `_loomdesk.dev/diagnostics/logs`
+### `_anureo.dev/diagnostics/logs`
 
 | 项目 | 内容 |
 |---|---|
@@ -39,7 +39,7 @@
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "_loomdesk.dev/diagnostics/logs",
+  "method": "_anureo.dev/diagnostics/logs",
   "params": {
     "level": "info",
     "component": "acp",
@@ -174,7 +174,7 @@ pub struct DiagnosticsLogsResponse {
 
 ---
 
-### `_loomdesk.dev/diagnostics/export`
+### `_anureo.dev/diagnostics/export`
 
 | 项目 | 内容 |
 |---|---|
@@ -190,7 +190,7 @@ pub struct DiagnosticsLogsResponse {
 {
   "jsonrpc": "2.0",
   "id": 2,
-  "method": "_loomdesk.dev/diagnostics/export",
+  "method": "_anureo.dev/diagnostics/export",
   "params": {
     "includeLogs": true,
     "includeConfig": true,
@@ -258,7 +258,7 @@ pub struct DiagnosticsLogsResponse {
 | `result.contents` | object | 导出内容概要 |
 | `result.contents.logs.entryCount` | int | 包含的日志条目数 |
 | `result.contents.logs.timeRange` | string | 日志时间范围 |
-| `result.contents.config.version` | string | Loom 版本 |
+| `result.contents.config.version` | string | anureo 版本 |
 | `result.contents.config.features` | string[] | 启用的 feature flags |
 | `result.contents.sessionMetadata.sessionCount` | int | 包含的 session 数 |
 | `result.contents.systemInfo` | object | 系统信息摘要 |
@@ -273,7 +273,7 @@ pub struct DiagnosticsLogsResponse {
    - **用户文件内容**: 不得包含任何用户源代码、配置文件正文或 prompt/response 内容
 2. Server 在导出前执行自动脱敏扫描，`result.redacted` 列出被脱敏的字段类型。
 3. 导出包通过临时 URL 提供下载，有过期时间（默认 30 分钟）。
-4. 导出过程中的进度通过 `_loomdesk.dev/diagnostics/progress` notification 上报。
+4. 导出过程中的进度通过 `_anureo.dev/diagnostics/progress` notification 上报。
 5. `downloadUrl` 为 server 相对路径，client 拼接 base URL 后通过 HTTP GET 下载。下载需要与 ACP connection 相同的 Bearer token 认证。
 6. 大型导出（如包含大量日志）可能需要较长时间，server 应考虑异步生成。
 
@@ -353,14 +353,14 @@ pub struct DiagnosticsExportResponse {
 
 ## Notifications
 
-### `_loomdesk.dev/diagnostics/progress`
+### `_anureo.dev/diagnostics/progress`
 
 导出过程中的进度 notification（`08-cross-cutting-patterns.md` §3 长时操作进度）：
 
 ```json
 {
   "jsonrpc": "2.0",
-  "method": "_loomdesk.dev/diagnostics/progress",
+  "method": "_anureo.dev/diagnostics/progress",
   "params": {
     "operationId": "diag_export_001",
     "progress": 65,

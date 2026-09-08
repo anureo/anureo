@@ -1,7 +1,7 @@
 # Connection、Relay、Pairing、Client Auth
 
-> 命名空间: `_loomdesk.dev/connection/*`、`_loomdesk.dev/relay/*`、`_loomdesk.dev/pairing/*`、`_loomdesk.dev/client-auth/*`
-> Capability key: `connection`、`relay`、`pairing`、`client-auth`
+> 命名空间: `_anureo.dev/auth/*`、`_anureo.dev/connection/*`、`_anureo.dev/relay/*`、`_anureo.dev/pairing/*`、`_anureo.dev/client-auth/*`
+> Capability key: `auth`、`connection`、`relay`、`pairing`、`client-auth`
 
 ## 设计原则
 
@@ -12,9 +12,48 @@
 
 ---
 
+# Auth
+
+> 命名空间: `_anureo.dev/auth/*`
+> Capability key: `auth`
+
+## Capability
+
+```json
+{
+  "auth": {
+    "status": true
+  }
+}
+```
+
+### `_anureo.dev/auth/status`
+
+| 项目 | 内容 |
+|---|---|
+| 方向 | Client → Agent request |
+| 前置状态 | `initialize` 已成功；或 server pre-auth gate |
+| 能力 | authenticated connection 使用 `auth.status`；pre-auth gate 为固定协议能力 |
+| 权限 | 只读，不返回 credential/token |
+
+认证前由 WebSocket pre-auth gate 返回密码/Passkey 配置；认证后的标准 ACP connection 由扩展 handler 返回当前 connection 已认证状态。Client 必须先完成 `initialize` 或 `authenticate`，再顺序发送 `auth/status`，不得与初始化并发。
+
+```json
+{
+  "authenticated": true,
+  "passwordConfigured": false,
+  "passkeyEnabled": false,
+  "hasPasskeys": false,
+  "passkeyCount": 0,
+  "rpId": null
+}
+```
+
+---
+
 # Connection
 
-> 命名空间: `_loomdesk.dev/connection/*`
+> 命名空间: `_anureo.dev/connection/*`
 > Capability key: `connection`
 
 ## Capability
@@ -73,7 +112,7 @@ pub struct ConnectionCapabilities {
 
 ---
 
-### `_loomdesk.dev/connection/info`
+### `_anureo.dev/connection/info`
 
 | 项目 | 内容 |
 |---|---|
@@ -116,7 +155,7 @@ pub struct ConnectionCapabilities {
 
 ---
 
-### `_loomdesk.dev/connection/capabilities`
+### `_anureo.dev/connection/capabilities`
 
 | 项目 | 内容 |
 |---|---|
@@ -178,7 +217,7 @@ pub struct ConnectionCapabilities {
 
 # Relay
 
-> 命名空间: `_loomdesk.dev/relay/*`
+> 命名空间: `_anureo.dev/relay/*`
 > Capability key: `relay`
 
 ## Capability
@@ -216,7 +255,7 @@ pub struct RelayStatus {
 
 ---
 
-### `_loomdesk.dev/relay/status`
+### `_anureo.dev/relay/status`
 
 | 项目 | 内容 |
 |---|---|
@@ -236,7 +275,7 @@ pub struct RelayStatus {
 {
   "enabled": true,
   "connected": true,
-  "relayUrl": "wss://relay.loomdesk.dev",
+  "relayUrl": "wss://relay.anureo.dev",
   "relayId": "relay-abc123",
   "remoteClients": 2,
   "lastConnected": "2025-08-19T10:00:00Z",
@@ -246,7 +285,7 @@ pub struct RelayStatus {
 
 **逻辑说明:**
 - 返回 Relay 的连接状态。
-- Relay 是 LoomDesk 自有的 E2EE tunnel transport，不是新的 ACP message protocol。
+- Relay 是 Anureo 自有的 E2EE tunnel transport，不是新的 ACP message protocol。
 - `relayId` 为 relay 上的会话标识，可用于 pairing 流程中标识目标 server。
 - Relay 连接经过 relay 不扩大 ACP capability——远程 client 仍需通过标准认证流程。
 
@@ -269,7 +308,7 @@ pub struct RelayStatus {
 
 # Pairing
 
-> 命名空间: `_loomdesk.dev/pairing/*`
+> 命名空间: `_anureo.dev/pairing/*`
 > Capability key: `pairing`
 
 ## Capability
@@ -340,7 +379,7 @@ pub struct PairingRedeemParams {
 
 ---
 
-### `_loomdesk.dev/pairing/create`
+### `_anureo.dev/pairing/create`
 
 | 项目 | 内容 |
 |---|---|
@@ -401,7 +440,7 @@ pub struct PairingRedeemParams {
 
 ---
 
-### `_loomdesk.dev/pairing/redeem`
+### `_anureo.dev/pairing/redeem`
 
 | 项目 | 内容 |
 |---|---|
@@ -415,7 +454,7 @@ pub struct PairingRedeemParams {
 {
   "secret": "pair-secret-abc123-def456",
   "clientInfo": {
-    "name": "LoomDesk iOS",
+    "name": "Anureo iOS",
     "version": "1.0.0",
     "platform": "ios"
   }
@@ -461,7 +500,7 @@ pub struct PairingRedeemParams {
 
 ---
 
-### `_loomdesk.dev/pairing/pending_list`
+### `_anureo.dev/pairing/pending_list`
 
 | 项目 | 内容 |
 |---|---|
@@ -509,7 +548,7 @@ pub struct PairingRedeemParams {
 
 ---
 
-### `_loomdesk.dev/pairing/cancel`
+### `_anureo.dev/pairing/cancel`
 
 | 项目 | 内容 |
 |---|---|
@@ -547,7 +586,7 @@ pub struct PairingRedeemParams {
 
 ---
 
-### `_loomdesk.dev/pairing/transports`
+### `_anureo.dev/pairing/transports`
 
 | 项目 | 内容 |
 |---|---|
@@ -597,7 +636,7 @@ pub struct PairingRedeemParams {
 
 # Client Auth
 
-> 命名空间: `_loomdesk.dev/client-auth/*`
+> 命名空间: `_anureo.dev/client-auth/*`
 > Capability key: `client-auth`
 
 已认证的远程 client 管理（区分于 pairing 的未兑换流程）。此域管理通过 pairing redeem 成功后的已认证 client。
@@ -653,7 +692,7 @@ pub struct ClientAuthCreateParams {
 
 ---
 
-### `_loomdesk.dev/client-auth/list`
+### `_anureo.dev/client-auth/list`
 
 | 项目 | 内容 |
 |---|---|
@@ -684,7 +723,7 @@ pub struct ClientAuthCreateParams {
   "items": [
     {
       "clientId": "ct-abc123",
-      "name": "LoomDesk iOS",
+      "name": "Anureo iOS",
       "platform": "ios",
       "authMethod": "pairing",
       "createdAt": "2025-08-19T10:00:00Z",
@@ -713,7 +752,7 @@ pub struct ClientAuthCreateParams {
 
 ---
 
-### `_loomdesk.dev/client-auth/create`
+### `_anureo.dev/client-auth/create`
 
 | 项目 | 内容 |
 |---|---|
@@ -725,7 +764,7 @@ pub struct ClientAuthCreateParams {
 
 ```json
 {
-  "name": "LoomDesk iPad",
+  "name": "Anureo iPad",
   "platform": "ios",
   "scope": ["session:read", "session:write"],
   "ttlSeconds": 0
@@ -744,7 +783,7 @@ pub struct ClientAuthCreateParams {
 ```json
 {
   "clientId": "ct-xyz789",
-  "name": "LoomDesk iPad",
+  "name": "Anureo iPad",
   "platform": "ios",
   "clientToken": "ct-token-abc123-def456-ghi789",
   "createdAt": "2025-08-19T10:00:00Z",
@@ -771,7 +810,7 @@ pub struct ClientAuthCreateParams {
 
 ---
 
-### `_loomdesk.dev/client-auth/revoke`
+### `_anureo.dev/client-auth/revoke`
 
 | 项目 | 内容 |
 |---|---|
@@ -812,7 +851,7 @@ pub struct ClientAuthCreateParams {
 
 ---
 
-### `_loomdesk.dev/client-auth/purge_revoked`
+### `_anureo.dev/client-auth/purge_revoked`
 
 | 项目 | 内容 |
 |---|---|

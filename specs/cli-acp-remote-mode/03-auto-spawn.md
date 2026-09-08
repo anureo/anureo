@@ -13,7 +13,7 @@ fn parse_host_port(ws_url: &str) -> Option<(String, u16)>     // line 351
 fn health_url(ws_url: &str) -> Option<String>                 // line 362
 fn probe_client() -> reqwest::Client                          // line 373
 async fn probe_server(client: &reqwest::Client, url: &str) -> bool   // line 389
-fn resolve_loom_binary() -> BridgeResult<PathBuf>             // line 397
+fn resolve_anureo_binary() -> BridgeResult<PathBuf>             // line 397
 fn spawn_server(host: &str, port: u16) -> BridgeResult<Child> // line 403
 fn spawn_reaper(child: Child)                                 // line 439
 async fn ensure_server_ready(...)                             // line 460
@@ -30,7 +30,7 @@ fn build_ws_request(ws_url: &str) -> BridgeResult<Request>   // line 51
 //! Server auto-spawn utilities.
 //!
 //! Shared by `ws_bridge` (IDE stdio relay) and `acp_client` (CLI remote
-//! mode). These functions probe whether a loom-server is reachable and
+//! mode). These functions probe whether a anureo-server is reachable and
 //! spawn one if not.
 
 use std::process::{Child, Command, Stdio};
@@ -78,10 +78,10 @@ pub fn health_url(ws_url: &str) -> Option<String> {
 }
 
 /// Build a reusable HTTP client for health probes.
-/// Injects `LOOM_AUTH_TOKEN` as a bearer header if set.
+/// Injects `ANUREO_AUTH_TOKEN` as a bearer header if set.
 pub fn probe_client() -> reqwest::Client {
     let mut builder = reqwest::Client::builder().timeout(PROBE_TIMEOUT);
-    if let Ok(token) = std::env::var("LOOM_AUTH_TOKEN") {
+    if let Ok(token) = std::env::var("ANUREO_AUTH_TOKEN") {
         if !token.is_empty() {
             let value = format!("Bearer {token}");
             if let Ok(hv) = reqwest::header::HeaderValue::from_str(&value) {
@@ -94,7 +94,7 @@ pub fn probe_client() -> reqwest::Client {
     builder.build().unwrap_or_else(|_| reqwest::Client::new())
 }
 
-/// Probe whether loom-server is alive at the health endpoint.
+/// Probe whether anureo-server is alive at the health endpoint.
 pub async fn probe_server(client: &reqwest::Client, health_url: &str) -> bool {
     let Ok(resp) = client.get(health_url).send().await else {
         return false;
@@ -102,16 +102,16 @@ pub async fn probe_server(client: &reqwest::Client, health_url: &str) -> bool {
     resp.status().is_success()
 }
 
-/// Resolve the current `loom` executable path.
-pub fn resolve_loom_binary() -> BootstrapResult<std::path::PathBuf> {
+/// Resolve the current `anureo` executable path.
+pub fn resolve_anureo_binary() -> BootstrapResult<std::path::PathBuf> {
     std::env::current_exe()
-        .map_err(|e| format!("failed to resolve loom executable: {e}").into())
+        .map_err(|e| format!("failed to resolve anureo executable: {e}").into())
 }
 
-/// Spawn `loom server --host <host> --port <port>` as a detached child.
+/// Spawn `anureo server --host <host> --port <port>` as a detached child.
 pub fn spawn_server(host: &str, port: u16) -> BootstrapResult<Child> {
-    let bin = resolve_loom_binary()?;
-    tracing::info!(bin = %bin.display(), host, port, "spawning loom server");
+    let bin = resolve_anureo_binary()?;
+    tracing::info!(bin = %bin.display(), host, port, "spawning anureo server");
 
     let mut cmd = Command::new(&bin);
     cmd.args(["server", "--host", host, "--port", &port.to_string()])
@@ -135,9 +135,9 @@ pub fn spawn_server(host: &str, port: u16) -> BootstrapResult<Child> {
 
     let child = cmd
         .spawn()
-        .map_err(|e| format!("failed to spawn loom server: {e}"))?;
+        .map_err(|e| format!("failed to spawn anureo server: {e}"))?;
 
-    tracing::info!(pid = child.id(), "loom server spawned");
+    tracing::info!(pid = child.id(), "anureo server spawned");
     Ok(child)
 }
 
@@ -145,21 +145,21 @@ pub fn spawn_server(host: &str, port: u16) -> BootstrapResult<Child> {
 pub fn spawn_reaper(child: Child) {
     let pid = child.id();
     std::thread::Builder::new()
-        .name("loom-server-reaper".into())
+        .name("anureo-server-reaper".into())
         .spawn(move || {
             let mut child = child;
             match child.wait() {
-                Ok(status) => tracing::info!(pid, %status, "reaped loom-server child"),
+                Ok(status) => tracing::info!(pid, %status, "reaped anureo-server child"),
                 Err(e) => tracing::warn!(pid, error = %e, "failed to reap child"),
             }
         })
         .ok();
 }
 
-/// Ensure a loom-server is reachable at the given WebSocket URL.
+/// Ensure a anureo-server is reachable at the given WebSocket URL.
 ///
 /// 1. Probe the health endpoint.
-/// 2. If not running, spawn `loom server` and poll until healthy.
+/// 2. If not running, spawn `anureo server` and poll until healthy.
 ///
 /// Returns `Some(child)` if a server was spawned, `None` if already running.
 pub async fn ensure_server_ready(
@@ -171,11 +171,11 @@ pub async fn ensure_server_ready(
     };
 
     if probe_server(probe_client, &h_url).await {
-        tracing::info!("loom-server already running");
+        tracing::info!("anureo-server already running");
         return Ok(None);
     }
 
-    tracing::info!("loom-server not detected, auto-spawning");
+    tracing::info!("anureo-server not detected, auto-spawning");
     let (host, port) = parse_host_port(ws_url)
         .ok_or_else(|| format!("cannot parse host:port from {ws_url}"))?;
     let child = spawn_server(&host, port)?;
@@ -184,13 +184,13 @@ pub async fn ensure_server_ready(
     loop {
         if tokio::time::Instant::now() >= deadline {
             return Err(format!(
-                "loom-server did not become healthy within {}s",
+                "anureo-server did not become healthy within {}s",
                 SERVER_READY_TIMEOUT.as_secs()
             )
             .into());
         }
         if probe_server(probe_client, &h_url).await {
-            tracing::info!("loom-server is ready");
+            tracing::info!("anureo-server is ready");
             return Ok(Some(child));
         }
         tokio::time::sleep(PROBE_INTERVAL).await;
@@ -207,10 +207,10 @@ pub fn build_ws_request(
         .into_client_request()
         .map_err(|e| format!("invalid WebSocket URL {ws_url}: {e}"))?;
 
-    if let Ok(token) = std::env::var("LOOM_AUTH_TOKEN") {
+    if let Ok(token) = std::env::var("ANUREO_AUTH_TOKEN") {
         let value = format!("Bearer {token}")
             .parse()
-            .map_err(|e| format!("invalid LOOM_AUTH_TOKEN value: {e}"))?;
+            .map_err(|e| format!("invalid ANUREO_AUTH_TOKEN value: {e}"))?;
         request.headers_mut().insert("Authorization", value);
     }
 
@@ -270,7 +270,7 @@ use crate::server_bootstrap::{
 | `health_url` | 362 | `pub fn` | (仅 `ensure_server_ready` 内部用) |
 | `probe_client` | 373 | `pub fn` | ✓ |
 | `probe_server` | 389 | `pub async fn` | (仅 `ensure_server_ready` 内部用) |
-| `resolve_loom_binary` | 397 | `pub fn` | (仅 `spawn_server` 内部用) |
+| `resolve_anureo_binary` | 397 | `pub fn` | (仅 `spawn_server` 内部用) |
 | `spawn_server` | 403 | `pub fn` | ✓ (可能需要) |
 | `spawn_reaper` | 439 | `pub fn` | ✓ |
 | `ensure_server_ready` | 460 | `pub async fn` | ✓ |
@@ -342,7 +342,7 @@ mod tests {
 
 ```rust
 // apps/cli/src/server_transport/run_acp_mode.rs
-use loom_acp::server_bootstrap::{ensure_server_ready, probe_client, DEFAULT_WS_URL};
+use anureo_acp::server_bootstrap::{ensure_server_ready, probe_client, DEFAULT_WS_URL};
 
 pub async fn run_acp_mode(args: &Args, server_url: Option<String>) -> Result<(), String> {
     let url = server_url.unwrap_or_else(|| DEFAULT_WS_URL.to_string());
@@ -350,7 +350,7 @@ pub async fn run_acp_mode(args: &Args, server_url: Option<String>) -> Result<(),
     // 1. Ensure server is running (auto-spawn if needed)
     let probe = probe_client();
     if let Err(e) = ensure_server_ready(&url, &probe).await {
-        return Err(format!("failed to start loom-server: {e}"));
+        return Err(format!("failed to start anureo-server: {e}"));
     }
 
     // 2. Connect ACP client

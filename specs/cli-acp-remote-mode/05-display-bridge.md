@@ -5,7 +5,7 @@
 
 ## 问题
 
-CLI 的 display 层（`apps/cli/src/display/`）是为**本地 ReAct graph** 设计的——它消费的是 `StreamEvent`（loom 内部事件类型），而非 ACP `SessionUpdate`。
+CLI 的 display 层（`apps/cli/src/display/`）是为**本地 ReAct graph** 设计的——它消费的是 `StreamEvent`（anureo 内部事件类型），而非 ACP `SessionUpdate`。
 
 在 remote ACP 模式下，事件来源是 ACP `session/update` 通知，需要转换到 display 层能理解的格式。
 
@@ -13,7 +13,7 @@ CLI 的 display 层（`apps/cli/src/display/`）是为**本地 ReAct graph** 设
 
 ### 路径 A：ACP → StreamEvent → Display（推荐）
 
-将 `AcpSessionUpdate` 转换回 loom 的 `StreamEvent`，然后复用现有的 display 回调。
+将 `AcpSessionUpdate` 转换回 anureo 的 `StreamEvent`，然后复用现有的 display 回调。
 
 ```
 ACP SessionNotification
@@ -22,7 +22,7 @@ ACP SessionNotification
 AcpSessionUpdate (acp_client.rs 解析)
     │
     ▼  ★ convert_acp_to_stream_event()
-StreamEvent (loom 内部类型)
+StreamEvent (anureo 内部类型)
     │
     ▼
 on_event_react / on_event_dup (display/event_handler.rs)
@@ -43,7 +43,7 @@ on_event_react / on_event_dup (display/event_handler.rs)
 
 ## StreamEvent 类型
 
-查看 loom 内部事件类型（`stream_event` crate）：
+查看 anureo 内部事件类型（`stream_event` crate）：
 
 ```rust
 pub enum StreamEvent<S> {
@@ -79,7 +79,7 @@ pub enum MessageChunkKind {
 ### AcpSessionUpdate → StreamEvent
 
 ```rust
-//! ACP session update → loom StreamEvent conversion.
+//! ACP session update → anureo StreamEvent conversion.
 //!
 //! Allows the remote ACP mode to reuse the existing display layer
 //! (event_handler.rs, streaming_markdown.rs, tool_preview.rs) without

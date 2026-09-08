@@ -1,6 +1,6 @@
 # Skills Catalog 扩展
 
-> 命名空间: `_loomdesk.dev/skills/*`
+> 命名空间: `_anureo.dev/skills/*`
 > Capability key: `skills`
 > 实现状态: ❌ 未实现
 
@@ -35,7 +35,7 @@
 
 ## Methods
 
-### `_loomdesk.dev/skills/list`
+### `_anureo.dev/skills/list`
 
 | 项目 | 内容 |
 |---|---|
@@ -51,7 +51,7 @@
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "_loomdesk.dev/skills/list",
+  "method": "_anureo.dev/skills/list",
   "params": {
     "cursor": null,
     "limit": 50
@@ -79,7 +79,7 @@
         "description": "Rust 架构最佳实践参考",
         "category": "coding",
         "source": "registry",
-        "sourceUrl": "https://registry.loomdesk.dev/skills/rust-architecture",
+        "sourceUrl": "https://registry.anureo.dev/skills/rust-architecture",
         "installedAt": "2025-01-10T08:00:00Z",
         "updatedAt": "2025-01-15T12:00:00Z",
         "enabled": true,
@@ -180,7 +180,7 @@ pub struct SkillsListResponse {
 
 ---
 
-### `_loomdesk.dev/skills/search`
+### `_anureo.dev/skills/search`
 
 | 项目 | 内容 |
 |---|---|
@@ -196,7 +196,7 @@ pub struct SkillsListResponse {
 {
   "jsonrpc": "2.0",
   "id": 2,
-  "method": "_loomdesk.dev/skills/search",
+  "method": "_anureo.dev/skills/search",
   "params": {
     "query": "rust",
     "category": "coding",
@@ -233,7 +233,7 @@ pub struct SkillsListResponse {
         "updateAvailable": true,
         "downloadCount": 1542,
         "rating": 4.7,
-        "registryUrl": "https://registry.loomdesk.dev/skills/rust-architecture"
+        "registryUrl": "https://registry.anureo.dev/skills/rust-architecture"
       }
     ],
     "nextCursor": "cursor-xyz",
@@ -254,7 +254,7 @@ pub struct SkillsListResponse {
 #### 逻辑说明
 
 1. **空 query**: `query` 为空时返回热门/推荐 skill 列表。
-2. **Registry 查询**: Server 查询配置的 skill registry（如 `registry.loomdesk.dev`）。
+2. **Registry 查询**: Server 查询配置的 skill registry（如 `registry.anureo.dev`）。
 3. **离线模式**: Registry 不可达时，只返回已安装 skill 的搜索结果。
 
 #### Rust 类型
@@ -313,7 +313,7 @@ pub struct SkillsSearchResponse {
 
 ---
 
-### `_loomdesk.dev/skills/install`
+### `_anureo.dev/skills/install`
 
 | 项目 | 内容 |
 |---|---|
@@ -330,7 +330,7 @@ pub struct SkillsSearchResponse {
 {
   "jsonrpc": "2.0",
   "id": 3,
-  "method": "_loomdesk.dev/skills/install",
+  "method": "_anureo.dev/skills/install",
   "params": {
     "source": "registry",
     "skillId": "rust-architecture",
@@ -363,7 +363,7 @@ pub struct SkillsSearchResponse {
       "description": "Rust 架构最佳实践参考",
       "category": "coding",
       "source": "registry",
-      "sourceUrl": "https://registry.loomdesk.dev/skills/rust-architecture",
+      "sourceUrl": "https://registry.anureo.dev/skills/rust-architecture",
       "installedAt": "2025-01-19T10:00:00Z",
       "updatedAt": "2025-01-19T10:00:00Z",
       "enabled": true,
@@ -390,7 +390,7 @@ pub struct SkillsSearchResponse {
    ```json
    {
      "jsonrpc": "2.0",
-     "method": "_loomdesk.dev/skills/progress",
+     "method": "_anureo.dev/skills/progress",
      "params": {
        "operationId": "install-rust-architecture",
        "progress": 45,
@@ -451,7 +451,7 @@ pub struct SkillsInstallResponse {
 
 ---
 
-### `_loomdesk.dev/skills/uninstall`
+### `_anureo.dev/skills/uninstall`
 
 | 项目 | 内容 |
 |---|---|
@@ -467,7 +467,7 @@ pub struct SkillsInstallResponse {
 {
   "jsonrpc": "2.0",
   "id": 4,
-  "method": "_loomdesk.dev/skills/uninstall",
+  "method": "_anureo.dev/skills/uninstall",
   "params": {
     "skillId": "rust-architecture"
   }
@@ -522,7 +522,7 @@ pub struct SkillsUninstallResponse {
 
 ---
 
-### `_loomdesk.dev/skills/configure`
+### `_anureo.dev/skills/configure`
 
 | 项目 | 内容 |
 |---|---|
@@ -538,7 +538,7 @@ pub struct SkillsUninstallResponse {
 {
   "jsonrpc": "2.0",
   "id": 5,
-  "method": "_loomdesk.dev/skills/configure",
+  "method": "_anureo.dev/skills/configure",
   "params": {
     "skillId": "rust-architecture",
     "config": {
@@ -611,12 +611,12 @@ pub struct SkillsConfigureResponse {
 
 ## Notifications
 
-### `_loomdesk.dev/skills/changed`
+### `_anureo.dev/skills/changed`
 
 ```json
 {
   "jsonrpc": "2.0",
-  "method": "_loomdesk.dev/skills/changed",
+  "method": "_anureo.dev/skills/changed",
   "params": {
     "change": "install",
     "skillId": "rust-architecture"

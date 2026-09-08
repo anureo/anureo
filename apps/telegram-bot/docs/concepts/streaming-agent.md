@@ -1,6 +1,6 @@
 # 流式 Agent 响应
 
-Bot 收到消息后调用 Loom Agent，实时在 Telegram 中更新 Think / Act / Tool 阶段的输出。
+Bot 收到消息后调用 anureo Agent，实时在 Telegram 中更新 Think / Act / Tool 阶段的输出。
 
 ## 什么时候用
 
@@ -20,12 +20,12 @@ Bot 收到消息后调用 Loom Agent，实时在 Telegram 中更新 Think / Act 
 
 消息到达 Agent 后，数据流经三个阶段：
 
-1. **Agent 执行**（`streaming/agent.rs`）— 调用 `loom::run_agent_with_options()`，产生 `AnyStreamEvent` 事件流
-2. **事件映射**（`streaming/event_mapper.rs`）— 将 Loom 事件转为 `StreamCommand`（Adapter 模式）
+1. **Agent 执行**（`streaming/agent.rs`）— 调用 `anureo::run_agent_with_options()`，产生 `AnyStreamEvent` 事件流
+2. **事件映射**（`streaming/event_mapper.rs`）— 将 anureo 事件转为 `StreamCommand`（Adapter 模式）
 3. **消息处理**（`streaming/message_handler.rs`）— 消费 `StreamCommand`，按策略编辑 Telegram 消息
 
 ```
-Loom Agent → AnyStreamEvent → StreamEventMapper → StreamCommand → StreamMessageHandler → Telegram API
+anureo Agent → AnyStreamEvent → StreamEventMapper → StreamCommand → StreamMessageHandler → Telegram API
 ```
 
 ### 节流策略

@@ -1,6 +1,6 @@
 # Plugin 管理
 
-> **命名空间**: `_loomdesk.dev/plugin/*`
+> **命名空间**: `_anureo.dev/plugin/*`
 > **Capability key**: `plugin`
 > **实现状态**: ❌ 未实现
 
@@ -20,14 +20,14 @@
 }
 ```
 
-- Client 必须在 `initialize` 时声明 `agentCapabilities._meta["loomdesk.dev"].plugin` 的 method 粒度。
-- Plugin 安装/卸载可能改变其他 domain 的 capability（如 MCP server、command、hook），安装/卸载成功后 server 应发送 `_loomdesk.dev/capability_changed` notification。
+- Client 必须在 `initialize` 时声明 `agentCapabilities._meta["anureo.dev"].plugin` 的 method 粒度。
+- Plugin 安装/卸载可能改变其他 domain 的 capability（如 MCP server、command、hook），安装/卸载成功后 server 应发送 `_anureo.dev/capability_changed` notification。
 
 ---
 
 ## Methods
 
-### `_loomdesk.dev/plugin/list`
+### `_anureo.dev/plugin/list`
 
 | 项目 | 内容 |
 |---|---|
@@ -42,7 +42,7 @@
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "_loomdesk.dev/plugin/list",
+  "method": "_anureo.dev/plugin/list",
   "params": {
     "cursor": null,
     "limit": 50
@@ -68,8 +68,8 @@
         "name": "git-enhanced",
         "version": "1.2.0",
         "description": "Enhanced Git integration with PR templates",
-        "author": "LoomDesk",
-        "homepage": "https://github.com/loomdesk/git-enhanced",
+        "author": "Anureo",
+        "homepage": "https://github.com/anureo/git-enhanced",
         "enabled": true,
         "installed": true,
         "state": "active",
@@ -174,7 +174,7 @@ pub struct PluginListResponse {
 
 ---
 
-### `_loomdesk.dev/plugin/install`
+### `_anureo.dev/plugin/install`
 
 | 项目 | 内容 |
 |---|---|
@@ -191,11 +191,11 @@ pub struct PluginListResponse {
 {
   "jsonrpc": "2.0",
   "id": 2,
-  "method": "_loomdesk.dev/plugin/install",
+  "method": "_anureo.dev/plugin/install",
   "params": {
     "clientRequestId": "req-install-001",
     "source": "registry",
-    "identifier": "loomdesk/git-enhanced",
+    "identifier": "anureo/git-enhanced",
     "version": "1.2.0",
     "autoEnable": true
   }
@@ -237,11 +237,11 @@ pub struct PluginListResponse {
 #### 逻辑说明
 
 1. 安装过程可能包含下载、解压、依赖解析、注册 MCP server / command / hook。
-2. 安装进度通过 `_loomdesk.dev/plugin/progress` notification 上报（`08-cross-cutting-patterns.md` §3 长时操作进度）。
+2. 安装进度通过 `_anureo.dev/plugin/progress` notification 上报（`08-cross-cutting-patterns.md` §3 长时操作进度）。
 3. 安装失败必须回滚到安装前状态（类似 `skills/install` 的回滚语义）。
 4. 安装成功后：
    - 发送 `plugin/changed` notification。
-   - 发送 `_loomdesk.dev/capability_changed` notification（新增 MCP server / command / hook 可用）。
+   - 发送 `_anureo.dev/capability_changed` notification（新增 MCP server / command / hook 可用）。
    - 如果 plugin 注册了 command，同步触发 `available_commands_update`。
 5. `source` 为 `path` 时，server 必须校验路径在允许的范围内（不允许任意本地路径安装）。
 
@@ -278,7 +278,7 @@ pub enum PluginSource {
 
 ---
 
-### `_loomdesk.dev/plugin/uninstall`
+### `_anureo.dev/plugin/uninstall`
 
 | 项目 | 内容 |
 |---|---|
@@ -293,7 +293,7 @@ pub enum PluginSource {
 {
   "jsonrpc": "2.0",
   "id": 3,
-  "method": "_loomdesk.dev/plugin/uninstall",
+  "method": "_anureo.dev/plugin/uninstall",
   "params": {
     "clientRequestId": "req-uninstall-001",
     "id": "plg_001",
@@ -358,7 +358,7 @@ pub enum PluginSource {
 3. Client 收到 partial failure 后应提示用户手动处理残留资源。
 4. 卸载成功后：
    - 发送 `plugin/changed` notification。
-   - 发送 `_loomdesk.dev/capability_changed` notification（移除的 MCP server / command / hook）。
+   - 发送 `_anureo.dev/capability_changed` notification（移除的 MCP server / command / hook）。
    - 如果移除了 command，同步触发 `available_commands_update`。
 5. `cleanup` 为 `false` 时，只移除 plugin 注册记录，不清理关联资源（适用于调试场景）。
 
@@ -405,7 +405,7 @@ pub struct PluginUninstallResponse {
 
 ---
 
-### `_loomdesk.dev/plugin/enable`
+### `_anureo.dev/plugin/enable`
 
 | 项目 | 内容 |
 |---|---|
@@ -419,7 +419,7 @@ pub struct PluginUninstallResponse {
 {
   "jsonrpc": "2.0",
   "id": 4,
-  "method": "_loomdesk.dev/plugin/enable",
+  "method": "_anureo.dev/plugin/enable",
   "params": {
     "id": "plg_001"
   }
@@ -444,7 +444,7 @@ pub struct PluginUninstallResponse {
 
 1. 启用 plugin 会激活其注册的 MCP server、command 和 hook。
 2. 启用失败（如 MCP server 启动失败）时，plugin 状态为 `error`，response 中包含 `errorMessage`。
-3. 启用成功后发送 `plugin/changed` 和 `_loomdesk.dev/capability_changed` notification。
+3. 启用成功后发送 `plugin/changed` 和 `_anureo.dev/capability_changed` notification。
 
 #### Rust 类型
 
@@ -474,7 +474,7 @@ pub struct PluginEnableResponse {
 
 ---
 
-### `_loomdesk.dev/plugin/disable`
+### `_anureo.dev/plugin/disable`
 
 | 项目 | 内容 |
 |---|---|
@@ -488,7 +488,7 @@ pub struct PluginEnableResponse {
 {
   "jsonrpc": "2.0",
   "id": 5,
-  "method": "_loomdesk.dev/plugin/disable",
+  "method": "_anureo.dev/plugin/disable",
   "params": {
     "id": "plg_001"
   }
@@ -513,7 +513,7 @@ pub struct PluginEnableResponse {
 
 1. 禁用 plugin 会停用其注册的 MCP server、command 和 hook，但不卸载。
 2. 禁用是可逆操作，后续可通过 `plugin/enable` 恢复。
-3. 禁用成功后发送 `plugin/changed` 和 `_loomdesk.dev/capability_changed` notification。
+3. 禁用成功后发送 `plugin/changed` 和 `_anureo.dev/capability_changed` notification。
 4. 如果 plugin 注册了 command，禁用后同步触发 `available_commands_update`。
 
 #### Rust 类型
@@ -545,12 +545,12 @@ pub struct PluginDisableResponse {
 
 ## Notifications
 
-### `_loomdesk.dev/plugin/changed`
+### `_anureo.dev/plugin/changed`
 
 ```json
 {
   "jsonrpc": "2.0",
-  "method": "_loomdesk.dev/plugin/changed",
+  "method": "_anureo.dev/plugin/changed",
   "params": {
     "change": "installed | uninstalled | enabled | disabled | updated",
     "id": "plg_001"
@@ -564,16 +564,16 @@ pub struct PluginDisableResponse {
 | `id` | string | 受影响的 plugin ID |
 
 - Client 收到后必须调用 `plugin/list` 进行完整 resync。
-- Plugin 变更通常伴随 `_loomdesk.dev/capability_changed` notification，Client 需要同时处理两者。
+- Plugin 变更通常伴随 `_anureo.dev/capability_changed` notification，Client 需要同时处理两者。
 
-### `_loomdesk.dev/plugin/progress`
+### `_anureo.dev/plugin/progress`
 
 安装过程中的进度 notification（`08-cross-cutting-patterns.md` §3 长时操作进度）：
 
 ```json
 {
   "jsonrpc": "2.0",
-  "method": "_loomdesk.dev/plugin/progress",
+  "method": "_anureo.dev/plugin/progress",
   "params": {
     "operationId": "req-install-001",
     "progress": 45,
@@ -604,4 +604,4 @@ pub struct PluginDisableResponse {
 |---|---|---|
 | `plugin/changed` | `plugin/list` | 完整 plugin 列表 |
 
-Client 重连后若丢失 notification，必须调用 `plugin/list` 获取完整快照。Plugin 变更可能影响多个 domain 的 capability，Client 应同时检查 `_loomdesk.dev/capability_changed` 是否需要处理。
+Client 重连后若丢失 notification，必须调用 `plugin/list` 获取完整快照。Plugin 变更可能影响多个 domain 的 capability，Client 应同时检查 `_anureo.dev/capability_changed` 是否需要处理。

@@ -1,6 +1,6 @@
 # 多 Bot 架构
 
-单进程运行多个 Telegram Bot，各自独立长轮询，共享同一个 Loom Agent 引擎。
+单进程运行多个 Telegram Bot，各自独立长轮询，共享同一个 anureo Agent 引擎。
 
 ## 什么时候用
 

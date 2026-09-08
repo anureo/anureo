@@ -1,10 +1,10 @@
-# Loom 安全与隐私：任务前检查与副作用处置
+# anureo 安全与隐私：任务前检查与副作用处置
 
 > **状态**：已实现；本文把当前 CLI、ACP 和工具源码中的权限边界整理为可执行流程。
 > **适用范围**：真实代码仓库、含敏感数据的项目和团队环境。
 > **相关代码**：`apps/cli/src/args.rs`、`apps/cli/src/main.rs`、`apps/acp/src/agent.rs`、`apps/acp/src/client_capabilities.rs`、`apps/acp/src/tools/fs_tools.rs`、`apps/acp/src/tools/terminal_executor.rs`
 
-Loom 能读取和写入文件、启动 shell、连接 MCP、使用 browser，并保存 session、memory、skill 和 workflow 数据。把它当作一个有权限的 development tool 使用，而不是一个无副作用的聊天窗口。一次运行报告 `completed` 只表示这次 run 结束，不表示代码正确、业务结论正确、远端状态正确，或所有子进程和外部操作都已撤销。
+anureo 能读取和写入文件、启动 shell、连接 MCP、使用 browser，并保存 session、memory、skill 和 workflow 数据。把它当作一个有权限的 development tool 使用，而不是一个无副作用的聊天窗口。一次运行报告 `completed` 只表示这次 run 结束，不表示代码正确、业务结论正确、远端状态正确，或所有子进程和外部操作都已撤销。
 
 本文的核心流程是：先确认项目边界，再逐项确认动作和授权，优先隔离执行，运行后审查实际变化，最后清理仍然有效的凭据、session、skill 和 workflow 数据。
 
@@ -17,7 +17,7 @@ Loom 能读取和写入文件、启动 shell、连接 MCP、使用 browser，并
 ```powershell
 Get-Location
 git status --short
-loom --working-folder . -m "只读检查当前项目结构，不修改文件"
+anureo --working-folder . -m "只读检查当前项目结构，不修改文件"
 ```
 
 `--working-folder DIR` 是 CLI 的 file-tool 工作目录；省略时使用当前目录。`apps/cli/src/args.rs` 将它定义为可选 `PathBuf`，因此不要假设 IDE、shell 或上一次 session 的当前目录就是目标项目。开始前检查：
@@ -31,9 +31,9 @@ ACP 中，IDE 传给 `session/new` 或 `session/load` 的 absolute `cwd` 会成�
 
 ### 1.2 配置和凭据放置
 
-Loom home 由 `$LOOM_HOME` 决定；未设置时使用平台用户目录下的 `.loom`（源码函数为 `loom_home()`）。下文的 `{loom_home}` 表示这个有效目录：session 数据位于 `{loom_home}/thread/{session_id}/`，canonical 日志目录是 `{loom_home}/logs/cli`、`{loom_home}/logs/acp` 和 `{loom_home}/logs/llm`。配置文件的位置相应是 `{loom_home}/config.toml` 和 `{loom_home}/mcp.json`；只有未设置 `$LOOM_HOME` 时，才可把它们简写为默认的 `~/.loom/config.toml` 和 `~/.loom/mcp.json`。
+anureo home 由 `$ANUREO_HOME` 决定；未设置时使用平台用户目录下的 `.anureo`（源码函数为 `anureo_home()`）。下文的 `{anureo_home}` 表示这个有效目录：session 数据位于 `{anureo_home}/thread/{session_id}/`，canonical 日志目录是 `{anureo_home}/logs/cli`、`{anureo_home}/logs/acp` 和 `{anureo_home}/logs/llm`。配置文件的位置相应是 `{anureo_home}/config.toml` 和 `{anureo_home}/mcp.json`；只有未设置 `$ANUREO_HOME` 时，才可把它们简写为默认的 `~/.anureo/config.toml` 和 `~/.anureo/mcp.json`。
 
-日志目录是路径约定，不代表每个目录都会有文件：CLI 只有设置 `--log-file` 或 `LOG_FILE` 时才写日志，否则日志会被丢弃；ACP 有自己的配置/默认日志行为。请用实际的 `--log-file`、`LOG_FILE`、ACP 日志配置以及 `loom acp --show-log-dir` 检查 effective log configuration 和实际文件。
+日志目录是路径约定，不代表每个目录都会有文件：CLI 只有设置 `--log-file` 或 `LOG_FILE` 时才写日志，否则日志会被丢弃；ACP 有自己的配置/默认日志行为。请用实际的 `--log-file`、`LOG_FILE`、ACP 日志配置以及 `anureo acp --show-log-dir` 检查 effective log configuration 和实际文件。
 
 项目 `.env` 会由 `foundation/config/src/dotenv.rs` 读取；这是一个 minimal `KEY=VALUE` parser，支持注释、空值、有限的单/双引号处理和双引号转义，但不支持多行/续行，也不是完整的 dotenv expansion。项目 `.env` 可覆盖配置中的同名值。建议把真实 credential 放在受访问控制的环境变量、未提交的项目 `.env` 或受控 secret manager 中，并在任务前确认它不会进入模型输入、命令行历史、shell 输出、MCP `args`、skill、memory、workflow source、普通 prompt 或日志。
 
@@ -60,8 +60,8 @@ Loom home 由 `$LOOM_HOME` 决定；未设置时使用平台用户目录下的 `
 调用前可先检查当前 registry 的定义：
 
 ```powershell
-loom tool list
-loom tool show <name> --output json
+anureo tool list
+anureo tool show <name> --output json
 ```
 
 检查 `input_schema` 中的 path、command、URL、upload、delete、overwrite 等字段，以及 description 是否声明额外范围。definition 是审计材料，不是授权本身。
@@ -82,13 +82,13 @@ shell 是任意命令边界，不只是测试入口。它可能安装依赖、�
 
 ### 3.3 network、MCP、browser form 和 upload
 
-MCP 配置发现可由 `--mcp-config PATH` 覆盖，也会查找 working folder 下的 `.loom/mcp.json` 和 `{loom_home}/mcp.json`（未设置 `$LOOM_HOME` 时，后者是默认的 `~/.loom/mcp.json`）。先审查再启用：
+MCP 配置发现可由 `--mcp-config PATH` 覆盖，也会查找 working folder 下的 `.anureo/mcp.json` 和 `{anureo_home}/mcp.json`（未设置 `$ANUREO_HOME` 时，后者是默认的 `~/.anureo/mcp.json`）。先审查再启用：
 
 ```powershell
-loom mcp list
-loom mcp show <server>
-loom mcp add --name <server> --url https://example.invalid/endpoint --disabled
-loom mcp enable <server>
+anureo mcp list
+anureo mcp show <server>
+anureo mcp add --name <server> --url https://example.invalid/endpoint --disabled
+anureo mcp enable <server>
 ```
 
 审查 server 的 `command`、全部 `args`、包来源、URL、headers、environment、TLS、账号权限、数据出境和工具 definition。`enable` 只是改 `disabled` 字段，不等于连通性检查；下一次 run 才会按配置加载。第三方 MCP 可能同时读写本地和远端资源。
@@ -97,15 +97,15 @@ browser、web fetcher 和 MCP HTTP 都可能把敏感内容发到外部。表单
 
 ### 3.4 delete、publish 和不可逆操作
 
-删除 session、skill、文件、MCP entry、远端记录或 worktree，和发布包、提交代码、push、deploy、发送消息一样，必须每次显式确认，不能依赖永久 allow。先显示目标并记录恢复路径，再执行；`loom mcp delete <name>` 只从配置移除 entry，不清理已安装包、远端资源或已产生的副作用。
+删除 session、skill、文件、MCP entry、远端记录或 worktree，和发布包、提交代码、push、deploy、发送消息一样，必须每次显式确认，不能依赖永久 allow。先显示目标并记录恢复路径，再执行；`anureo mcp delete <name>` 只从配置移除 entry，不清理已安装包、远端资源或已产生的副作用。
 
 ## 4. CLI 与 ACP：确认机制不同
 
-CLI 是命令行和 script 的基线入口。交互模式 `loom -i -m "..."` 只表示可以继续对话，不自动提供每个高风险 tool 的人工批准；non-interactive 或没有确认机制时，不应让写入、shell install、外部提交、删除或发布静默执行。CLI 的 `--json` 是机器可读事件和结果输出，`--file PATH` 可把 JSON 写入文件；stdout 的结果不能替代人工审查。
+CLI 是命令行和 script 的基线入口。交互模式 `anureo -i -m "..."` 只表示可以继续对话，不自动提供每个高风险 tool 的人工批准；non-interactive 或没有确认机制时，不应让写入、shell install、外部提交、删除或发布静默执行。CLI 的 `--json` 是机器可读事件和结果输出，`--file PATH` 可把 JSON 写入文件；stdout 的结果不能替代人工审查。
 
 ACP 通过 IDE 的 `session/request_permission` 请求权限。客户端能力解析中，未声明的 `fs_*` 和 MCP transport capabilities 默认是 `false`；能力过滤的 ACP extra tools（例如 `fs_read_text_file`、`fs_write_text_file` 及相应 MCP transport 工具）会被省略。这里不能据此断言 terminal 不可用：`apps/acp/src/agent.rs` 对 ACP run 仍会无条件安装 `LocalCommandExecutor`，因此 built-in/local command path 是否可用要按该具体路径检查，而不是只看客户端的 terminal flag。客户端 capability declaration 也不是 OS sandbox。IDE 拒绝或取消时，tool call 状态是 denied/cancelled，不是 success；客户端应把 tool、path/command、cwd、scope 和 duration 呈现给用户。ACP `session/cancel` 结束当前 run 的状态应为 `cancelled`，但 cancellation 不是 rollback。
 
-**实验性边界**：ACP 的 capabilities 和 bridge 只说明客户端声明的能力与传输方式，不构成 OS sandbox；IDE 的确认 UI 也不保证已经撤销子进程、远端请求或已写入的数据。`loom acp` 的 stdout 专供 JSON-RPC，诊断应写日志并用 `loom acp --show-log-dir` 查找日志，不能把 debug 文本混入 stdout。
+**实验性边界**：ACP 的 capabilities 和 bridge 只说明客户端声明的能力与传输方式，不构成 OS sandbox；IDE 的确认 UI 也不保证已经撤销子进程、远端请求或已写入的数据。`anureo acp` 的 stdout 专供 JSON-RPC，诊断应写日志并用 `anureo acp --show-log-dir` 查找日志，不能把 debug 文本混入 stdout。
 
 ## 5. 隔离、审查和清理
 
@@ -114,7 +114,7 @@ ACP 通过 IDE 的 `session/request_permission` 请求权限。客户端能力�
 修改任务优先使用：
 
 ```powershell
-loom --worktree --working-folder . -m "修改并测试此功能，完成后报告 diff"
+anureo --worktree --working-folder . -m "修改并测试此功能，完成后报告 diff"
 ```
 
 `--worktree` 创建 isolated Git worktree；没有变化时清理，有变化时保留 worktree branch/directory 供 review。它隔离 Git 工作目录，不隔离 provider、MCP、browser、shell、安装、push、上传或其它外部副作用。完成或取消后，在原仓库和 retained worktree 中分别执行：
@@ -144,17 +144,17 @@ git diff -- docs/user-guide/07-security-and-privacy.md
 删除前先确认精确 ID/name/path，并保存必要的脱敏审计记录：
 
 ```powershell
-loom session list
-loom session show <session-id>
-loom session delete <session-id>
-loom skills list
-loom skills delete <skill-name>
-loom memory list
+anureo session list
+anureo session show <session-id>
+anureo session delete <session-id>
+anureo skills list
+anureo skills delete <skill-name>
+anureo memory list
 ```
 
-`session delete` 删除 conversation data，但不删除 project files、memory 或 skills。skill 删除、memory 编辑和 workflow 清理是不同对象，不能用 session delete 代替；先查看命令的当前 definition 和实际文件，再决定是否备份。`LOOM_HOME` 下的 session/thread、logs、memory/skill data，以及项目 `.loom/` 中的配置和 workflow state，可能没有统一的 undo；Git 只可能恢复受 Git 管理的文件，不能恢复远端副作用、已泄露 credential 或所有 SQLite/checkpoint 数据。
+`session delete` 删除 conversation data，但不删除 project files、memory 或 skills。skill 删除、memory 编辑和 workflow 清理是不同对象，不能用 session delete 代替；先查看命令的当前 definition 和实际文件，再决定是否备份。`ANUREO_HOME` 下的 session/thread、logs、memory/skill data，以及项目 `.anureo/` 中的配置和 workflow state，可能没有统一的 undo；Git 只可能恢复受 Git 管理的文件，不能恢复远端副作用、已泄露 credential 或所有 SQLite/checkpoint 数据。
 
-**实验性说明**：具体 workflow instance 的存储和删除入口可能随 workflow 实现变化。不要按目录名猜测删除命令，也不要递归删除整个 `~/.loom` 或项目 `.loom/`；先列出 instance、确认是否有 export/backup/restore，再按该实现提供的 lifecycle command 清理，并验证其它 session、skill 和 memory 仍然存在。
+**实验性说明**：具体 workflow instance 的存储和删除入口可能随 workflow 实现变化。不要按目录名猜测删除命令，也不要递归删除整个 `~/.anureo` 或项目 `.anureo/`；先列出 instance、确认是否有 export/backup/restore，再按该实现提供的 lifecycle command 清理，并验证其它 session、skill 和 memory 仍然存在。
 
 ## 6. 取消、错误和外部副作用的应急步骤
 

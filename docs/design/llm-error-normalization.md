@@ -6,7 +6,7 @@
 
 ## 1. 背景与问题
 
-Loom 通过 `foundation/llm` 调用 177 个模型提供商（models.dev 收录），其中 146 个遵循 OpenAI 错误协议、9 个遵循 Anthropic 协议，其余为 Google/Azure/Bedrock 及专有协议。各 provider 的错误语义差异（HTTP 码、业务码、`error.type` 词汇）已在统一状态码文档中整理，但**代码层目前没有任何结构化的错误模型**。
+anureo 通过 `foundation/llm` 调用 177 个模型提供商（models.dev 收录），其中 146 个遵循 OpenAI 错误协议、9 个遵循 Anthropic 协议，其余为 Google/Azure/Bedrock 及专有协议。各 provider 的错误语义差异（HTTP 码、业务码、`error.type` 词汇）已在统一状态码文档中整理，但**代码层目前没有任何结构化的错误模型**。
 
 ### 1.1 现状盘点
 
@@ -18,7 +18,7 @@ Loom 通过 `foundation/llm` 调用 177 个模型提供商（models.dev 收录�
 | 错误体解析 | `foundation/llm/src/client/openai_compat/retry.rs:79-158` | 解析 `error.message/code/type`，但 `error_type` 解析后从未使用 |
 | 提供商限流特判 | `foundation/llm/src/client/openai_compat/retry.rs:93-104` | 硬编码智谱 `1000`/`1301`，漏了 `1310` 等 |
 | 字符串分类器 | `foundation/llm/src/support/error_classifier/{openai,bigmodel,minimax}.rs` | 只服务 `ChatOpenAI`（async_openai）路径，且按错误消息字符串匹配 |
-| 传输重试 | `foundation/loom-http-retry/src/lib.rs` | `is_retryable_reqwest_error`、`retry_backoff_for_attempt`（500ms→4s） |
+| 传输重试 | `foundation/anureo-http-retry/src/lib.rs` | `is_retryable_reqwest_error`、`retry_backoff_for_attempt`（500ms→4s） |
 | 客户端重试包装 | `foundation/llm/src/client/retry.rs` | `RetryLlmClient` 在返回错误后追加重试层 |
 | agent-core 消费 | `agent/agent-core/src/runner_error.rs` | `RunnerError` 不含 `LlmError`，结构化信息经 `GraphError::ExecutionFailed(String)` 丢失 |
 
@@ -48,7 +48,7 @@ Loom 通过 `foundation/llm` 调用 177 个模型提供商（models.dev 收录�
 
 - 不做跨 provider 全量业务码表进代码（完整表保留在 Markdown 文档，代码只维护**影响重试/提示决策**的子集）。
 - 不改变各 provider 的调用协议本身（OpenAI/Anthropic 请求仍各走各的）。
-- 不重构 HTTP 传输层（`loom-http-retry` 保留）。
+- 不重构 HTTP 传输层（`anureo-http-retry` 保留）。
 
 - Google / Azure / Bedrock 的专有错误协议（共 6 个 provider，见文档 §5/§6）：**本轮不实现解析器**，暂保持现有错误消息路径，后续迭代追加。
 
@@ -242,9 +242,9 @@ pub fn decide(parser: &dyn ProviderErrorParser, status: u16, headers: &HeaderMap
 - 其余可重试 kind → `RetryPolicy::Retry`。
 - 不可重试 kind → `RetryPolicy::NoRetry { action }`。
 
-**传输层与应用层协作**：`loom-http-retry` 处理 reqwest 传输错误（连接/超时/TLS，不产生 HTTP 响应），走 `LlmError::InvokeFailed` 路径；`decide()` 仅在**收到 HTTP 响应**后才调用，负责结构化错误的分类。传输层重试次数与退避策略不变，应用层重试次数由 `RetryLlmClient` 的 `max_application_retries` 控制（当前 5 次），仅 `retry_policy` 为 `Retry` 或 `RetryAfter` 的 `ProviderError` 才触发应用层重试。
+**传输层与应用层协作**：`anureo-http-retry` 处理 reqwest 传输错误（连接/超时/TLS，不产生 HTTP 响应），走 `LlmError::InvokeFailed` 路径；`decide()` 仅在**收到 HTTP 响应**后才调用，负责结构化错误的分类。传输层重试次数与退避策略不变，应用层重试次数由 `RetryLlmClient` 的 `max_application_retries` 控制（当前 5 次），仅 `retry_policy` 为 `Retry` 或 `RetryAfter` 的 `ProviderError` 才触发应用层重试。
 
-- 重试计数与退避仍由 `loom-http-retry` 与 `RetryLlmClient` 负责，但**是否重试**改为读 `retry_policy`。
+- 重试计数与退避仍由 `anureo-http-retry` 与 `RetryLlmClient` 负责，但**是否重试**改为读 `retry_policy`。
 
 ## 4. 代码落点
 
@@ -330,7 +330,7 @@ pub enum RunnerError {
 | 三 | 步骤 6-7 | Anthropic 默认解析器 + SSE 错误 + agent-core 消费 |
 | 四 | 后续 | 其余覆写（Moonshot / OpenRouter / LongCat / MiniMax）+ Google / Azure / Bedrock 解析器 |
 
-**不迁移**：`loom-http-retry` 传输层、`RetryLlmClient` 的退避逻辑本身。
+**不迁移**：`anureo-http-retry` 传输层、`RetryLlmClient` 的退避逻辑本身。
 
 ## 8. 决策记录
 

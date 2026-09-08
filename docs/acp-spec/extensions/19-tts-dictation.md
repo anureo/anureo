@@ -1,6 +1,6 @@
 # TTS 与 Dictation 扩展
 
-> 命名空间: `_loomdesk.dev/tts/*`、`_loomdesk.dev/dictation/*`
+> 命名空间: `_anureo.dev/tts/*`、`_anureo.dev/dictation/*`
 > Capability key: `tts`、`dictation`
 > 实现状态: ❌ 未实现
 
@@ -33,7 +33,7 @@ TTS 和 Dictation 使用独立 WebSocket 子流返回音频和识别结果，不
 
 ## TTS Methods
 
-### `_loomdesk.dev/tts/synthesize`
+### `_anureo.dev/tts/synthesize`
 
 | 项目 | 内容 |
 |---|---|
@@ -50,7 +50,7 @@ TTS 和 Dictation 使用独立 WebSocket 子流返回音频和识别结果，不
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "_loomdesk.dev/tts/synthesize",
+  "method": "_anureo.dev/tts/synthesize",
   "params": {
     "text": "Hello, this is a text to speech synthesis test.",
     "sessionId": "session-abc123",
@@ -80,7 +80,7 @@ TTS 和 Dictation 使用独立 WebSocket 子流返回音频和识别结果，不
   "result": {
     "mode": "substream",
     "substreamId": "tts-stream-001",
-    "substreamUrl": "wss://loom.example.com/substream?type=tts&sessionId=session-abc123",
+    "substreamUrl": "wss://anureo.example.com/substream?type=tts&sessionId=session-abc123",
     "format": "mp3",
     "estimatedDurationMs": 3200
   }
@@ -187,7 +187,7 @@ pub struct TtsSynthesizeResponse {
 
 ---
 
-### `_loomdesk.dev/tts/summarize`
+### `_anureo.dev/tts/summarize`
 
 | 项目 | 内容 |
 |---|---|
@@ -203,7 +203,7 @@ pub struct TtsSynthesizeResponse {
 {
   "jsonrpc": "2.0",
   "id": 2,
-  "method": "_loomdesk.dev/tts/summarize",
+  "method": "_anureo.dev/tts/summarize",
   "params": {
     "text": "（长文本，例如 session 中 assistant 的完整回复）...",
     "sessionId": "session-abc123",
@@ -234,7 +234,7 @@ pub struct TtsSynthesizeResponse {
     "summary": "This is a concise summary of the long text...",
     "mode": "substream",
     "substreamId": "tts-stream-002",
-    "substreamUrl": "wss://loom.example.com/substream?type=tts&sessionId=session-abc123",
+    "substreamUrl": "wss://anureo.example.com/substream?type=tts&sessionId=session-abc123",
     "format": "mp3",
     "estimatedDurationMs": 1500
   }
@@ -302,7 +302,7 @@ pub struct TtsSummarizeResponse {
 
 ## Dictation Methods
 
-### `_loomdesk.dev/dictation/stream`
+### `_anureo.dev/dictation/stream`
 
 | 项目 | 内容 |
 |---|---|
@@ -319,7 +319,7 @@ pub struct TtsSummarizeResponse {
 Client 发起 WebSocket 连接：
 
 ```
-wss://loom.example.com/substream?type=dictation&sessionId=<session-id>
+wss://anureo.example.com/substream?type=dictation&sessionId=<session-id>
 ```
 
 请求必须携带与 parent ACP connection 相同的 Bearer token。

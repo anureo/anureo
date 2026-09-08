@@ -12,7 +12,7 @@
 |---|---|
 | 方向 | Client → Agent request |
 | 能力 | 无（连接建立后的第一个 ACP request） |
-| Loom 状态 | ✅ 已实现 |
+| anureo 状态 | ✅ 已实现 |
 
 ### Request
 
@@ -38,7 +38,7 @@
       }
     },
     "clientInfo": {
-      "name": "loomdesk",
+      "name": "anureo",
       "version": "1.0.0"
     }
   }
@@ -86,14 +86,14 @@
         // 注意: fork 未在此声明（代码 bug，见 02-session-lifecycle.md §4）
       },
       "_meta": {
-        "loomdesk.dev": {
+        "anureo.dev": {
           // ExtensionRegistry capability 快照（31 个域），见 agent.rs::initialize()
         }
       }
     },
     "agentInfo": {
-      "name": "loom",
-      "version": "<loom_version>"
+      "name": "anureo",
+      "version": "<anureo_version>"
     },
     "authMethods": []
   }
@@ -103,13 +103,13 @@
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | `protocolVersion` | string | 协商后的协议版本（`ProtocolVersion::V1`） |
-| `agentCapabilities.loadSession` | bool | Loom 返回 `true` |
+| `agentCapabilities.loadSession` | bool | anureo 返回 `true` |
 | `agentCapabilities.promptCapabilities` | object | image/audio/embeddedContext |
 | `agentCapabilities.mcpCapabilities` | object | HTTP MCP 支持 |
 | `agentCapabilities.sessionCapabilities` | object | list/delete/resume/close 已声明；fork handler 已实现但 capability 未声明（代码 bug） |
-| `agentCapabilities._meta` | object | `["loomdesk.dev"]` 为扩展域能力快照，随 `ExtensionRegistry` 注册自动生成 |
-| `agentInfo.name` | string | 固定 `"loom"` |
-| `agentInfo.version` | string | Loom 版本号 |
+| `agentCapabilities._meta` | object | `["anureo.dev"]` 为扩展域能力快照，随 `ExtensionRegistry` 注册自动生成 |
+| `agentInfo.name` | string | 固定 `"anureo"` |
+| `agentInfo.version` | string | anureo 版本号 |
 | `authMethods` | array | 当前为空数组 |
 
 ### 逻辑说明
@@ -117,8 +117,8 @@
 1. **单次约束**: 每条 connection 只能成功 `initialize` 一次；重复调用返回 `AlreadyInitialized` 错误
 2. **第一请求**: `initialize` 必须是连接建立后的第一个业务 request；在此之前不得调用 session 或扩展 method
 3. **Capability snapshot**: Client 必须根据本次 response 重建 capability snapshot，不能使用历史缓存推断
-4. **Client 能力解析**: Loom 通过 `ClientCapabilitiesInfo` 解析客户端能力，用于决定是否发起 reverse-RPC
-5. **扩展能力**: 当 `_loomdesk.dev` 扩展实现后，能力声明放在 `agentCapabilities._meta["loomdesk.dev"]`
+4. **Client 能力解析**: anureo 通过 `ClientCapabilitiesInfo` 解析客户端能力，用于决定是否发起 reverse-RPC
+5. **扩展能力**: 当 `_anureo.dev` 扩展实现后，能力声明放在 `agentCapabilities._meta["anureo.dev"]`
 
 ### Rust 类型
 
@@ -160,7 +160,7 @@ AgentCapabilities {
 |---|---|
 | 方向 | Client → Agent request |
 | 触发条件 | Agent 在 `initialize` 中声明 `authMethods` |
-| Loom 状态 | ✅ Handler 已存在；当前 `authMethods` 为空 |
+| anureo 状态 | ✅ Handler 已存在；当前 `authMethods` 为空 |
 
 ### Request
 
@@ -192,8 +192,8 @@ AgentCapabilities {
 
 1. 当前 `authMethods` 为空数组，所以 Client 不应发起此请求
 2. WebSocket transport 的 Bearer auth 属于 Transport/Server 层（`apps/server/src/handlers/acp.rs`），不等同于 ACP `authenticate`
-3. Server 层 auth: 从 `AUTHORIZATION` 头提取 Bearer token，与 `LOOM_AUTH_TOKEN` 环境变量比对；匹配后生成 principal（格式 `token-{hash}`）
-4. 未设置 `LOOM_AUTH_TOKEN` 或 token 不匹配时，principal 为 `"local-anonymous"`
+3. Server 层 auth: 从 `AUTHORIZATION` 头提取 Bearer token，与 `ANUREO_AUTH_TOKEN` 环境变量比对；匹配后生成 principal（格式 `token-{hash}`）
+4. 未设置 `ANUREO_AUTH_TOKEN` 或 token 不匹配时，principal 为 `"local-anonymous"`
 
 ### Rust 类型
 

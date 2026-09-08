@@ -4,19 +4,19 @@
 
 - Rust 1.75+（`rustc --version`）
 - Telegram Bot Token（从 [@BotFather](https://t.me/BotFather) 获取）
-- Loom 配置目录（默认 `~/.loom/`）
+- anureo 配置目录（默认 `~/.anureo/`）
 
 ## 步骤
 
 ### Step 1: 创建配置目录
 
 ```bash
-mkdir -p ~/.loom
+mkdir -p ~/.anureo
 ```
 
 ### Step 2: 写入 Bot 配置
 
-创建 `~/.loom/telegram-bot.toml`：
+创建 `~/.anureo/telegram-bot.toml`：
 
 ```toml
 [settings]
@@ -31,9 +31,9 @@ interaction_mode = "streaming"  # 推荐：流式响应
 model = "gpt-4"                 # 默认模型
 ```
 
-### Step 3: 配置 Loom 主配置
+### Step 3: 配置 anureo 主配置
 
-确保 `~/.loom/config.toml` 中有 LLM provider 配置：
+确保 `~/.anureo/config.toml` 中有 LLM provider 配置：
 
 ```toml
 [default]

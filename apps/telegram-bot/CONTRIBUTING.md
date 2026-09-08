@@ -4,13 +4,13 @@
 
 ```bash
 # 1. 配置
-cp telegram-bot.example.toml ~/.loom/telegram-bot.toml
+cp telegram-bot.example.toml ~/.anureo/telegram-bot.toml
 # 编辑 token、LLM 设置
 
 # 2. 构建
 cargo build -p telegram-bot
 
-# 3. 测试 (需要先修复 loom crate 编译错误)
+# 3. 测试 (需要先修复 anureo crate 编译错误)
 cargo test -p telegram-bot
 
 # 4. Lint
@@ -71,7 +71,7 @@ apps/telegram-bot/
 - ❌ 生产代码中使用 `unwrap()` — 使用 `?` 或 `unwrap_or_else`
 - ❌ 硬编码 API token / secret
 - ❌ 新增 `unsafe` 块 (除非有详细安全论证)
-- ❌ 直接依赖 `reqwest`/`hyper` — 通过 `teloxide` 或 `loom` 间接使用
+- ❌ 直接依赖 `reqwest`/`hyper` — 通过 `teloxide` 或 `anureo` 间接使用
 
 ## Code Style
 

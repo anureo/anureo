@@ -2,7 +2,7 @@
 
 ## 1. 项目概览
 
-telegram-bot 是一个基于 [teloxide](https://github.com/teloxide/teloxide) 的 Telegram 多机器人管理框架，集成 Loom Agent 提供 AI 对话能力。核心特性：
+telegram-bot 是一个基于 [teloxide](https://github.com/teloxide/teloxide) 的 Telegram 多机器人管理框架，集成 anureo Agent 提供 AI 对话能力。核心特性：
 
 - **多 bot 长轮询** — 单进程运行多个 Telegram Bot，各自独立轮询
 - **流式 Agent 响应** — 实时展示 Think / Act / Tool 阶段，边生成边更新消息
@@ -16,7 +16,7 @@ telegram-bot 是一个基于 [teloxide](https://github.com/teloxide/teloxide) �
 | 依赖 | 用途 |
 |------|------|
 | teloxide 0.13 | Telegram Bot API |
-| loom (workspace) | AI Agent 运行时 |
+| anureo (workspace) | AI Agent 运行时 |
 | rusqlite 0.31 | SQLite（模型选择、session） |
 | axum 0.7 | 健康检查 HTTP 服务 |
 | tokio | 异步运行时 |
@@ -40,7 +40,7 @@ apps/telegram-bot/
 │   │   └── mod.rs           # 斜杠命令（Command 模式）
 │   ├── handler_deps.rs      # HandlerDeps 依赖注入容器
 │   ├── traits.rs            # 核心 trait 定义
-│   ├── agent.rs             # LoomAgentRunner 实现
+│   ├── agent.rs             # anureoAgentRunner 实现
 │   ├── sender.rs            # TeloxideSender：Telegram API 封装
 │   ├── session.rs           # SqliteSessionManager
 │   ├── download.rs          # 媒体文件下载
@@ -48,7 +48,7 @@ apps/telegram-bot/
 │   ├── streaming/
 │   │   ├── mod.rs
 │   │   ├── agent.rs         # Agent 流式执行入口
-│   │   ├── event_mapper.rs  # Loom 事件 → StreamCommand 适配器
+│   │   ├── event_mapper.rs  # anureo 事件 → StreamCommand 适配器
 │   │   ├── message_handler.rs # 流式消息状态机与 Telegram 更新
 │   │   └── retry.rs         # Telegram API 重试（指数退避 + jitter）
 │   ├── formatting/
@@ -85,12 +85,12 @@ apps/telegram-bot/
 ```
 main()
  │
- ├─ 1. config::load_and_apply_with_report("loom", ...)
- │     加载 ~/.loom/config.toml + .env，设置环境变量
+ ├─ 1. config::load_and_apply_with_report("anureo", ...)
+ │     加载 ~/.anureo/config.toml + .env，设置环境变量
  │     （OPENAI_API_KEY, MODEL, LLM_PROVIDER 等）
  │
  ├─ 2. load_config()
- │     加载 ~/.loom/telegram-bot.toml → TelegramBotConfig
+ │     加载 ~/.anureo/telegram-bot.toml → TelegramBotConfig
  │
  ├─ 3. logging::setup_logging()
  │     初始化 tracing（stdout + 可选文件输出）
@@ -157,7 +157,7 @@ pipeline::MessageContext
 ### 4.2 流式 Agent 响应
 
 ```
-agent.rs: run_loom_agent_streaming()
+agent.rs: run_anureo_agent_streaming()
  │
  ├─ 1. 创建 mpsc::channel::<StreamCommand>(100)
  │
@@ -165,11 +165,11 @@ agent.rs: run_loom_agent_streaming()
  │     └─ 消费 StreamCommand → 更新 Telegram 消息
  │
  ├─ 3. StreamEventMapper::new(tx, show_think, show_act)
- │     └─ 将 mapper callback 注册到 loom
+ │     └─ 将 mapper callback 注册到 anureo
  │
- ├─ 4. loom::run_agent_with_options(&opts, RunCmd::React, on_event)
+ ├─ 4. anureo::run_agent_with_options(&opts, RunCmd::React, on_event)
  │     │
- │     │  Loom 内部产生 AnyStreamEvent:
+ │     │  anureo 内部产生 AnyStreamEvent:
  │     │    ├─ ThinkStart / ThinkDelta / ThinkEnd
  │     │    ├─ ActStart / ActDelta / ActEnd
  │     │    ├─ ToolCallStart / ToolCallEnd
@@ -198,7 +198,7 @@ agent.rs: run_loom_agent_streaming()
 
 ### 5.1 `config/` — 配置系统
 
-**职责**：从 `~/.loom/telegram-bot.toml` 加载配置，支持环境变量插值。
+**职责**：从 `~/.anureo/telegram-bot.toml` 加载配置，支持环境变量插值。
 
 ```
 config/
@@ -224,8 +224,8 @@ TelegramBotConfig          // 根配置
 **环境变量插值**：配置中的 `"${TELOXIDE_TOKEN}"` 会被替换为实际环境变量值。
 
 **配置查找顺序**：
-1. `$LOOM_HOME/telegram-bot.toml`
-2. `~/.loom/telegram-bot.toml`
+1. `$ANUREO_HOME/telegram-bot.toml`
+2. `~/.anureo/telegram-bot.toml`
 3. `./telegram-bot.toml`（当前目录）
 
 ### 5.2 `traits.rs` — 核心抽象
@@ -234,7 +234,7 @@ TelegramBotConfig          // 根配置
 
 | Trait | 生产实现 | 用途 |
 |-------|---------|------|
-| `AgentRunner` | `LoomAgentRunner` | 执行 Agent 对话 |
+| `AgentRunner` | `anureoAgentRunner` | 执行 Agent 对话 |
 | `MessageSender` | `TeloxideSender` | 发送/编辑/删除 Telegram 消息 |
 | `SessionManager` | `SqliteSessionManager` | 会话重置与检查 |
 | `FileDownloader` | `TeloxideDownloader` | 下载 Telegram 媒体文件 |
@@ -350,12 +350,12 @@ pub trait BotCommand: Send + Sync {
 
 ### 5.7 `streaming/` — 流式响应系统
 
-这是系统最复杂的子系统，负责将 Loom Agent 的实时事件转化为 Telegram 消息更新。
+这是系统最复杂的子系统，负责将 anureo Agent 的实时事件转化为 Telegram 消息更新。
 
 #### 5.7.1 `agent.rs` — 流式执行入口
 
 ```rust
-pub async fn run_loom_agent_streaming(
+pub async fn run_anureo_agent_streaming(
     message: &str,
     chat_id: i64,
     sender: Arc<dyn MessageSender>,
@@ -367,15 +367,15 @@ pub async fn run_loom_agent_streaming(
 流程：
 1. 创建 `mpsc::channel::<StreamCommand>(100)`
 2. `tokio::spawn` 消息处理任务（消费端）
-3. 构建 `StreamEventMapper`，注册为 loom callback
-4. 调用 `loom::run_agent_with_options()`
+3. 构建 `StreamEventMapper`，注册为 anureo callback
+4. 调用 `anureo::run_agent_with_options()`
 5. 发送 `Flush` 命令，等待处理任务返回最终文本
 
 #### 5.7.2 `event_mapper.rs` — 事件适配器（Adapter 模式）
 
-将 Loom 的 `AnyStreamEvent` 映射为内部 `StreamCommand`：
+将 anureo 的 `AnyStreamEvent` 映射为内部 `StreamCommand`：
 
-| Loom Event | StreamCommand | Priority |
+| anureo Event | StreamCommand | Priority |
 |------------|---------------|----------|
 | `ThinkStart` | `StartThink { count }` | Critical |
 | `ThinkDelta` | `ThinkContent { content }` | BestEffort |
@@ -508,11 +508,11 @@ trait ModelCatalog:
 
 ### 5.12 `session.rs` — 会话管理
 
-`SqliteSessionManager` 实现会话重置（清除 Loom checkpoints）：
+`SqliteSessionManager` 实现会话重置（清除 anureo checkpoints）：
 
 ```rust
 async fn reset(&self, thread_id: &str) → 调用 download::reset_session()
-async fn exists(&self, thread_id: &str) → 查询 loom 的 SQLite checkpoints 表
+async fn exists(&self, thread_id: &str) → 查询 anureo 的 SQLite checkpoints 表
 ```
 
 `thread_id` 格式：`telegram_{chat_id}`
@@ -621,7 +621,7 @@ router 和 pipeline 只依赖 `&HandlerDeps`，不知道具体实现。
 
 ### 6.2 Adapter 模式
 
-`StreamEventMapper` 将 Loom 的 `AnyStreamEvent` 适配为内部的 `StreamCommand`，解耦了 Agent 运行时和 Telegram UI。
+`StreamEventMapper` 将 anureo 的 `AnyStreamEvent` 适配为内部的 `StreamCommand`，解耦了 Agent 运行时和 Telegram UI。
 
 ### 6.3 Command 模式
 
@@ -630,7 +630,7 @@ router 和 pipeline 只依赖 `&HandlerDeps`，不知道具体实现。
 ### 6.4 Producer-Consumer
 
 流式响应使用 `mpsc::channel` 连接：
-- **Producer**：`StreamEventMapper`（在 loom callback 中）
+- **Producer**：`StreamEventMapper`（在 anureo callback 中）
 - **Consumer**：`stream_message_handler`（独立的 tokio task）
 
 ### 6.5 背压（Backpressure）
@@ -644,7 +644,7 @@ channel 满时的两种策略：
 ## 7. 配置示例
 
 ```toml
-# ~/.loom/telegram-bot.toml
+# ~/.anureo/telegram-bot.toml
 
 [settings]
 download_dir = "downloads"
@@ -689,7 +689,7 @@ interaction_mode = "streaming"  # or "periodic_summary"
 | `message_flow_test.rs` | 文本/媒体/命令消息流 |
 | `streaming_message_handler_test.rs` | 流式消息更新 |
 
-测试使用 `HandlerDeps::mock()` 完全隔离 Telegram API 和 Loom Agent。
+测试使用 `HandlerDeps::mock()` 完全隔离 Telegram API 和 anureo Agent。
 
 ---
 

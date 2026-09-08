@@ -46,7 +46,7 @@ Agent 响应文本的流式分块。
 |---|---|---|
 | `text` | string | 文本分块内容 |
 
-**逻辑**: 来自 Loom stream event 的文本块，直接转发为 ACP `TextChunk`。
+**逻辑**: 来自 anureo stream event 的文本块，直接转发为 ACP `TextChunk`。
 
 ---
 

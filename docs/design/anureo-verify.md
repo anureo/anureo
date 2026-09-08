@@ -1,12 +1,12 @@
-# OpenChamber ↔ Loom Server 功能验收
+# anureo ↔ anureo Server 功能验收
 
-> 验证 workflow `dev-openchamber` 产出的 5 个 P0 任务是否正常工作。
-> 使用 Chrome DevTools MCP 直接调用 Loom API + 浏览器验证。
+> 验证 workflow `dev-anureo` 产出的 5 个 P0 任务是否正常工作。
+> 使用 Chrome DevTools MCP 直接调用 anureo API + 浏览器验证。
 
 ## 前提
 
-- `loom-server` 运行在 `http://127.0.0.1:3148`（固定端口便于前端 proxy）
-- 无需 OpenChamber 前端（直接 HTTP 验证后端 API）
+- `anureo-server` 运行在 `http://127.0.0.1:3148`（固定端口便于前端 proxy）
+- 无需 anureo 前端（直接 HTTP 验证后端 API）
 
 ## 验收清单
 
@@ -58,7 +58,7 @@
 
 ## 验收结果 (2025-08-19)
 
-后端: `loom-server` release build, `http://127.0.0.1:3148`
+后端: `anureo-server` release build, `http://127.0.0.1:3148`
 
 ### OC-C: Provider/Model 数据 ✅
 

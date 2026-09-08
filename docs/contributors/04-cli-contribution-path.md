@@ -1,14 +1,14 @@
-# Loom CLI 贡献路径
+# anureo CLI 贡献路径
 
 > **状态**：基于当前源码的贡献者说明
 > **相关代码**：`apps/cli/src/main.rs`、`apps/cli/src/args.rs`、`apps/cli/src/run_flow.rs`、`apps/cli/src/run/`、`apps/cli/src/repl.rs`、`apps/cli/src/display/`
 > **测试**：`apps/cli/tests/mcp_cli_test.rs` 及各 CLI 模块内的 `#[cfg(test)]`
 
-本文面向需要修改 Loom CLI 的贡献者。文中的命令、配置项、模块职责和行为均以当前列出的源码为准；未在这些文件中出现的 API 不作为已实现接口。涉及占位或仍在演进的行为会明确标注。
+本文面向需要修改 anureo CLI 的贡献者。文中的命令、配置项、模块职责和行为均以当前列出的源码为准；未在这些文件中出现的 API 不作为已实现接口。涉及占位或仍在演进的行为会明确标注。
 
 ## 1. CLI 的边界
 
-`apps/cli` 同时提供 `loom` binary 和 `cli` library。`lib.rs` 将 CLI 的参数、run orchestration、session、MCP、model/tool 查询及 display 相关模块公开给其它入口；`main.rs` 负责进程级启动和 dispatch。Agent graph、`RunOptions`、`RunCmd`、`RunError` 与 `TypedAnyStreamEvent` 来自 `agent` crate，CLI 不在入口中重新实现 Agent loop。
+`apps/cli` 同时提供 `anureo` binary 和 `cli` library。`lib.rs` 将 CLI 的参数、run orchestration、session、MCP、model/tool 查询及 display 相关模块公开给其它入口；`main.rs` 负责进程级启动和 dispatch。Agent graph、`RunOptions`、`RunCmd`、`RunError` 与 `TypedAnyStreamEvent` 来自 `agent` crate，CLI 不在入口中重新实现 Agent loop。
 
 当前边界可以概括为：
 
@@ -35,7 +35,7 @@ Foundation、Agent、Tool 或 ACP 的公共能力应回到其 owning crate；CLI
 Args::parse()
   │
   ├─ validate_tier_arg / check_model_tier_conflict
-  ├─ ACP command? ──> loom_acp::server（stdout 保留给 JSON-RPC）
+  ├─ ACP command? ──> anureo_acp::server（stdout 保留给 JSON-RPC）
   ├─ preserve_shell_env -> print_config_report -> init_logging
   ├─ 管理型 Command ──> subcommands.rs / 专用 command module
   └─ React / Dup / Tot / Got
@@ -72,7 +72,7 @@ Args::parse()
 | `-M/--model <MODEL>` | model override；源码 help 支持 bare name 或 `provider/model` 形式 |
 | `--provider <PROVIDER>` | 从 config 的 `[[providers]]` 选择 provider |
 | `--tier <TIER>` | `light`、`standard`、`strong`，不能与 `--model` 同用 |
-| `-P/--agent <NAME>` | 从 `.loom/agents/<NAME>` 或 `~/.loom/agents/<NAME>` 读取 named profile |
+| `-P/--agent <NAME>` | 从 `.anureo/agents/<NAME>` 或 `~/.anureo/agents/<NAME>` 读取 named profile |
 | `-s/--session-id <ID>` | 设置连续对话使用的 checkpoint thread id |
 | `-v`、`-vv` | 增加 CLI 展示信息；`-vvv` 及以上与 `-vv` 相同 |
 | `-i/--interactive` | 运行 REPL |
@@ -126,13 +126,13 @@ session 搜索在 `session.rs` 中优先探测 SQLite FTS5/trigram，失败时�
 
 ### 5.2 tool、models、agent
 
-`tool list/show` 通过 `run::cli_list_tools`、`cli_show_tool` 调用 CLI library 的 tool 查询；show 支持 YAML，`--json` 或 `--output json` 选择 JSON。`models` 通过 `model_cmd` 读取 `config::load_full_config("loom")`，从 `ModelRegistry` 查询 configured providers；每个 provider 最多展示 30 个模型，JSON 结果包含 `provider`、`models`、`error`。
+`tool list/show` 通过 `run::cli_list_tools`、`cli_show_tool` 调用 CLI library 的 tool 查询；show 支持 YAML，`--json` 或 `--output json` 选择 JSON。`models` 通过 `model_cmd` 读取 `config::load_full_config("anureo")`，从 `ModelRegistry` 查询 configured providers；每个 provider 最多展示 30 个模型，JSON 结果包含 `provider`、`models`、`error`。
 
 `agent list` 使用 `agent::profile::list_available_profiles`；`agent export` 使用 profile conversion，支持 dry-run 或写到指定 output 目录。profile 的发现和解析属于 Agent/profile 层，CLI 只负责 command wiring 和输出。
 
 ### 5.3 MCP
 
-`McpManager::new` 的发现优先级是当前项目 `.loom/mcp.json`，再到 `~/.loom/mcp.json`；没有文件时会创建 home 下的文件。`mcp add` 必须提供 `--command` 或 `--url` 之一；stdio entry 保存 command/args，HTTP entry 保存 url。`--env KEY=VALUE` 被拆成环境映射，show 时通过 `config::mask_value` 遮蔽环境值。
+`McpManager::new` 的发现优先级是当前项目 `.anureo/mcp.json`，再到 `~/.anureo/mcp.json`；没有文件时会创建 home 下的文件。`mcp add` 必须提供 `--command` 或 `--url` 之一；stdio entry 保存 command/args，HTTP entry 保存 url。`--env KEY=VALUE` 被拆成环境映射，show 时通过 `config::mask_value` 遮蔽环境值。
 
 MCP 的编辑会保留未提供的 existing fields，delete/enable/disable 通过 config crate 的读写函数完成。这里的 `--mcp-config` 是 Agent run 的路径参数；当前 `McpManager::new` 本身调用 discovery，不接受该 CLI 参数。不要假设管理命令已经能操作任意 `--mcp-config` 指定文件。
 
@@ -142,7 +142,7 @@ MCP 的编辑会保留未提供的 existing fields，delete/enable/disable 通�
 
 `skills` command 直接操作 skill registry，当前支持 list/show/inspect/create/edit/delete/sync；`inspect` 还支持 `--all`、`--read-file`、`--source`、JSON/pretty/file 输出。`skill-usage`、`curator`、`memory`、`review-skill`、`review`、`goal`、`task` 各自有独立模块，新增行为应沿现有 command → handler → owning service 的边界接线。
 
-`evolve` 当前在 `main.rs` 直接输出 `evolve: not yet implemented (loom-evolution crate removed)` 并退出非零，属于明确的未实现能力。REPL 中 `/models`、`/model`、`/tools`、`/resume`、`/undo`、`/retry`、`/history`、`/exit` 等部分 command 当前只返回 stub 文本或“不支持”提示；不要把它们写成已完成的 session/model 操作。
+`evolve` 当前在 `main.rs` 直接输出 `evolve: not yet implemented (anureo-evolution crate removed)` 并退出非零，属于明确的未实现能力。REPL 中 `/models`、`/model`、`/tools`、`/resume`、`/undo`、`/retry`、`/history`、`/exit` 等部分 command 当前只返回 stub 文本或“不支持”提示；不要把它们写成已完成的 session/model 操作。
 
 ## 6. 图片和其它实验性路径
 
@@ -158,9 +158,9 @@ GoT adaptive、workflow tool、Kanban transient exit-code 等路径在源码中�
 
 ```powershell
 cargo fmt --check
-cargo check -p cli
-cargo test -p cli
-cargo test -p cli --test mcp_cli_test
+cargo check -p anureo-cli
+cargo test -p anureo-cli
+cargo test -p anureo-cli --test mcp_cli_test
 ```
 
 如果 workspace 中 Cargo package 名称与 `cli` 不一致，应以 `apps/cli/Cargo.toml` 的 package name 为准。修改跨 crate 的 Agent/Tool/Config 行为时，再运行相应 crate tests 和 `cargo check --workspace`；不应仅凭 CLI unit tests 证明下游 graph 行为正确。

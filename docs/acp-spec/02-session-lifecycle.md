@@ -18,10 +18,10 @@ connection
 | 实体 | Rust 类型 | ID 空间 |
 |---|---|---|
 | connection | `AcpConnection` | `ConnectionId` (String) |
-| session | `SessionEntry` | `SessionId` (String, 等同 Loom thread_id) |
+| session | `SessionEntry` | `SessionId` (String, 等同 anureo thread_id) |
 | generation | `GenerationCancellation` | 隐含在 session 的 active prompt 中 |
 
-**关键规则**: `connectionId ≠ sessionId`。Loom 将 session 绑定到 thread/checkpoint，`sessionId` 等同于 Loom 的 `thread_id`。
+**关键规则**: `connectionId ≠ sessionId`。anureo 将 session 绑定到 thread/checkpoint，`sessionId` 等同于 anureo 的 `thread_id`。
 
 ---
 
@@ -31,7 +31,7 @@ connection
 |---|---|
 | 方向 | Client → Agent request |
 | 能力 | 无（initialize 后即可调用） |
-| Loom 状态 | ✅ 已实现 |
+| anureo 状态 | ✅ 已实现 |
 
 ### Request
 
@@ -76,9 +76,9 @@ connection
 
 ### 逻辑说明
 
-1. Loom 创建新 thread（checkpoint store），生成 `thread_id` 作为 `sessionId`
+1. anureo 创建新 thread（checkpoint store），生成 `thread_id` 作为 `sessionId`
 2. 绑定 `workingDirectory` 到 session，用于后续 prompt 和工具执行
-3. MCP server 配置通过 `mcp_convert.rs` 转换为 Loom 的 `LoomMcpServer` 格式
+3. MCP server 配置通过 `mcp_convert.rs` 转换为 anureo 的 `anureoMcpServer` 格式
 4. 初始化 `SessionConfig`（`current_agent`、`model`、`effort` 从默认值加载）
 5. 绑定到当前 connection 和 owner principal
 6. 持久化 session 元数据到 SQLite（`SessionRepository::insert`）
@@ -99,7 +99,7 @@ pub struct SessionEntry {
     pub working_directory: Option<PathBuf>,
     pub owner_principal: String,
     pub session_config: SessionConfig,
-    pub mcp_servers: Vec<LoomMcpServer>,
+    pub mcp_servers: Vec<anureoMcpServer>,
     pub mcp_runtime: Arc<McpRuntime>,
     pub cancellation: Option<GenerationCancellation>,
     pub state: Arc<SessionState>,
@@ -128,8 +128,8 @@ pub struct SessionConfig {
 | 项目 | 内容 |
 |---|---|
 | 方向 | Client → Agent request |
-| 能力 | `agentCapabilities.loadSession = true`（Loom 已声明） |
-| Loom 状态 | ✅ 已实现 |
+| 能力 | `agentCapabilities.loadSession = true`（anureo 已声明） |
+| anureo 状态 | ✅ 已实现 |
 
 ### Request
 
@@ -174,12 +174,12 @@ pub struct SessionConfig {
 6. **不能把历史记录当作当前 generation 仍在运行的证据**——当前运行状态必须来自 live generation state
 
 > **尾部重放（tail replay，2025-08）**：第 5 步默认仅重放最近 50 条原始消息
-> （`LOOM_ACP_LOAD_HISTORY_TAIL` 可调，`0` = 全量），截断起点记入
+> （`ANUREO_ACP_LOAD_HISTORY_TAIL` 可调，`0` = 全量），截断起点记入
 > `SessionEntry.history_cursor`；边界自动向前扩展，绝不以 `Tool` 消息开头
 > （工具结果必须跟随其发起的 `Assistant`）。更早历史由客户端按需通过
-> [`_loomdesk.dev/session-history/page`](extensions/36-session-history.md) 分页拉取。
-> 线上形态为单条 `_loomdesk.dev/session-history/batch` 批量通知
-> （`LOOM_ACP_LOAD_HISTORY_BATCH=0` 回退逐条），replay 标记与缓冲抑制行为不变。
+> [`_anureo.dev/session-history/page`](extensions/36-session-history.md) 分页拉取。
+> 线上形态为单条 `_anureo.dev/session-history/batch` 批量通知
+> （`ANUREO_ACP_LOAD_HISTORY_BATCH=0` 回退逐条），replay 标记与缓冲抑制行为不变。
 
 ### Rust 类型
 
@@ -207,7 +207,7 @@ async fn load_session_for_owner(
 |---|---|
 | 方向 | Client → Agent request |
 | 能力 | `agentCapabilities.sessionCapabilities.list` |
-| Loom 状态 | ✅ 已实现 |
+| anureo 状态 | ✅ 已实现 |
 
 ### Request
 
@@ -273,7 +273,7 @@ async fn load_session_for_owner(
 
 1. 查询 `SessionRepository::list`（SQLite），按 owner principal 过滤
 2. 可选 `cwd` 过滤，只返回该工作目录的 session
-3. `meta.review` 来自 Loom background review（curator）结果
+3. `meta.review` 来自 anureo background review（curator）结果
 4. **fetch failure 不等于空列表**——查询失败时不能返回空 `sessions`，应返回 error
 
 ### Rust 类型
@@ -309,7 +309,7 @@ pub struct SessionInfo {
 |---|---|
 | 方向 | Client → Agent request |
 | 能力 | `agentCapabilities.sessionCapabilities.fork`（需要 `unstable_session_fork` feature） |
-| Loom 状态 | ⚠️ Handler 已实现，capability 未声明 |
+| anureo 状态 | ⚠️ Handler 已实现，capability 未声明 |
 
 > **已知问题**: `fork_session()` 已实现并在 `stdio_loop.rs:236` 注册，但 `initialize` 响应的 `sessionCapabilities` 未包含 `fork`（`agent.rs:436-440`）。标准客户端基于 capability snapshot 不会调用 fork。修复方式：在 `SessionCapabilities::new()` 链中添加 `.fork(SessionForkCapabilities::new())`。
 
@@ -372,7 +372,7 @@ async fn fork_session(&self, args: ForkSessionRequest)
 |---|---|
 | 方向 | Client → Agent request |
 | 能力 | `agentCapabilities.sessionCapabilities.resume` |
-| Loom 状态 | ✅ 已实现 |
+| anureo 状态 | ✅ 已实现 |
 
 ### Request
 
@@ -430,7 +430,7 @@ async fn resume_session_for_owner(
 |---|---|
 | 方向 | Client → Agent request |
 | 能力 | `agentCapabilities.sessionCapabilities.close` |
-| Loom 状态 | ✅ 已实现 |
+| anureo 状态 | ✅ 已实现 |
 
 ### Request
 
@@ -484,7 +484,7 @@ async fn close_session_for_owner(
 |---|---|
 | 方向 | Client → Agent request |
 | 能力 | `agentCapabilities.sessionCapabilities.delete` |
-| Loom 状态 | ✅ 已实现 |
+| anureo 状态 | ✅ 已实现 |
 
 ### Request
 
@@ -555,4 +555,4 @@ binding 失败必须回滚旧 binding。不得出现 session 已从 UI 移除但
 | `Persist`（默认） | 保留 session，如设置了 `idle_ttl_secs` 则超时后取消 |
 | `Cancel` | 立即取消所有绑定 session 的当前 generation |
 
-配置: 环境变量 `LOOM_ACP_DISCONNECT_POLICY=cancel|persist`
+配置: 环境变量 `ANUREO_ACP_DISCONNECT_POLICY=cancel|persist`

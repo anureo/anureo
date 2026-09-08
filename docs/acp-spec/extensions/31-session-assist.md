@@ -1,6 +1,6 @@
 # Session Assist（会话辅助）
 
-> 命名空间: `_loomdesk.dev/session-assist/*`
+> 命名空间: `_anureo.dev/session-assist/*`
 > Capability key: `session-assist`
 
 ## Capability
@@ -24,8 +24,8 @@ Session idle ≥ 60s (no active generation, no new prompt)
   → Server-side watcher detects idle
   → Invoke small model (see 32-small-model.md)
   → Generate recap of last assistant turn + suggested follow-up
-  → PATCH to session metadata: metadata.openchamber.assist
-  → Emit _loomdesk.dev/session-assist/recap notification
+  → PATCH to session metadata: metadata.anureo.assist
+  → Emit _anureo.dev/session-assist/recap notification
   → Client receives notification OR detects via session/update (metadata change)
 ```
 
@@ -44,7 +44,7 @@ Session Assist 域**没有 request method**。所有交互通过 notification �
 
 ## Notifications
 
-### `_loomdesk.dev/session-assist/recap`
+### `_anureo.dev/session-assist/recap`
 
 | 项目 | 内容 |
 |---|---|
@@ -55,7 +55,7 @@ Session Assist 域**没有 request method**。所有交互通过 notification �
 ```json
 {
   "jsonrpc": "2.0",
-  "method": "_loomdesk.dev/session-assist/recap",
+  "method": "_anureo.dev/session-assist/recap",
   "params": {
     "sessionId": "sess_abc123",
     "recap": "将 src/auth.rs 的密码验证从明文比较改为 bcrypt::verify，移除了 2 个 unsafe 块，新增了 3 个单元测试。",
@@ -97,7 +97,7 @@ pub struct SessionAssistRecapParams {
     pub turn_index: u32,
 }
 
-/// Written to session metadata at `metadata.openchamber.assist`
+/// Written to session metadata at `metadata.anureo.assist`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssistMetadata {
     pub recap: String,
@@ -114,7 +114,7 @@ pub struct AssistMetadata {
 2. Session idle 60 秒后，watcher 调用 small model（见 `32-small-model.md`）生成 recap。
 3. Small model 优先使用 session 当前的 provider/model；`restrictToPreferredProvider` 为 true 时禁止全局 fallback。
 4. 如果 small model 调用失败（provider 不可用、rate limit 等），**静默跳过**——不发送 notification，不修改 metadata。
-5. Recap 结果 PATCH 到 session metadata `metadata.openchamber.assist`，通过标准 `session/update`（`session_info_update._meta`）传输。
+5. Recap 结果 PATCH 到 session metadata `metadata.anureo.assist`，通过标准 `session/update`（`session_info_update._meta`）传输。
 6. Extension notification 和 session metadata update 可能同时到达 client——client 应以 notification 为准（它是 metadata 变化的语义信号）。
 7. `suggestions` 为 0-5 条建议，每条是可直接作为 prompt 发送的自然语言文本。
 8. `turnIndex` 标识被总结的 assistant turn，client 可以据此定位 session 历史中的对应位置。
@@ -136,9 +136,9 @@ pub struct AssistMetadata {
 
 | Notification | Authoritative method | 快照保证 |
 |---|---|---|
-| `session-assist/recap` | `session/load`（通过 `session/update`） | 重建 session metadata（含 `metadata.openchamber.assist`） |
+| `session-assist/recap` | `session/load`（通过 `session/update`） | 重建 session metadata（含 `metadata.anureo.assist`） |
 
-- Session Assist 的 recap 结果持久化在 session metadata 中（`metadata.openchamber.assist`），不是临时状态。
+- Session Assist 的 recap 结果持久化在 session metadata 中（`metadata.anureo.assist`），不是临时状态。
 - Client 重连后通过标准 `session/load` 恢复完整 session 状态，metadata 中的 recap 数据随之恢复。
 - Recap notification 本身不重放——client 重连后从 session metadata 中读取最新的 recap 数据。
 - 如果 `session/load` 失败，client 保留旧的 metadata（显示 stale 指示）。

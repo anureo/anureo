@@ -379,7 +379,7 @@ use parking_lot::RwLock;
 use crate::registry::ChannelRegistry;
 use crate::dispatcher::WakeupDispatcher;
 use crate::types::*;
-use loom_llm::support::uuid6::uuid6;
+use anureo_llm::support::uuid6::uuid6;
 use async_trait::async_trait;
 
 /// Agent 工厂接口（由 ReactRunner 或 app 层实现）
@@ -731,7 +731,7 @@ impl WakeupDispatcher {
 ```rust
 // Channel inbox（不可序列化，含 Notify）
 #[serde(default, skip)]
-pub channel_inbox: Option<loom_channel::ChannelInbox>,
+pub channel_inbox: Option<anureo_channel::ChannelInbox>,
 
 // 一次性的 channel prompt（下次 think 循环消费，用完即清）
 // ObserveNode 写入 → ThinkNode 读取并注入 LLM → 清空
@@ -760,7 +760,7 @@ if let Some(ref inbox) = state.channel_inbox {
     let reasons = inbox.drain();
     if !reasons.is_empty() {
         // 写入 channel_prompt，ThinkNode 会在下次循环消费
-        state.channel_prompt = loom_channel::ChannelInbox::format_for_context(&reasons);
+        state.channel_prompt = anureo_channel::ChannelInbox::format_for_context(&reasons);
     }
 }
 
@@ -834,7 +834,7 @@ ObserveNode                ThinkNode                 LLM
 ```rust
 pub fn new(
     // ... 现有参数 ...
-    channel_manager: Option<loom_channel::ChannelManager>,  // 新增
+    channel_manager: Option<anureo_channel::ChannelManager>,  // 新增
 ) -> Result<Self, CompilationError> {
     // ... 现有逻辑 ...
 
@@ -855,7 +855,7 @@ pub struct ToolCallContext {
     // ... 现有字段 ...
 
     /// Channel 管理器句柄（Channel tools 使用）
-    pub channel_manager: Option<loom_channel::ChannelManager>,
+    pub channel_manager: Option<anureo_channel::ChannelManager>,
 }
 ```
 
@@ -934,16 +934,16 @@ impl Tool for ChannelCreateTool {
 
         let topic = args["topic"].as_str().unwrap_or("");
         let mode = match args["mode"].as_str().unwrap_or("chat") {
-            "meeting" => loom_channel::ChannelMode::Meeting,
-            _ => loom_channel::ChannelMode::Chat,
+            "meeting" => anureo_channel::ChannelMode::Meeting,
+            _ => anureo_channel::ChannelMode::Chat,
         };
         let moderator = args.get("moderator").and_then(|v| v.as_str()).map(String::from);
-        let participants: Vec<loom_channel::ChannelParticipant> = args["participants"]
+        let participants: Vec<anureo_channel::ChannelParticipant> = args["participants"]
             .as_array()
             .map(|arr| arr.iter().filter_map(|v| {
                 let id = v.get("id")?.as_str()?.to_string();
                 let profile = v.get("profile")?.as_str()?.to_string();
-                Some(loom_channel::ChannelParticipant { id, profile, spawned: false })
+                Some(anureo_channel::ChannelParticipant { id, profile, spawned: false })
             }).collect())
             .unwrap_or_default();
         let lifetime = parse_lifetime(args.get("lifetime"));
@@ -983,7 +983,7 @@ impl AgentFactory for AppAgentFactory {
         channel_manager: ChannelManager,
         initial_prompt: Option<String>,
     ) {
-        // 1. 加载 profile（如 .loom/agents/{profile}/）
+        // 1. 加载 profile（如 .anureo/agents/{profile}/）
         // 2. 构建 ReactRunner，注入共享的 ChannelManager
         // 3. tokio::spawn agent 的 ReAct loop
         tokio::spawn(async move {
@@ -998,7 +998,7 @@ impl AgentFactory for AppAgentFactory {
 }
 
 // 注册 channel tools
-let channel_manager = loom_channel::ChannelManager::new()
+let channel_manager = anureo_channel::ChannelManager::new()
     .with_factory(Arc::new(AppAgentFactory { /* ... */ }));
 
 let extra_tools: Vec<Arc<dyn Tool>> = vec![
@@ -1023,21 +1023,21 @@ parking-lot = "0.12"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = "0.4"
-loom-llm = { path = "../../foundation/llm" }  # uuid6 复用
+anureo-llm = { path = "../../foundation/llm" }  # uuid6 复用
 
 # agent/tool/tool-channel/Cargo.toml
 [dependencies]
 async-trait = { workspace = true }
 serde_json = { workspace = true }
 tool-core = { path = "../tool-core" }
-loom-channel = { path = "../../channel" }
+anureo-channel = { path = "../../channel" }
 
 # agent/patterns/Cargo.toml
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-loom-channel = { path = "../channel" }
-loom-llm = { path = "../../foundation/llm" }
+anureo-channel = { path = "../channel" }
+anureo-llm = { path = "../../foundation/llm" }
 ```
 
 ---

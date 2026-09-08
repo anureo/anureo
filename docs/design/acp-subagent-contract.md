@@ -1,7 +1,7 @@
-# Loom ACP 子代理契约设计
+# anureo ACP 子代理契约设计
 
 > **状态**：Draft（2026-08-22 可执行开发版，待前后端评审）
-> **范围**：把 Loom `agent` tool invocation 暴露为可观测、可加载、可取消的 ACP child session，并与 Loom Desk 建立稳定绑定
+> **范围**：把 anureo `agent` tool invocation 暴露为可观测、可加载、可取消的 ACP child session，并与 anureo Desk 建立稳定绑定
 > **相关代码**：`agent/agent-core/src/tools/agent/`、`agent/tool/tool-core/src/context.rs`、`apps/acp/src/stream_bridge.rs`、`apps/acp/src/session.rs`、`apps/acp/src/session_repository.rs`、`apps/acp/src/agent.rs`
 > **交叉参考**：[子代理交互差距审计](./subagent-interaction-gap.md)、[Session List 重设计](./session-list-redesign.md)、[Session List 规范](../acp-spec/extensions/37-session-list.md)、[Session 生命周期](../acp-spec/02-session-lifecycle.md)、[Session Update](../acp-spec/05-session-update.md)
 
@@ -16,7 +16,7 @@
 3. 父 tool call 通过版本化 metadata 直接引用 child session，不依赖标题、时间窗或 output 文本猜测。
 4. child session 支持标准 `session/load` 与 `session/cancel`。
 5. 同步、后台、失败和取消路径使用同一生命周期，并恰好产生一个 terminal state。
-6. 新旧 Loom/Desk 组合可渐进兼容，fallback 不掩盖真实协议错误。
+6. 新旧 anureo/Desk 组合可渐进兼容，fallback 不掩盖真实协议错误。
 
 ### 1.2 非目标
 
@@ -30,13 +30,13 @@
 
 | 维度 | 决定 | 原因 |
 | --- | --- | --- |
-| Loom tool name | 保持 `agent` | 不为适配 UI 改写后端 canonical name |
-| 前端识别 | `agent`、`task` 均视为 subagent tool | 兼容 Loom 与 OpenCode |
+| anureo tool name | 保持 `agent` | 不为适配 UI 改写后端 canonical name |
+| 前端识别 | `agent`、`task` 均视为 subagent tool | 兼容 anureo 与 OpenCode |
 | 身份生成 | invocation 入口一次生成完整 `SubagentIdentity` | 消除 runner 二次拼 ID 和碰撞 |
 | durable membership | child 写入 `acp_sessions` / SessionIndex | 首个 checkpoint 前也必须可见 |
 | 父子字段 | wire/canonical storage 使用 `parent_session_id` / `parentSessionId` | 与 37 号规范一致 |
 | Desk 内部字段 | adapter 映射为 `parentID` | 兼容现有 session tree 领域模型 |
-| metadata 命名空间 | `_meta["loomdesk.dev"].subagent` | 避免占用 ACP 标准字段并支持版本演进 |
+| metadata 命名空间 | `_meta["anureo.dev"].subagent` | 避免占用 ACP 标准字段并支持版本演进 |
 | lifecycle bridge | agent-core trait，`apps/acp` 实现 | 保持 agent-core 不依赖 ACP |
 | 取消入口 | 标准 `session/cancel(child)` | 不新增重复的 UI 私有 cancel RPC |
 | 状态权威源 | SessionIndex durable metadata / session load 为恢复权威源，event 用于低延迟 | global/tool update 可能丢失 |
@@ -152,7 +152,7 @@ SessionIndex 的 protocol-owned `lifecycle` 只能是 `idle | closed`，不能�
 
 ```json
 {
-  "loomdesk": {
+  "anureo": {
     "subagent": {
       "version": 1,
       "invocationId": "inv_opaque",
@@ -177,7 +177,7 @@ SessionIndex 的 protocol-owned `lifecycle` 只能是 `idle | closed`，不能�
 ```json
 {
   "toolName": "agent",
-  "loomdesk.dev": {
+  "anureo.dev": {
     "subagent": {
       "version": 1,
       "invocationId": "inv_opaque",
@@ -198,7 +198,7 @@ terminal update 示例：
 
 ```json
 {
-  "loomdesk.dev": {
+  "anureo.dev": {
     "subagent": {
       "version": 1,
       "invocationId": "inv_opaque",
@@ -238,7 +238,7 @@ Desk 必须校验 `sessionId`、`parentSessionId` 和 `parentToolCallId` 的关�
 
 ### 6.3 Output fallback
 
-新 Loom 不以 `<task id=...>` 文本作为事实源。Desk 可在兼容旧 OpenCode/Loom 时继续解析 output，但优先级固定为：
+新 anureo 不以 `<task id=...>` 文本作为事实源。Desk 可在兼容旧 OpenCode/anureo 时继续解析 output，但优先级固定为：
 
 1. 版本化 `_meta`；
 2. legacy part metadata；
@@ -286,7 +286,7 @@ Desk 需要在 ACP adapter 层完成以下一次性转换，组件层不再自�
 1. `AcpToolCallRecord` 保存完整 `_meta`。
 2. native `tool_call` / `tool_call_update` 与 legacy adapter 都把 metadata 投影到 `ToolPartInput.metadata`。
 3. `isSubagentTool` 同时识别 `agent` 和 `task`。
-4. Loom tool input 的 `agent` 映射为 UI 的 agent/subagent type label。
+4. anureo tool input 的 `agent` 映射为 UI 的 agent/subagent type label。
 5. SessionIndex `parentSessionId` 映射为内部 session `parentID`。
 6. 有效 versioned metadata 直接生成 Open/Cancel action；没有时才启用 legacy fallback。
 7. 未知 metadata version 降级为普通 tool card，同时保留 raw data 供后续版本 adapter 使用。
@@ -313,7 +313,7 @@ Desk 需要在 ACP adapter 层完成以下一次性转换，组件层不再自�
 
 ## 10. 测试计划
 
-### 10.1 Loom 单元与集成测试
+### 10.1 anureo 单元与集成测试
 
 | 测试 | 验证点 |
 | --- | --- |
@@ -330,7 +330,7 @@ Desk 需要在 ACP adapter 层完成以下一次性转换，组件层不再自�
 
 | 测试 | 验证点 |
 | --- | --- |
-| Loom `agent` recognition | 进入 subagent card，而非 generic tool card |
+| anureo `agent` recognition | 进入 subagent card，而非 generic tool card |
 | metadata preservation | native/legacy 两条 adapter 不丢 `_meta` |
 | parent mapping | `parentSessionId` 进入内部 `parentID`，tree/fallback/read-only 一致 |
 | explicit binding | 有 metadata 时不调用时间窗 fallback |
@@ -342,10 +342,10 @@ Desk 需要在 ACP adapter 层完成以下一次性转换，组件层不再自�
 
 ```powershell
 cargo nextest run -p agent
-cargo nextest run -p loom-acp
+cargo nextest run -p anureo-acp
 cargo clippy --workspace --all-targets -- -D warnings
-bun --cwd C:\Users\heycj\dev\openchamber-feat-dev\packages\ui test
-bun --cwd C:\Users\heycj\dev\openchamber-feat-dev\packages\ui run type-check
+bun --cwd C:\Users\heycj\dev\anureo-feat-dev\packages\ui test
+bun --cwd C:\Users\heycj\dev\anureo-feat-dev\packages\ui run type-check
 npm --prefix e2e run test:bdd:dev
 ```
 
@@ -353,9 +353,9 @@ npm --prefix e2e run test:bdd:dev
 
 - 新 Desk 同时支持 `agent` 和 `task`，但不改写 wire tool name。
 - 新 Desk 只在方法/metadata 确实缺失时使用 legacy fallback；解析错误、身份不一致和权限错误不得触发 fallback。
-- 新 Loom 可以保留 `_meta.toolName`，新增 namespace 不破坏不了解该字段的 ACP client。
+- 新 anureo 可以保留 `_meta.toolName`，新增 namespace 不破坏不了解该字段的 ACP client。
 - metadata `version` 变更时先扩展 reader，再升级 writer；删除 v1 reader 需要最低 Desk 版本与实际调用量证据。
-- 发布签收必须留存真实 Loom + Desk WebSocket frame、SessionIndex child record、load/cancel 结果和重连恢复证据，不能只依赖同层单元测试。
+- 发布签收必须留存真实 anureo + Desk WebSocket frame、SessionIndex child record、load/cancel 结果和重连恢复证据，不能只依赖同层单元测试。
 
 ## 12. 完成定义
 

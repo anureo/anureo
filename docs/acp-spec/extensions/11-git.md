@@ -1,6 +1,6 @@
 # Git
 
-> 命名空间: `_loomdesk.dev/git/*`
+> 命名空间: `_anureo.dev/git/*`
 > Capability key: `git`
 
 ## 设计原则
@@ -15,6 +15,7 @@
 ```json
 {
   "git": {
+    "check": true,
     "status": true,
     "diff": true,
     "file_diff": true,
@@ -75,6 +76,26 @@
   }
 }
 ```
+
+## 轻量仓库探测
+
+`_anureo.dev/git/check` 只判断当前 authoritative working directory 是否位于 Git repository 内，不枚举 changed files。项目列表、worktree discovery 等只需要布尔结果的调用方必须使用此方法，不得用完整 `status` 代替。
+
+请求：
+
+```json
+{}
+```
+
+响应：
+
+```json
+{
+  "isGitRepository": true
+}
+```
+
+非 Git 目录返回成功结果 `{ "isGitRepository": false }`；Git executable、I/O 等实际执行错误仍返回协议错误。
 
 ## Rust 类型
 
@@ -241,7 +262,7 @@ pub enum GitWriteScope {
 
 ## 状态和 Diff
 
-### `_loomdesk.dev/git/status`
+### `_anureo.dev/git/status`
 
 | 项目 | 内容 |
 |---|---|
@@ -302,7 +323,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/diff`
+### `_anureo.dev/git/diff`
 
 | 项目 | 内容 |
 |---|---|
@@ -363,7 +384,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/file_diff`
+### `_anureo.dev/git/file_diff`
 
 | 项目 | 内容 |
 |---|---|
@@ -418,7 +439,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/log`
+### `_anureo.dev/git/log`
 
 | 项目 | 内容 |
 |---|---|
@@ -473,7 +494,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/commit_files`
+### `_anureo.dev/git/commit_files`
 
 | 项目 | 内容 |
 |---|---|
@@ -524,7 +545,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/commit_file_diff`
+### `_anureo.dev/git/commit_file_diff`
 
 | 项目 | 内容 |
 |---|---|
@@ -576,7 +597,7 @@ pub enum GitWriteScope {
 
 ## 暂存操作
 
-### `_loomdesk.dev/git/stage_file`
+### `_anureo.dev/git/stage_file`
 
 | 项目 | 内容 |
 |---|---|
@@ -615,7 +636,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/stage_files`
+### `_anureo.dev/git/stage_files`
 
 | 项目 | 内容 |
 |---|---|
@@ -653,7 +674,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/unstage_file`
+### `_anureo.dev/git/unstage_file`
 
 | 项目 | 内容 |
 |---|---|
@@ -690,7 +711,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/unstage_files`
+### `_anureo.dev/git/unstage_files`
 
 | 项目 | 内容 |
 |---|---|
@@ -726,7 +747,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/stage_hunk`
+### `_anureo.dev/git/stage_hunk`
 
 | 项目 | 内容 |
 |---|---|
@@ -774,7 +795,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/unstage_hunk`
+### `_anureo.dev/git/unstage_hunk`
 
 | 项目 | 内容 |
 |---|---|
@@ -814,7 +835,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/revert_file`
+### `_anureo.dev/git/revert_file`
 
 | 项目 | 内容 |
 |---|---|
@@ -858,7 +879,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/revert_hunk`
+### `_anureo.dev/git/revert_hunk`
 
 | 项目 | 内容 |
 |---|---|
@@ -899,7 +920,7 @@ pub enum GitWriteScope {
 
 ## 分支操作
 
-### `_loomdesk.dev/git/branches`
+### `_anureo.dev/git/branches`
 
 | 项目 | 内容 |
 |---|---|
@@ -960,7 +981,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/checkout_branch`
+### `_anureo.dev/git/checkout_branch`
 
 | 项目 | 内容 |
 |---|---|
@@ -1001,7 +1022,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/create_branch`
+### `_anureo.dev/git/create_branch`
 
 | 项目 | 内容 |
 |---|---|
@@ -1043,7 +1064,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/rename_branch`
+### `_anureo.dev/git/rename_branch`
 
 | 项目 | 内容 |
 |---|---|
@@ -1083,7 +1104,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/delete_branch`
+### `_anureo.dev/git/delete_branch`
 
 | 项目 | 内容 |
 |---|---|
@@ -1124,7 +1145,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/delete_remote_branch`
+### `_anureo.dev/git/delete_remote_branch`
 
 | 项目 | 内容 |
 |---|---|
@@ -1167,7 +1188,7 @@ pub enum GitWriteScope {
 
 ## Remote 操作
 
-### `_loomdesk.dev/git/remotes`
+### `_anureo.dev/git/remotes`
 
 | 项目 | 内容 |
 |---|---|
@@ -1212,7 +1233,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/remote_url`
+### `_anureo.dev/git/remote_url`
 
 | 项目 | 内容 |
 |---|---|
@@ -1249,7 +1270,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/remove_remote`
+### `_anureo.dev/git/remove_remote`
 
 | 项目 | 内容 |
 |---|---|
@@ -1286,7 +1307,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/fetch`
+### `_anureo.dev/git/fetch`
 
 | 项目 | 内容 |
 |---|---|
@@ -1333,7 +1354,7 @@ pub enum GitWriteScope {
 
 ## Commit 操作
 
-### `_loomdesk.dev/git/commit`
+### `_anureo.dev/git/commit`
 
 | 项目 | 内容 |
 |---|---|
@@ -1385,7 +1406,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/generate_commit_message`
+### `_anureo.dev/git/generate_commit_message`
 
 | 项目 | 内容 |
 |---|---|
@@ -1428,7 +1449,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/generate_pr_description`
+### `_anureo.dev/git/generate_pr_description`
 
 | 项目 | 内容 |
 |---|---|
@@ -1467,7 +1488,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/push`
+### `_anureo.dev/git/push`
 
 | 项目 | 内容 |
 |---|---|
@@ -1514,7 +1535,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/pull`
+### `_anureo.dev/git/pull`
 
 | 项目 | 内容 |
 |---|---|
@@ -1562,7 +1583,7 @@ pub enum GitWriteScope {
 
 ## Stash
 
-### `_loomdesk.dev/git/stash/list`
+### `_anureo.dev/git/stash/list`
 
 | 项目 | 内容 |
 |---|---|
@@ -1607,7 +1628,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/stash/create`
+### `_anureo.dev/git/stash/create`
 
 | 项目 | 内容 |
 |---|---|
@@ -1647,7 +1668,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/stash/pop`
+### `_anureo.dev/git/stash/pop`
 
 | 项目 | 内容 |
 |---|---|
@@ -1686,7 +1707,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/stash/apply`
+### `_anureo.dev/git/stash/apply`
 
 | 项目 | 内容 |
 |---|---|
@@ -1725,7 +1746,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/stash/drop`
+### `_anureo.dev/git/stash/drop`
 
 | 项目 | 内容 |
 |---|---|
@@ -1762,7 +1783,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/stash/count`
+### `_anureo.dev/git/stash/count`
 
 | 项目 | 内容 |
 |---|---|
@@ -1801,7 +1822,7 @@ pub enum GitWriteScope {
 
 ## Merge 和 Rebase
 
-### `_loomdesk.dev/git/merge`
+### `_anureo.dev/git/merge`
 
 | 项目 | 内容 |
 |---|---|
@@ -1850,7 +1871,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/merge_abort`
+### `_anureo.dev/git/merge_abort`
 
 | 项目 | 内容 |
 |---|---|
@@ -1885,7 +1906,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/merge_continue`
+### `_anureo.dev/git/merge_continue`
 
 | 项目 | 内容 |
 |---|---|
@@ -1924,7 +1945,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/rebase`
+### `_anureo.dev/git/rebase`
 
 | 项目 | 内容 |
 |---|---|
@@ -1965,7 +1986,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/rebase_abort`
+### `_anureo.dev/git/rebase_abort`
 
 | 项目 | 内容 |
 |---|---|
@@ -1999,7 +2020,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/rebase_continue`
+### `_anureo.dev/git/rebase_continue`
 
 | 项目 | 内容 |
 |---|---|
@@ -2038,7 +2059,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/conflict_details`
+### `_anureo.dev/git/conflict_details`
 
 | 项目 | 内容 |
 |---|---|
@@ -2091,7 +2112,7 @@ pub enum GitWriteScope {
 
 ## 高级操作
 
-### `_loomdesk.dev/git/checkout_commit`
+### `_anureo.dev/git/checkout_commit`
 
 | 项目 | 内容 |
 |---|---|
@@ -2130,7 +2151,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/cherry_pick`
+### `_anureo.dev/git/cherry_pick`
 
 | 项目 | 内容 |
 |---|---|
@@ -2170,7 +2191,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/revert_commit`
+### `_anureo.dev/git/revert_commit`
 
 | 项目 | 内容 |
 |---|---|
@@ -2209,7 +2230,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/reset_to_commit`
+### `_anureo.dev/git/reset_to_commit`
 
 | 项目 | 内容 |
 |---|---|
@@ -2258,7 +2279,7 @@ pub enum GitWriteScope {
 
 ## Worktree 目录校验
 
-### `_loomdesk.dev/git/validate_worktree_directory`
+### `_anureo.dev/git/validate_worktree_directory`
 
 | 项目 | 内容 |
 |---|---|
@@ -2298,7 +2319,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/canonicalize_worktree_state`
+### `_anureo.dev/git/canonicalize_worktree_state`
 
 | 项目 | 内容 |
 |---|---|
@@ -2338,7 +2359,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/is_linked_worktree`
+### `_anureo.dev/git/is_linked_worktree`
 
 | 项目 | 内容 |
 |---|---|
@@ -2378,10 +2399,10 @@ pub enum GitWriteScope {
 
 ## Git Identity
 
-> 命名空间: `_loomdesk.dev/git/identity/*`
+> 命名空间: `_anureo.dev/git/identity/*`
 > Capability 子域: `git.identity_*`
 
-### `_loomdesk.dev/git/identity/list`
+### `_anureo.dev/git/identity/list`
 
 | 项目 | 内容 |
 |---|---|
@@ -2433,7 +2454,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/identity/get`
+### `_anureo.dev/git/identity/get`
 
 | 项目 | 内容 |
 |---|---|
@@ -2474,7 +2495,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/identity/get_global`
+### `_anureo.dev/git/identity/get_global`
 
 | 项目 | 内容 |
 |---|---|
@@ -2510,7 +2531,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/identity/create`
+### `_anureo.dev/git/identity/create`
 
 | 项目 | 内容 |
 |---|---|
@@ -2553,7 +2574,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/identity/update`
+### `_anureo.dev/git/identity/update`
 
 | 项目 | 内容 |
 |---|---|
@@ -2595,7 +2616,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/identity/delete`
+### `_anureo.dev/git/identity/delete`
 
 | 项目 | 内容 |
 |---|---|
@@ -2633,7 +2654,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/identity/set`
+### `_anureo.dev/git/identity/set`
 
 | 项目 | 内容 |
 |---|---|
@@ -2679,7 +2700,7 @@ pub enum GitWriteScope {
 
 ---
 
-### `_loomdesk.dev/git/identity/discover_credentials`
+### `_anureo.dev/git/identity/discover_credentials`
 
 | 项目 | 内容 |
 |---|---|
@@ -2726,14 +2747,14 @@ pub enum GitWriteScope {
 
 ## Notifications
 
-### `_loomdesk.dev/git/status_changed`
+### `_anureo.dev/git/status_changed`
 
 当 Git 状态发生变化（stage/unstage/commit/branch 切换/fetch/pull/外部 git 操作）时推送。
 
 ```json
 {
   "jsonrpc": "2.0",
-  "method": "_loomdesk.dev/git/status_changed",
+  "method": "_anureo.dev/git/status_changed",
   "params": {
     "branch": "main",
     "dirty": true
@@ -2749,14 +2770,14 @@ pub enum GitWriteScope {
 - notification 只推送变更提示，不包含完整 diff。
 - Client 收到后应调用 `git/status` 获取完整状态。
 
-### `_loomdesk.dev/git/identity/changed`
+### `_anureo.dev/git/identity/changed`
 
 当 Git 身份配置发生变化时推送。
 
 ```json
 {
   "jsonrpc": "2.0",
-  "method": "_loomdesk.dev/git/identity/changed",
+  "method": "_anureo.dev/git/identity/changed",
   "params": {
     "change": "updated",
     "profileId": "work"
@@ -2780,5 +2801,5 @@ pub enum GitWriteScope {
 
 | Notification | Authoritative method |
 |---|---|
-| `_loomdesk.dev/git/status_changed` | `_loomdesk.dev/git/status` |
-| `_loomdesk.dev/git/identity/changed` | `_loomdesk.dev/git/identity/list` |
+| `_anureo.dev/git/status_changed` | `_anureo.dev/git/status` |
+| `_anureo.dev/git/identity/changed` | `_anureo.dev/git/identity/list` |

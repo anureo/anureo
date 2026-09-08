@@ -3,29 +3,29 @@
 > **状态**: 已实现（自动化验收通过；permission/MCP 资源生命周期与外部 metrics exporter 接入待完成）
 > **目标版本**: ACP v1（`agent-client-protocol = 0.15.1`）
 > **相关代码**: `apps/server/src/acp_hub.rs`、`apps/server/src/handlers/acp.rs`、`apps/acp/src/agent.rs`、`apps/acp/src/session.rs`、`apps/acp/src/stdio_loop.rs`
-> **交叉参考**: [ACP WebSocket](./acp-websocket.md)、[ACP WebSocket 持久化实现方案](./acp-websocket-persistent-implementation.md)、[LoomAcpAgent 拆分设计](./acp-agent-refactor.md)、[ACP 官方 Session Setup](https://agentclientprotocol.com/protocol/v1/session-setup)、[Session Delete](https://agentclientprotocol.com/protocol/v1/session-delete)、[File System](https://agentclientprotocol.com/protocol/v1/file-system)
+> **交叉参考**: [ACP WebSocket](./acp-websocket.md)、[ACP WebSocket 持久化实现方案](./acp-websocket-persistent-implementation.md)、[anureoAcpAgent 拆分设计](./acp-agent-refactor.md)、[ACP 官方 Session Setup](https://agentclientprotocol.com/protocol/v1/session-setup)、[Session Delete](https://agentclientprotocol.com/protocol/v1/session-delete)、[File System](https://agentclientprotocol.com/protocol/v1/file-system)
 
 ---
 
 ## 1. 背景与目标
 
-改造前，`loom server` 每个进程虽然只创建一个 `AppState` 和一个 `AcpHub`，但连接模型仍然面向“一个逻辑客户端反复重连”：新的 WebSocket attach 会取消上一条 lease，并把全局通知接收者替换为最新连接。当前实现已改为一个 server-owned `AcpRuntime` 管理多条独立连接和多个 session。
+改造前，`anureo server` 每个进程虽然只创建一个 `AppState` 和一个 `AcpHub`，但连接模型仍然面向“一个逻辑客户端反复重连”：新的 WebSocket attach 会取消上一条 lease，并把全局通知接收者替换为最新连接。当前实现已改为一个 server-owned `AcpRuntime` 管理多条独立连接和多个 session。
 
 本方案将并行、交替和多工作区能力统一建模为标准 ACP session：
 
 ```text
-一个 loom server
-  └── 一个 Loom ACP Agent
+一个 anureo server
+  └── 一个 anureo ACP Agent
         ├── session A：cwd = project-a
         ├── session B：cwd = project-b
         └── session C：cwd = project-c
 ```
 
-客户端可以在同一条 ACP 连接上交替操作多个 session，也可以通过多条 ACP 连接访问同一个 server。协议线上只使用 ACP v1 标准方法和字段，不引入 `instanceId`、`_loom/instance/*` 或自定义路由。
+客户端可以在同一条 ACP 连接上交替操作多个 session，也可以通过多条 ACP 连接访问同一个 server。协议线上只使用 ACP v1 标准方法和字段，不引入 `instanceId`、`_anureo/instance/*` 或自定义路由。
 
 ### 1.1 目标
 
-1. 一个 `loom server` 进程承载一个 Loom ACP Agent。
+1. 一个 `anureo server` 进程承载一个 anureo ACP Agent。
 2. 一个 ACP 连接可以创建、加载和操作多个独立 session。
 3. 不同 session 可以并行执行；同一 session 的 prompt 严格串行。
 4. 多条 ACP 连接可以同时存在，第二条连接不能终止第一条连接。
@@ -33,11 +33,11 @@
 6. `session/update`、fs/terminal 反向 RPC 和权限请求必须路由到该 session 当前绑定的连接。
 7. 断线后通过标准 `session/load` 或 `session/resume` 恢复，不依赖自定义 replay cursor。
 8. `initialize` 只声明已经真实注册并可调用的 capabilities。
-9. Zed、Node.js E2E Client 和 `loom --acp` 使用同一套标准 ACP 行为。
+9. Zed、Node.js E2E Client 和 `anureo --acp` 使用同一套标准 ACP 行为。
 
 ### 1.2 非目标
 
-- 不在一个 server 进程中创建多个 Loom Agent 实例。
+- 不在一个 server 进程中创建多个 anureo Agent 实例。
 - 不设计 Agent 实例注册、负载均衡或 `instanceId -> Agent` 路由。
 - 不修改 ACP wire schema。
 - 不要求多个 server 共享数据库或迁移 active run。
@@ -85,7 +85,7 @@ acp_hub: Arc::new(crate::acp_hub::AcpHub::default()),
 | --- | --- | --- |
 | 单 lease 接管 | `AcpHub::attach_with()` 发送上一条 `lease_cancel` | 两个 Zed thread 若对应两条连接，后连接会关闭前连接 |
 | 单通知 recipient | `HubInner.recipient` 只有一个 sender | 所有 session update 只能发给最新连接 |
-| capabilities 属于 Agent 全局状态 | `LoomAcpAgent.client_capabilities` 是单个 `RwLock` | 第二个连接的 `initialize` 会覆盖第一个连接能力 |
+| capabilities 属于 Agent 全局状态 | `anureoAcpAgent.client_capabilities` 是单个 `RwLock` | 第二个连接的 `initialize` 会覆盖第一个连接能力 |
 | bridge 未绑定真实 session | initialize 时只调用 `set_connection_for_session("default", ...)` | fs/terminal 工具按真实 session id 查找时无法可靠得到 bridge |
 | 两套连接状态并存 | `SessionEntry.connection` 已存在，但 dispatch 未写入 | 结构存在，生命周期未接线 |
 | 全局静态 bridge registry | `SESSION_BRIDGES: OnceLock<HashMap<...>>` | 生命周期与 server state 分离，测试污染且难以 owner 隔离 |
@@ -129,12 +129,12 @@ acp_hub: Arc::new(crate::acp_hub::AcpHub::default()),
 ## 4. 目标架构
 
 ```text
-Zed / Node / loom --acp
+Zed / Node / anureo --acp
           │
           │ ACP v1 JSON-RPC
           ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ loom server（单进程、单 AppState）                          │
+│ anureo server（单进程、单 AppState）                          │
 │                                                             │
 │  /acp                                                       │
 │    └── AcpHub                                               │
@@ -181,7 +181,7 @@ Zed / Node / loom --acp
 
 ### 5.1 `AcpRuntime`
 
-从 `LoomAcpAgent` 中拆出连接无关的共享核心：
+从 `anureoAcpAgent` 中拆出连接无关的共享核心：
 
 ```rust
 pub struct AcpRuntime {
@@ -203,10 +203,10 @@ pub struct AcpRuntime {
 - WebSocket lease；
 - 当前 owner。
 
-现有 `LoomAcpAgent` 可以分两步迁移：
+现有 `anureoAcpAgent` 可以分两步迁移：
 
 1. 先让它内部持有 `Arc<AcpRuntime>`，把 handler 改为接收 `Arc<AcpConnection>`。
-2. 再重命名为 `LoomAcpConnectionAgent`，作为 ACP SDK dispatch adapter。
+2. 再重命名为 `anureoAcpConnectionAgent`，作为 ACP SDK dispatch adapter。
 
 这样可以避免一次性移动 `agent.rs` 中全部业务逻辑。
 
@@ -321,7 +321,7 @@ pub fn unbind_connection(&self, connection_id: &ConnectionId) -> Vec<SessionId>;
 
 ### 5.5 `NotificationRouter`
 
-替换 `LoomAcpAgent.session_update_tx` 和 `HubInner.recipient`：
+替换 `anureoAcpAgent.session_update_tx` 和 `HubInner.recipient`：
 
 ```rust
 pub struct NotificationRouter {
@@ -588,33 +588,33 @@ WS disconnect
 
 Persist 下旧 JSON-RPC prompt response 无法跨连接返回，Client 必须把原请求视为 transport failure，并在 turn 结束或 orphan TTL 取消后通过 load/resume 恢复。active turn 存在期间，load/resume 返回 session busy，不能抢占绑定。
 
-`LOOM_ACP_DISCONNECT_POLICY=cancel` 继续提供确定性取消：断线时立即取消该 connection 原先绑定的 active turns。是否将 cancel 改为未来默认值必须单独形成 ADR，评估 `loom acp` 自动重连、短暂网络抖动和后台副作用后再决定；本 RFC 不改变当前默认值。
+`ANUREO_ACP_DISCONNECT_POLICY=cancel` 继续提供确定性取消：断线时立即取消该 connection 原先绑定的 active turns。是否将 cancel 改为未来默认值必须单独形成 ADR，评估 `anureo acp` 自动重连、短暂网络抖动和后台副作用后再决定；本 RFC 不改变当前默认值。
 
 ### 7.3 stdio 模式
 
-`loom acp` stdio 仍使用同一个 `run_agent_connection()`：
+`anureo acp` stdio 仍使用同一个 `run_agent_connection()`：
 
 - stdio EOF 等价于 connection disconnect；
 - 一个 stdio process 可以承载多个 session；
 - session 的反向 RPC 都使用该 stdio connection；
-- 若 Zed 为不同 thread 启动多个 stdio process，每个 process 可连接同一个 `loom server`，server 侧按多 connection 模型隔离。
+- 若 Zed 为不同 thread 启动多个 stdio process，每个 process 可连接同一个 `anureo server`，server 侧按多 connection 模型隔离。
 
 ### 7.4 启动与 Zed 配置
 
 server 只启动一次：
 
 ```powershell
-loom server --host 127.0.0.1 --port 3030
+anureo server --host 127.0.0.1 --port 3030
 ```
 
-Zed 通过 `loom acp` stdio bridge 连接该 server：
+Zed 通过 `anureo acp` stdio bridge 连接该 server：
 
 ```json
 {
   "agent_servers": {
-    "loom": {
+    "anureo": {
       "type": "custom",
-      "command": "loom",
+      "command": "anureo",
       "args": ["acp", "ws://127.0.0.1:3030/acp"],
       "env": {}
     }
@@ -625,10 +625,10 @@ Zed 通过 `loom acp` stdio bridge 连接该 server：
 命令行一次性 prompt 使用相同 endpoint：
 
 ```powershell
-loom --acp --acp-url ws://127.0.0.1:3030/acp "检查当前项目"
+anureo --acp --acp-url ws://127.0.0.1:3030/acp "检查当前项目"
 ```
 
-这些入口只影响 transport 和 client 生命周期，不创建第二个 Loom Agent。所有 session 最终都由同一个 server-side `AcpRuntime` 管理。
+这些入口只影响 transport 和 client 生命周期，不创建第二个 anureo Agent。所有 session 最终都由同一个 server-side `AcpRuntime` 管理。
 
 ## 8. 工作目录与工具隔离
 
@@ -654,7 +654,7 @@ std::env::current_dir()
 std::env::set_current_dir(...)
 ```
 
-`loom server --directory` 可以继续作为 HTTP/SSE server 的默认 project directory，但 ACP 的 `session/new.cwd` 必须覆盖且完全隔离。
+`anureo server --directory` 可以继续作为 HTTP/SSE server 的默认 project directory，但 ACP 的 `session/new.cwd` 必须覆盖且完全隔离。
 
 ### 8.2 删除 `SESSION_BRIDGES`
 
@@ -709,7 +709,7 @@ let bridge = Arc::new(conn.session_bridge(session_id.clone())?);
 let tools = create_acp_tools(&caps, bridge);
 ```
 
-不能再从 `LoomAcpAgent.client_capabilities` 读取全局值。
+不能再从 `anureoAcpAgent.client_capabilities` 读取全局值。
 
 ## 9. Session 持久化
 
@@ -758,7 +758,7 @@ active run 不跨进程恢复。server 崩溃前处于 running 的 session 在�
 
 ## 10. `run_agent_connection()` 改造
 
-当前函数只接收共享 `LoomAcpAgent` 和一个 notification receiver，handler 无法知道稳定的 caller connection context。目标签名：
+当前函数只接收共享 `anureoAcpAgent` 和一个 notification receiver，handler 无法知道稳定的 caller connection context。目标签名：
 
 ```rust
 pub async fn run_agent_connection<S, St, F>(
@@ -834,7 +834,7 @@ initialize handler 只 bind 当前 `AcpConnection.sdk_client` 和 capabilities�
 | `apps/acp/src/session.rs` | 修改 | owner、必填 cwd、lifecycle；移除 connection 引用；持久 repository 接口 |
 | `apps/acp/src/session_bindings.rs` | 新增 | session ↔ connection 原子双向索引和 rebind/unbind API，连接归属唯一事实源 |
 | `apps/acp/src/agent.rs` | 重构 | 业务迁移到 runtime；new/load/resume/prompt 接收 caller connection；移除全局 capabilities/tx |
-| `apps/acp/src/prompt_executor.rs` | 新增 | 抽象 `AcpPromptExecutor`；生产实现运行 Loom graph，测试实现返回确定性 stream/update |
+| `apps/acp/src/prompt_executor.rs` | 新增 | 抽象 `AcpPromptExecutor`；生产实现运行 anureo graph，测试实现返回确定性 stream/update |
 | `apps/acp/src/stdio_loop.rs` | 修改 | 新签名；每个 handler 捕获 caller；注册 resume/close/delete；移除 default bridge |
 | `apps/acp/src/tools/client_bridge.rs` | 重构 | 删除全局 registry；connection bridge late-bind SDK client；`SessionClientBridge` 固定真实 session id |
 | `apps/acp/src/tools/mod.rs` | 修改 | `create_acp_tools` 显式接收 capabilities 和 `SessionClientBridge` |
@@ -849,8 +849,8 @@ initialize handler 只 bind 当前 `AcpConnection.sdk_client` 和 capabilities�
 | `apps/server/tests/acp_ws_e2e.rs` | 扩展 | 单连接多 session、交替 prompt、断线恢复 |
 | `apps/server/tests/acp_ws_mega_e2e.rs` | 扩展 | 多连接隔离、接管、通知路由、owner 校验 |
 | `apps/server/src/bin/acp_test_server.rs` | 新增（test-support） | 注入 deterministic `AcpPromptExecutor`，供 Node 启动真实 router/WS transport，不进入生产 binary |
-| `e2e/features/acp/loom-acp-multi-session.feature` | 新增 | Node.js BDD 场景 |
-| `e2e/tests/acp-bdd/loom-acp-multi-session.test.mjs` | 新增 | 启动一个 server，执行多 session 端到端测试 |
+| `e2e/features/acp/anureo-acp-multi-session.feature` | 新增 | Node.js BDD 场景 |
+| `e2e/tests/acp-bdd/anureo-acp-multi-session.test.mjs` | 新增 | 启动一个 server，执行多 session 端到端测试 |
 | `e2e/package.json` | 修改 | 将新 BDD suite 纳入 `test:bdd:acp` |
 
 ## 12. 分阶段实施
@@ -900,7 +900,7 @@ initialize handler 只 bind 当前 `AcpConnection.sdk_client` 和 capabilities�
 2. `session/load`、`session/resume` canonicalize 请求 cwd，并要求与已存 cwd 完全一致。
 3. 完成 `session/resume` handler 后重新声明 capability；实现幂等 close/delete。
 4. 删除核心流程对 replay cursor 的依赖；close/delete 和 prompt unwind 会回收仍登记的 ACP terminal，MCP/permission 资源回收仍需各自的生命周期 API。
-5. 已增加全局 prompt semaphore；默认容量为 4，可通过 `LOOM_ACP_MAX_CONCURRENT_PROMPTS` 设置正整数覆盖。ACP prompt 执行路径不再对缺失 session cwd fallback 到 process cwd。
+5. 已增加全局 prompt semaphore；默认容量为 4，可通过 `ANUREO_ACP_MAX_CONCURRENT_PROMPTS` 设置正整数覆盖。ACP prompt 执行路径不再对缺失 session cwd fallback 到 process cwd。
 6. 已增加 runtime metrics snapshot 和 `/metrics` Prometheus endpoint（active connections/sessions/prompts、total prompts、busy reject、route failure、session rebind）；外部 metrics exporter 的长期接入仍待实现。
 
 验收：server 重启后可 load；同进程断线后可 resume；cwd 不可被恢复请求改写；达到容量上限时行为可预测。
@@ -910,11 +910,11 @@ initialize handler 只 bind 当前 `AcpConnection.sdk_client` 和 capabilities�
 1. 增加仅在 `test-support` feature 下编译的 `acp-test-server`，注入 deterministic `AcpPromptExecutor`。
 2. Node.js 启动该真实 router/ACP WebSocket server，并从 stdout 获取随机监听地址。
 3. 建立一个或两个 ACP WebSocket，执行标准 ACP BDD 场景和消息顺序断言。
-4. 使用生产 `loom server` 与 Zed custom agent 配置完成 UI smoke；协议级 Zed-compatible smoke 同时保留为自动化门槛。
+4. 使用生产 `anureo server` 与 Zed custom agent 配置完成 UI smoke；协议级 Zed-compatible smoke 同时保留为自动化门槛。
 
 验收：Rust integration、Node BDD、Zed 三条路径行为一致。
 
-当前环境使用 Zed custom agent `loom` 完成了本次 UI smoke：第一个 thread 返回 `ZED_SMOKE_OK`，随后在同一 workspace 新建第二个 thread，返回 `ZED_SMOKE_THREAD_2_OK`。当前 ACP 日志 `logs/acp.log` 记录了两个不同 session id（`session-e790eca7-b8c9-4953-8b80-c49be793d19b`、`session-9e284e08-79de-47b6-98ca-9284f7e7096a`）的 prompt、`session/update` 和 `stopReason=end_turn`；第二个 thread 同时在 Zed 左侧 thread 列表中可见。该证据覆盖真实 Zed UI → stdio ACP → Loom agent → session/update 返回链路。
+当前环境使用 Zed custom agent `anureo` 完成了本次 UI smoke：第一个 thread 返回 `ZED_SMOKE_OK`，随后在同一 workspace 新建第二个 thread，返回 `ZED_SMOKE_THREAD_2_OK`。当前 ACP 日志 `logs/acp.log` 记录了两个不同 session id（`session-e790eca7-b8c9-4953-8b80-c49be793d19b`、`session-9e284e08-79de-47b6-98ca-9284f7e7096a`）的 prompt、`session/update` 和 `stopReason=end_turn`；第二个 thread 同时在 Zed 左侧 thread 列表中可见。该证据覆盖真实 Zed UI → stdio ACP → anureo agent → session/update 返回链路。
 
 ## 13. 测试方案
 
@@ -979,10 +979,10 @@ prompt again -> assert same thread/checkpoint
 ### 13.3 Node.js BDD
 
 ```gherkin
-Feature: one Loom server supports multiple ACP sessions
+Feature: one anureo server supports multiple ACP sessions
 
   Background:
-    Given one Loom server is running
+    Given one anureo server is running
     And an ACP client has initialized protocol version 1
 
   Scenario: alternate prompts between two sessions
@@ -1031,7 +1031,7 @@ Feature: one Loom server supports multiple ACP sessions
 
 Node fixture 必须经过真实 server router、WebSocket upgrade、ACP SDK dispatch、runtime、notification drain 和 JSON-RPC response 路径。测试启动 `acp-test-server`，它与生产 server 使用同一组装函数，只通过 `AcpRuntime.prompt_executor: Arc<dyn AcpPromptExecutor>` 注入确定性 executor。executor 按输入脚本产生固定的 update、延迟、reverse RPC 请求和最终结果，不访问模型网络。
 
-现有 `apps/acp/src/agent.rs::ModelProvider` 只替换 config option 使用的模型列表发现，不替换 `run_agent_with_options` 执行，因此不能作为 prompt E2E fake。`acp-test-server` 仅在 `test-support` feature 下编译，不得被生产 `loom server` 引用。Node 的职责仅是启动 fixture、交换 wire message 和断言顺序，不复刻 Agent 业务逻辑。
+现有 `apps/acp/src/agent.rs::ModelProvider` 只替换 config option 使用的模型列表发现，不替换 `run_agent_with_options` 执行，因此不能作为 prompt E2E fake。`acp-test-server` 仅在 `test-support` feature 下编译，不得被生产 `anureo server` 引用。Node 的职责仅是启动 fixture、交换 wire message 和断言顺序，不复刻 Agent 业务逻辑。
 
 `apps/server/Cargo.toml` 显式声明 binary，避免文件名与命令名不一致：
 
@@ -1046,9 +1046,9 @@ required-features = ["test-support"]
 
 ```powershell
 cargo test -p acp --lib
-cargo test -p loom-server-core --test acp_ws_e2e
-cargo build -p loom-server-core --features test-support --bin acp-test-server
-cargo check -p cli
+cargo test -p anureo-server-core --test acp_ws_e2e
+cargo build -p anureo-server-core --features test-support --bin acp-test-server
+cargo check -p anureo-cli
 npm.cmd --prefix e2e run test:bdd:acp
 ```
 
@@ -1058,13 +1058,13 @@ npm.cmd --prefix e2e run test:bdd:acp
 | --- | --- |
 | `cargo test -p acp --lib` | 145 passed，0 failed |
 | `cargo test -p acp --lib session_repository::tests` | 2 passed，0 failed（含 delete transaction rollback fault-injection） |
-| `cargo test -p loom-server-core acp_hub::tests` | 3 passed，0 failed |
-| `cargo test -p loom-server-core --test acp_ws_e2e` | 8 passed，0 failed |
+| `cargo test -p anureo-server-core acp_hub::tests` | 3 passed，0 failed |
+| `cargo test -p anureo-server-core --test acp_ws_e2e` | 8 passed，0 failed |
 | `npm.cmd --prefix e2e run test:bdd:acp` | 10 passed，0 failed |
 | `Zed ACP smoke`（Node BDD） | 1 passed，0 failed |
 | `git diff --check` | 通过 |
 
-Node BDD 的 binary 发现逻辑支持 `CARGO_TARGET_DIR`；CLI 可再用 `LOOM_BIN` 覆盖，deterministic server 可用 `ACP_TEST_SERVER_BIN` 覆盖。因此并行 CI 不需要共享仓库默认 `target` 目录。
+Node BDD 的 binary 发现逻辑支持 `CARGO_TARGET_DIR`；CLI 可再用 `ANUREO_BIN` 覆盖，deterministic server 可用 `ACP_TEST_SERVER_BIN` 覆盖。因此并行 CI 不需要共享仓库默认 `target` 目录。
 
 真实模型测试保持 ignored，不作为本设计的常规 CI 门槛。
 
@@ -1095,7 +1095,7 @@ metrics 不包含 session id、prompt 内容、token、MCP secret 或文件内�
 - baseline ACP 方法和 JSON shape 不变。
 - 不增加必需 `_meta` 字段。
 - Client 不认识 optional capability 时不受影响。
-- `loom acp` stdio 与 `/acp` WebSocket 使用同一 dispatch。
+- `anureo acp` stdio 与 `/acp` WebSocket 使用同一 dispatch。
 
 ### 15.2 行为变化
 
@@ -1116,7 +1116,7 @@ ACP 标准不规定 transport 断线时 active prompt 必须 persist 或 cancel�
 不建议长期保留两套 Hub。若需要灰度，可使用短期 server flag：
 
 ```text
-LOOM_ACP_CONNECTION_MODEL=legacy|multi-session
+ANUREO_ACP_CONNECTION_MODEL=legacy|multi-session
 ```
 
 该 flag 只控制内部连接实现，不影响 ACP wire。完成两个版本验证后删除 legacy 分支，避免长期维护双语义。
@@ -1140,7 +1140,7 @@ LOOM_ACP_CONNECTION_MODEL=legacy|multi-session
 
 ## 17. 完成定义
 
-- [x] 一个 `loom server` 只创建一个 `AcpRuntime`。
+- [x] 一个 `anureo server` 只创建一个 `AcpRuntime`。
 - [x] transport 先创建 connection shell，SDK client 仅在 initialize 中 late-bind；initialize 前 session 方法被拒绝。
 - [x] 一个连接可以创建并交替操作至少两个 session。
 - [x] 两个连接可以同时存在，互不触发 lease cancellation。
@@ -1159,10 +1159,10 @@ LOOM_ACP_CONNECTION_MODEL=legacy|multi-session
 - [x] test-support server 注入 deterministic `AcpPromptExecutor`，生产 binary 不包含测试入口。
 - [x] Rust unit、WS integration、Node.js BDD 全部通过，Node 测试覆盖真实 WebSocket/dispatch 路径。
 - [x] Zed-compatible `clientInfo`/capabilities 的双 stdio bridge 多 session smoke 通过。
-- [x] Zed 使用一个 Loom custom agent 配置完成 UI 级多 thread smoke；两个独立 thread 均收到预期响应。
+- [x] Zed 使用一个 anureo custom agent 配置完成 UI 级多 thread smoke；两个独立 thread 均收到预期响应。
 
 ## 18. 最终结论
 
-单个 `loom server` 不需要模拟多个 Loom 实例。标准 ACP 已经把独立工作单元定义为 session；正确实现 session 级上下文、连接绑定、通知路由、反向 RPC、并发控制和恢复后，一个 Loom Agent 就能同时支持多个工作区、多个 thread 以及 A/B/A 式交替执行。
+单个 `anureo server` 不需要模拟多个 anureo 实例。标准 ACP 已经把独立工作单元定义为 session；正确实现 session 级上下文、连接绑定、通知路由、反向 RPC、并发控制和恢复后，一个 anureo Agent 就能同时支持多个工作区、多个 thread 以及 A/B/A 式交替执行。
 
 本改造最关键的边界是：`AcpRuntime` 属于 server，`AcpConnection` 属于 transport，`SessionEntry` 属于会话。三者生命周期分开后，多 session 和多连接都不需要协议扩展。

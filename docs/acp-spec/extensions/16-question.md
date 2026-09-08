@@ -1,6 +1,6 @@
 # Question 扩展
 
-> 命名空间: `_loomdesk.dev/question/*`
+> 命名空间: `_anureo.dev/question/*`
 > Capability key: `question`
 > 实现状态: ❌ 未实现
 
@@ -26,20 +26,20 @@
 
 ### 启用条件
 
-本扩展**仅在 ACP 标准 elicitation（`session/request_permission`）无法表达 LoomDesk question 语义时启用**。Loom question 支持以下 elicitation 不具备的能力：
+本扩展**仅在 ACP 标准 elicitation（`session/request_permission`）无法表达 Anureo question 语义时启用**。anureo question 支持以下 elicitation 不具备的能力：
 
 - 多选项 + 自由文本输入混合（elicitation 仅支持单一 input）
 - 选项级 metadata（描述、图标、disabled 状态）
 - 超时自动取消
 - 多轮 question（基于前一个 reply 追问）
 
-Client 在 `initialize` 时通过 `agentCapabilities._meta["loomdesk.dev"].question` 判断是否启用。若未声明，question 语义回退到标准 elicitation。
+Client 在 `initialize` 时通过 `agentCapabilities._meta["anureo.dev"].question` 判断是否启用。若未声明，question 语义回退到标准 elicitation。
 
 ---
 
 ## Methods
 
-### `_loomdesk.dev/question/request`
+### `_anureo.dev/question/request`
 
 | 项目 | 内容 |
 |---|---|
@@ -48,7 +48,7 @@ Client 在 `initialize` 时通过 `agentCapabilities._meta["loomdesk.dev"].quest
 | 权限 | 无额外 server-side authorization（由 Agent 内部逻辑发起） |
 | Timeout | 默认 120s；Agent 可在 `timeoutMs` 中覆盖 |
 
-Server（Agent）请求 Client 展示一个 LoomDesk question，等待用户选择或输入。
+Server（Agent）请求 Client 展示一个 Anureo question，等待用户选择或输入。
 
 #### Request
 
@@ -56,7 +56,7 @@ Server（Agent）请求 Client 展示一个 LoomDesk question，等待用户选�
 {
   "jsonrpc": "2.0",
   "id": "ext-42",
-  "method": "_loomdesk.dev/question/request",
+  "method": "_anureo.dev/question/request",
   "params": {
     "questionId": "q-2025-001",
     "title": "选择部署目标",
@@ -195,7 +195,7 @@ pub struct QuestionReply {
 
 ---
 
-### `_loomdesk.dev/question/reply`
+### `_anureo.dev/question/reply`
 
 | 项目 | 内容 |
 |---|---|
@@ -211,7 +211,7 @@ Client 返回用户对 question 的选择或输入。也可作为 Client 主动�
 {
   "jsonrpc": "2.0",
   "id": 101,
-  "method": "_loomdesk.dev/question/reply",
+  "method": "_anureo.dev/question/reply",
   "params": {
     "questionId": "q-2025-001",
     "status": "answered",
@@ -280,7 +280,7 @@ pub struct QuestionReplyResponse {
 
 ---
 
-### `_loomdesk.dev/question/cancel`
+### `_anureo.dev/question/cancel`
 
 | 项目 | 内容 |
 |---|---|
@@ -296,7 +296,7 @@ Client 主动取消一个 pending question。与 `question/reply` 的 `status: "
 {
   "jsonrpc": "2.0",
   "id": 102,
-  "method": "_loomdesk.dev/question/cancel",
+  "method": "_anureo.dev/question/cancel",
   "params": {
     "questionId": "q-2025-001",
     "reason": "user_navigation"

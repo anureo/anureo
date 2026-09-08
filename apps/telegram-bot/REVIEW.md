@@ -196,7 +196,7 @@ Duration::from_secs(1) // retry delay         // 为什么是 1s?
 
 ### P0 — 必须立即修复
 
-1. **编译错误** — `loom/src/llm/openai/request.rs:123` 和 `loom/src/user_message/sqlite_store.rs:175` 的 `ToolCallContent.len()` 方法缺失
+1. **编译错误** — `anureo/src/llm/openai/request.rs:123` 和 `anureo/src/user_message/sqlite_store.rs:175` 的 `ToolCallContent.len()` 方法缺失
 2. **retry.rs 的 8 个 unwrap** — 替换为安全的错误处理
 3. **download.rs 路径遍历** — 验证文件路径在预期目录内
 

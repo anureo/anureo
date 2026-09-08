@@ -1,7 +1,62 @@
 # Goal 和 Scheduled Task
 
-> 命名空间: `_loomdesk.dev/goal/*`、`_loomdesk.dev/scheduled-task/*`
+> 命名空间: `_anureo.dev/goal/*`、`_anureo.dev/scheduled-task/*`
 > Capability key: `goal`、`scheduled-task`
+> **实施注记（2026-09-07，goal-codex-alignment P5b）**：goal 后端已切至 `thread_goals` 表（`<anureo_home>/tasks/tasks.db`），goals.json 文件后端退役。六方法 API 面与响应形状保持兼容；新增 `_anureo.dev/goal/updated` 全量快照通知（与 `goal/changed` 并存双发，前者待 FE 迁移后收回）；mutation 响应新增 `updated` 字段（全量快照）。状态投影兼容：新 `usage_limited`→旧 `paused`，`blocked`/`budget_limited`→旧 `failed`（详情在 `metadata.statusReason`）；`sessionIds` 投影 thread_id；`progress`/`steps` 恒空。
+> **实施注记（2026-09-08，goal-codex-alignment P8）**：本扩展降级为**不广播的 legacy alias**（capability 不再出现在协商中，六方法仍可用，映射同一 GoalService）。对外权威面 = **中立 goal 扩展**（见下节「中立 goal 面（P8）」，对齐 codex-acp provider-neutral goal extension）。P7 objective 文件化：objective 超过内联上限时 DB 存 `@file:<name>` 标记、文本落 `<anureo_home>/goals/<sessionId>.md`；本扩展六方法的读取面（get/list/start/pause/resume/cancel）经 `resolve_objective` 返回**全文**。
+
+---
+
+# 中立 goal 面（P8，2026-09-08 落地）
+
+> 权威基准：codex-acp `docs/goal-extension.md`（provider-neutral）；规范细节与状态映射表见 `docs/goal/goal-codex-alignment.md` 附录 C。
+
+## Capability 协商
+
+`initialize` 响应**顶层 `_meta.goal`**（codex-acp / 客户端识别位置），`agentCapabilities._meta.goal` 同形保留：
+
+```json
+{
+  "goal": {
+    "version": 1,
+    "controlMethod": "_session/goal",
+    "actions": ["set", "pause", "resume", "clear"]
+  }
+}
+```
+
+客户端按 `version===1 && controlMethod==='_session/goal'` 识别；`show`/`edit` 为 anureo 扩展动作，不进 `actions`。
+
+## 控制方法 `_session/goal`
+
+请求 `{sessionId, action}`：
+
+| action | 参数 | 语义 |
+|---|---|---|
+| `set` | `objective`（非空，可带 `tokenBudget`） | 置位/快照替换；替换既有 goal 时宿主写 deferral（§6.6） |
+| `pause` | — | active → paused |
+| `resume` | — | 仅 paused/blocked/usage_limited 可恢复（budget_limited/终态拒绝） |
+| `clear` | — | 任意状态 → 无 goal |
+
+未广播的 action 一律拒绝（JSON-RPC error）。
+
+## 快照发布 `session_info_update._meta.goal`
+
+goal 每次变更（控制动作 / `/goal` 命令 / turn 完成钩子）经 `session/update` 的 `session_info_update` 携带全量快照；**清除时 `goal: null`**。字段（camelCase，Unix **毫秒**）：
+
+| 字段 | 说明 |
+|---|---|
+| `objective` | 全文；文件化 goal（P7）以 `objectiveFile: true` 代替（文本在 `<anureo_home>/goals/<sessionId>.md`，FE 按需拉取） |
+| `status` | 5 态投影：`active` / `paused` / `blocked` / `complete` / `limited`（`usage_limited` 与 `budget_limited` 归并；原始成因在可选 `statusReason`） |
+| `createdAt` / `updatedAt` | Unix 毫秒 |
+| `tokenBudget` / `tokensUsed` / `timeUsedSeconds` | 预算与记账 |
+| `controlMethod` | 恒 `"_session/goal"` |
+
+可选扩展（未实现，预留）：`iterationCount`、`lastContinuationReason`。
+
+## 生命周期解耦
+
+goal `active` ≠ prompt 运行中。turn 完成钩子驱动 `continue_if_idle` 自主续跑，产生的 `session/update` 在已完成的 prompt 请求之外发布；deferral（§6.6：goal 快照替换 / session fork 保护窗）推迟续跑到下一 turn 边界。
 
 ## 设计原则
 
@@ -13,10 +68,12 @@
 
 # Goal
 
-> 命名空间: `_loomdesk.dev/goal/*`
+> 命名空间: `_anureo.dev/goal/*`
 > Capability key: `goal`
 
 ## Capability
+
+> **P8（2026-09-08）起不再广播**：legacy alias 保持可用但不进能力协商；客户端改用上文 `agentCapabilities._meta.goal`。以下为历史形状（保留备查）：
 
 ```json
 {
@@ -51,7 +108,7 @@ pub struct Goal {
     pub session_ids: Vec<String>,
     /// 进度摘要
     pub progress: Option<GoalProgress>,
-    /// Goal metadata (存储在 session metadata.openchamber.goal)
+    /// Goal metadata (存储在 session metadata.anureo.goal)
     pub metadata: Option<serde_json::Value>,
 }
 
@@ -107,7 +164,7 @@ pub struct GoalListParams {
 
 ---
 
-### `_loomdesk.dev/goal/list`
+### `_anureo.dev/goal/list`
 
 | 项目 | 内容 |
 |---|---|
@@ -172,7 +229,7 @@ pub struct GoalListParams {
 
 ---
 
-### `_loomdesk.dev/goal/get`
+### `_anureo.dev/goal/get`
 
 | 项目 | 内容 |
 |---|---|
@@ -230,7 +287,7 @@ pub struct GoalListParams {
 
 ---
 
-### `_loomdesk.dev/goal/start`
+### `_anureo.dev/goal/start`
 
 | 项目 | 内容 |
 |---|---|
@@ -286,7 +343,7 @@ pub struct GoalListParams {
 
 ---
 
-### `_loomdesk.dev/goal/pause`
+### `_anureo.dev/goal/pause`
 
 | 项目 | 内容 |
 |---|---|
@@ -327,7 +384,7 @@ pub struct GoalListParams {
 
 ---
 
-### `_loomdesk.dev/goal/resume`
+### `_anureo.dev/goal/resume`
 
 | 项目 | 内容 |
 |---|---|
@@ -368,7 +425,7 @@ pub struct GoalListParams {
 
 ---
 
-### `_loomdesk.dev/goal/cancel`
+### `_anureo.dev/goal/cancel`
 
 | 项目 | 内容 |
 |---|---|
@@ -417,14 +474,16 @@ pub struct GoalListParams {
 
 ## Notifications
 
-### `_loomdesk.dev/goal/changed`
+### `_anureo.dev/goal/changed`
 
 当 goal 状态发生变化（启动、暂停、恢复、取消、进度更新、step 完成）时推送。
+
+> P5b 注记：与新 `goal/updated` 并存双发（兼容保留）；FE 迁移后随 P7 收回。
 
 ```json
 {
   "jsonrpc": "2.0",
-  "method": "_loomdesk.dev/goal/changed",
+  "method": "_anureo.dev/goal/changed",
   "params": {
     "id": "goal-001",
     "change": "progress",
@@ -449,11 +508,34 @@ pub struct GoalListParams {
 
 - notification 丢失后，client 必须调用 `goal/list` 获取完整列表。
 
+### `_anureo.dev/goal/updated`（P5b 新增）
+
+每次 goal 变更后推送的**全量快照**（与 `_anureo.dev/goal/get` 响应同构）：UI 订阅快照而非增量猜状态。payload 即 Goal 对象（camelCase，含 `metadata.threadId`/`tokensUsed`/`tokenBudget`/`statusReason`）。此外每个 mutation RPC 响应也携带 `updated` 字段（同一快照），同步路径无需等通知。
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "_anureo.dev/goal/updated",
+  "params": {
+    "id": "goal-001",
+    "title": "...",
+    "description": "...",
+    "status": "active",
+    "createdAt": "2026-09-07T00:00:00.000Z",
+    "updatedAt": "2026-09-07T00:00:00.000Z",
+    "sessionIds": ["thread-42"],
+    "metadata": { "threadId": "thread-42", "tokensUsed": 1200, "timeUsedSeconds": 30 }
+  }
+}
+```
+
+- 广播到当前进程全部连接（best-effort）；丢失后以 `goal/get`/`goal/list` 兑底。
+
 ---
 
 # Scheduled Task
 
-> 命名空间: `_loomdesk.dev/scheduled-task/*`
+> 命名空间: `_anureo.dev/scheduled-task/*`
 > Capability key: `scheduled-task`
 
 ## Capability
@@ -514,7 +596,7 @@ pub struct ScheduledTaskRunParams {
 
 ---
 
-### `_loomdesk.dev/scheduled-task/list`
+### `_anureo.dev/scheduled-task/list`
 
 | 项目 | 内容 |
 |---|---|
@@ -573,13 +655,13 @@ pub struct ScheduledTaskRunParams {
 |---|---|
 | `internal_error` | 读取配置失败 |
 
-### `_loomdesk.dev/scheduled-task/create|update|delete`
+### `_anureo.dev/scheduled-task/create|update|delete`
 
-配置变更同样按项目工作目录落盘到 `<cwd>/.loom/scheduled-tasks.json`。`create` 和 `update` 接收 `{ "task": { ... } }`，`update` 还需要 `id`；`delete` 接收 `id`。响应包含 `tasks`，创建或更新时额外包含 `task`。这些方法只负责配置和运行记录，不会在当前版本内自行启动 scheduler。
+配置变更同样按项目工作目录落盘到 `<cwd>/.anureo/scheduled-tasks.json`。`create` 和 `update` 接收 `{ "task": { ... } }`，`update` 还需要 `id`；`delete` 接收 `id`。响应包含 `tasks`，创建或更新时额外包含 `task`。这些方法只负责配置和运行记录，不会在当前版本内自行启动 scheduler。
 
 ---
 
-### `_loomdesk.dev/scheduled-task/run`
+### `_anureo.dev/scheduled-task/run`
 
 | 项目 | 内容 |
 |---|---|
@@ -634,4 +716,4 @@ pub struct ScheduledTaskRunParams {
 
 | Notification | Authoritative method |
 |---|---|
-| `_loomdesk.dev/goal/changed` | `_loomdesk.dev/goal/list` |
+| `_anureo.dev/goal/changed` | `_anureo.dev/goal/list` |

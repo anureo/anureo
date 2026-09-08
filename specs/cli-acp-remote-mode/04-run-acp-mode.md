@@ -20,7 +20,7 @@ use crate::args::Args;
 use crate::run_flow::resolve_user_message;
 
 use super::acp_client::{AcpClient, AcpResult, AcpSessionUpdate};
-use loom_acp::server_bootstrap::{ensure_server_ready, probe_client, DEFAULT_WS_URL};
+use anureo_acp::server_bootstrap::{ensure_server_ready, probe_client, DEFAULT_WS_URL};
 
 /// Run the CLI in remote ACP mode.
 pub(crate) async fn run_acp_mode(
@@ -32,7 +32,7 @@ pub(crate) async fn run_acp_mode(
     // ── 1. Ensure server is running ──────────────────────────────
     let probe = probe_client();
     if let Err(e) = ensure_server_ready(&url, &probe).await {
-        return Err(format!("failed to start loom-server: {e}"));
+        return Err(format!("failed to start anureo-server: {e}"));
     }
 
     // ── 2. Connect ACP client ────────────────────────────────────
@@ -282,7 +282,7 @@ use display_bridge::DisplayBridge;
 use crate::args::Args;
 use crate::run_flow::resolve_user_message;
 use super::acp_client::{AcpClient, AcpResult, AcpSessionUpdate, PromptStream};
-use loom_acp::server_bootstrap::{ensure_server_ready, probe_client, DEFAULT_WS_URL};
+use anureo_acp::server_bootstrap::{ensure_server_ready, probe_client, DEFAULT_WS_URL};
 use agent_client_protocol::schema::v1::PromptResponse;
 
 pub(crate) async fn run_acp_mode(args: &Args, server_url: Option<String>) -> Result<(), String> { ... }

@@ -2,10 +2,10 @@
 
 > **状态**：Draft，待评审
 > **日期**：2026-08-20
-> **范围**：Loom ACP background review（Memory / Skill 知识整理）的运行时、生命周期与持久化边界
+> **范围**：anureo ACP background review（Memory / Skill 知识整理）的运行时、生命周期与持久化边界
 > **相关代码**：`apps/acp/src/review_runner.rs`、`apps/acp/src/agent.rs`、`apps/acp/src/extensions/auto_review.rs`
 > **协议方案**：[Background Review ACP 协议设计](./background-review-protocol.md)
-> **交互方案**：Loom Desk `openchamber-feat-dev/docs/design/background-review-interaction.md`
+> **交互方案**：anureo Desk `anureo-feat-dev/docs/design/background-review-interaction.md`
 > **相关文档**：[10-memory-review-experimental.md](../../user-guide/10-memory-review-experimental.md)、[acp-subagent-contract.md](../acp-subagent-contract.md)
 
 ---
@@ -17,7 +17,7 @@
 1. **Background review**：从对话中提取 Memory 和 Skill，写入长期上下文。
 2. **Auto review**：检查代码变更，通过独立 review session 与实现 Agent 循环协作。
 
-本文只设计第一类。两者可以共享 ACP notification、权限校验和 Loom Desk 的活动中心，但不共享 session、状态机和结果 schema。
+本文只设计第一类。两者可以共享 ACP notification、权限校验和 anureo Desk 的活动中心，但不共享 session、状态机和结果 schema。
 
 ## 2. 当前运行链路
 
@@ -26,7 +26,7 @@ prompt 完成
   → apps/acp/src/agent.rs
   → review_runner::spawn_inprocess_review
   → extract_session_text
-  → loom_curator::run_review
+  → anureo_curator::run_review
   → Memory / Skill 写入
   → ReviewHistory 持久化
   → agent_message_chunk + session_info_update

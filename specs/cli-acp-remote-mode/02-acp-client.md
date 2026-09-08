@@ -709,10 +709,10 @@ fn build_ws_request(
         .into_client_request()
         .map_err(|e| AcpClientError::Connect(format!("invalid URL {ws_url}: {e}")))?;
 
-    if let Ok(token) = std::env::var("LOOM_AUTH_TOKEN") {
+    if let Ok(token) = std::env::var("ANUREO_AUTH_TOKEN") {
         let value = format!("Bearer {token}")
             .parse()
-            .map_err(|e| AcpClientError::Connect(format!("invalid LOOM_AUTH_TOKEN: {e}")))?;
+            .map_err(|e| AcpClientError::Connect(format!("invalid ANUREO_AUTH_TOKEN: {e}")))?;
         request.headers_mut().insert("Authorization", value);
     }
 

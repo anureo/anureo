@@ -36,7 +36,7 @@
 
 ```json
 {
-  "instance_dir": "loom-instance_xxx",
+  "instance_dir": "anureo-instance_xxx",
   "status": "running"
 }
 ```
@@ -57,7 +57,7 @@
 
 ```json
 {
-  "instance_dir": "loom-instance_xxx",
+  "instance_dir": "anureo-instance_xxx",
   "status": "running"
 }
 ```
@@ -244,7 +244,7 @@ match runtime
 ```json
 {
   "schema_version": 1,
-  "instance_dir": "loom-instance_xxx",
+  "instance_dir": "anureo-instance_xxx",
   "status": "failed",
   "error": "finalize failed"
 }

@@ -1,6 +1,6 @@
 # Session Folder 扩展
 
-> 命名空间: `_loomdesk.dev/session-folder/*`
+> 命名空间: `_anureo.dev/session-folder/*`
 > Capability key: `session-folder`
 > 实现状态: ❌ 未实现
 
@@ -30,7 +30,7 @@
 
 ## Methods
 
-### `_loomdesk.dev/session-folder/list`
+### `_anureo.dev/session-folder/list`
 
 | 项目 | 内容 |
 |---|---|
@@ -46,7 +46,7 @@
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "_loomdesk.dev/session-folder/list",
+  "method": "_anureo.dev/session-folder/list",
   "params": {
     "cursor": null,
     "limit": 50
@@ -174,7 +174,7 @@ pub struct SessionFolderListResponse {
 
 ---
 
-### `_loomdesk.dev/session-folder/create`
+### `_anureo.dev/session-folder/create`
 
 | 项目 | 内容 |
 |---|---|
@@ -190,7 +190,7 @@ pub struct SessionFolderListResponse {
 {
   "jsonrpc": "2.0",
   "id": 2,
-  "method": "_loomdesk.dev/session-folder/create",
+  "method": "_anureo.dev/session-folder/create",
   "params": {
     "name": "测试任务",
     "color": "#f59e0b",
@@ -259,7 +259,7 @@ pub struct SessionFolderCreateResponse {
 
 ---
 
-### `_loomdesk.dev/session-folder/update`
+### `_anureo.dev/session-folder/update`
 
 | 项目 | 内容 |
 |---|---|
@@ -275,7 +275,7 @@ pub struct SessionFolderCreateResponse {
 {
   "jsonrpc": "2.0",
   "id": 3,
-  "method": "_loomdesk.dev/session-folder/update",
+  "method": "_anureo.dev/session-folder/update",
   "params": {
     "folderId": "folder-001",
     "name": "前端开发 (Q1)",
@@ -350,7 +350,7 @@ pub struct SessionFolderUpdateResponse {
 
 ---
 
-### `_loomdesk.dev/session-folder/delete`
+### `_anureo.dev/session-folder/delete`
 
 | 项目 | 内容 |
 |---|---|
@@ -366,7 +366,7 @@ pub struct SessionFolderUpdateResponse {
 {
   "jsonrpc": "2.0",
   "id": 4,
-  "method": "_loomdesk.dev/session-folder/delete",
+  "method": "_anureo.dev/session-folder/delete",
   "params": {
     "folderId": "folder-003"
   }
@@ -428,7 +428,7 @@ pub struct SessionFolderDeleteResponse {
 
 ---
 
-### `_loomdesk.dev/session-folder/assign`
+### `_anureo.dev/session-folder/assign`
 
 | 项目 | 内容 |
 |---|---|
@@ -444,7 +444,7 @@ pub struct SessionFolderDeleteResponse {
 {
   "jsonrpc": "2.0",
   "id": 5,
-  "method": "_loomdesk.dev/session-folder/assign",
+  "method": "_anureo.dev/session-folder/assign",
   "params": {
     "sessionId": "session-abc",
     "folderId": "folder-001"
@@ -516,12 +516,12 @@ pub struct SessionFolderAssignResponse {
 
 ## Notifications
 
-### `_loomdesk.dev/session-folder/changed`
+### `_anureo.dev/session-folder/changed`
 
 ```json
 {
   "jsonrpc": "2.0",
-  "method": "_loomdesk.dev/session-folder/changed",
+  "method": "_anureo.dev/session-folder/changed",
   "params": {
     "change": "update",
     "folderId": "folder-001"

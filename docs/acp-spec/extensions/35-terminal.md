@@ -1,6 +1,6 @@
 # Terminal（终端生命周期扩展）
 
-> 命名空间: `_loomdesk.dev/terminal/*`
+> 命名空间: `_anureo.dev/terminal/*`
 > Capability key: `terminal`
 
 ## Capability
@@ -15,11 +15,11 @@
 ```
 
 - 声明 `terminal` capability 后，client 可以重启终端 session 和强制终止终端进程树。
-- ACP 标准 `terminal/*` reverse-RPC 覆盖 create/connect/send/resize/close；本扩展覆盖 LoomDesk 特有的终端生命周期管理。
+- ACP 标准 `terminal/*` reverse-RPC 覆盖 create/connect/send/resize/close；本扩展覆盖 Anureo 特有的终端生命周期管理。
 
 ### 与标准 ACP `terminal/*` 的关系
 
-| 操作 | 标准 ACP `terminal/*` | `_loomdesk.dev/terminal/*` 扩展 |
+| 操作 | 标准 ACP `terminal/*` | `_anureo.dev/terminal/*` 扩展 |
 |---|---|---|
 | 创建终端 | `terminal/create` | — |
 | 连接终端 | `terminal/connect` | — |
@@ -30,7 +30,7 @@
 | 强制终止 | — | `terminal/force_kill` |
 
 - 标准操作覆盖终端的正常生命周期（从创建到关闭）。
-- 扩展操作处理 LoomDesk 特有的场景：
+- 扩展操作处理 Anureo 特有的场景：
   - **Restart**：销毁并重建 PTY，但保持 sessionId 不变——UI 不需要重新订阅。
   - **Force kill**：当子进程不响应 SIGTERM 时的最后手段，使用 SIGKILL 终止整个进程树。
 
@@ -38,7 +38,7 @@
 
 ## Methods
 
-### `_loomdesk.dev/terminal/restart`
+### `_anureo.dev/terminal/restart`
 
 | 项目 | 内容 |
 |---|---|
@@ -119,7 +119,7 @@ pub struct TerminalRestartResponse {
 
 ---
 
-### `_loomdesk.dev/terminal/force_kill`
+### `_anureo.dev/terminal/force_kill`
 
 | 项目 | 内容 |
 |---|---|

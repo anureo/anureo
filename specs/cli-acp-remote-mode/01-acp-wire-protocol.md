@@ -10,7 +10,7 @@ ACP 使用 **JSON-RPC 2.0** over **WebSocket text frames**。
 - 每个 WebSocket text frame 携带一条完整的 JSON-RPC 消息
 - 服务端路径：`ws://host:port/acp`（见 `apps/server/src/routes.rs`）
 - 最大 frame size: 1 MiB（`MAX_MESSAGE_BYTES`, `apps/server/src/handlers/acp.rs:23`）
-- 可选认证：`Authorization: Bearer <LOOM_AUTH_TOKEN>` header
+- 可选认证：`Authorization: Bearer <ANUREO_AUTH_TOKEN>` header
 
 ## 消息类型
 
@@ -87,7 +87,7 @@ pub struct InitializeRequest {
   "id": 1,
   "result": {
     "protocolVersion": 1,
-    "agentInfo": { "name": "loom", "version": "0.x.x" },
+    "agentInfo": { "name": "anureo", "version": "0.x.x" },
     "agentCapabilities": {
       "loadSession": true,
       "mcp": { "http": true, "sse": false },
@@ -108,7 +108,7 @@ pub struct InitializeResponse {
 }
 ```
 
-**服务端实现**: `apps/acp/src/agent.rs:354` — `LoomAcpAgent::initialize()`
+**服务端实现**: `apps/acp/src/agent.rs:354` — `anureoAcpAgent::initialize()`
 
 ---
 
@@ -180,7 +180,7 @@ pub struct NewSessionResponse {
 }
 ```
 
-**服务端实现**: `apps/acp/src/agent.rs:417` — `LoomAcpAgent::new_session()`
+**服务端实现**: `apps/acp/src/agent.rs:417` — `anureoAcpAgent::new_session()`
 
 ---
 
@@ -267,7 +267,7 @@ pub enum StopReason {
 }
 ```
 
-**服务端实现**: `apps/acp/src/agent.rs:744` — `LoomAcpAgent::prompt()`
+**服务端实现**: `apps/acp/src/agent.rs:744` — `anureoAcpAgent::prompt()`
 
 > **注意**：`prompt` 是一个**长请求**——服务端在收到 prompt 后会启动 ReAct graph 并持续发送 `session/update` 通知，直到完成后才返回 `PromptResponse`。客户端必须同时处理流式通知和最终响应。
 
@@ -453,7 +453,7 @@ pub enum StopReason {
 }
 ```
 
-**服务端实现**: `apps/acp/src/agent.rs:522` — `LoomAcpAgent::cancel()`
+**服务端实现**: `apps/acp/src/agent.rs:522` — `anureoAcpAgent::cancel()`
 
 ---
 
@@ -560,7 +560,7 @@ fn handle_message(raw: &str) {
 
 ## 协议版本协商
 
-当前 loom-server 实现 **Protocol Version 1**（`ProtocolVersion::V1`）。
+当前 anureo-server 实现 **Protocol Version 1**（`ProtocolVersion::V1`）。
 
 客户端在 `initialize` 请求中发送 `protocolVersion: 1`。服务端在响应中回传它支持的版本。如果版本不匹配，客户端应报错或降级处理。
 
