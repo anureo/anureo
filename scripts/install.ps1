@@ -8,6 +8,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Windows PowerShell 5.1 may default to legacy TLS and fail against GitHub;
+# pwsh negotiates TLS 1.2+ on its own and treats this as a no-op.
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+
 if ($Help) {
     @'
 Install anureo from GitHub Releases.

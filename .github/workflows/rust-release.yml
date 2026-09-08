@@ -187,7 +187,12 @@ jobs:
         shell: bash
         run: |
           install_dir="$RUNNER_TEMP/anureo-beta-bin"
-          sh scripts/install.sh --beta --install-dir "$install_dir"
+          out="$(sh scripts/install.sh --beta --install-dir "$install_dir")"
+          printf '%s\n' "$out"
+          case "$out" in
+            *"Installing anureo pre-release ${GITHUB_REF_NAME#v}"*) ;;
+            *) echo "beta lookup did not pick ${GITHUB_REF_NAME#v}" >&2; exit 1 ;;
+          esac
           "$install_dir/anureo-beta" --help
 
       - name: Verify Windows installer beta channel
@@ -195,5 +200,8 @@ jobs:
         shell: pwsh
         run: |
           $installDir = Join-Path $env:RUNNER_TEMP 'anureo-beta-bin'
-          & .\scripts\install.ps1 -Beta -InstallDir $installDir
+          $out = & .\scripts\install.ps1 -Beta -InstallDir $installDir 6>&1 | ForEach-Object { $_.ToString() }
+          $out
+          $expected = "Installing anureo pre-release " + "$env:GITHUB_REF_NAME".TrimStart('v')
+          if (-not ($out -join "`n").Contains($expected)) { throw "beta lookup did not pick $env:GITHUB_REF_NAME" }
           & (Join-Path $installDir 'anureo-beta.exe') --help
