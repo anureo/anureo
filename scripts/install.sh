@@ -87,7 +87,10 @@ if [ "$VERSION" = "latest" ] && [ -n "$BETA" ]; then
         echo "could not list releases from GitHub" >&2
         exit 1
     }
-    TAG="$(printf '%s\n' "$RELEASES_JSON" | sed -n 's/.*"tag_name": *"\(v[0-9][0-9.]*-[^"]*\)".*/\1/p' | head -n 1)"
+    # The API returns minified single-line JSON, so split the tag_name matches
+    # with grep -o first: a bare greedy sed would anchor to the last (oldest)
+    # prerelease tag in the document instead of the newest one.
+    TAG="$(printf '%s\n' "$RELEASES_JSON" | grep -o '"tag_name": *"[^"]*"' | sed -n 's/.*"tag_name": *"\(v[0-9][0-9.]*-[^"]*\)".*/\1/p' | head -n 1)"
     [ -n "$TAG" ] || { echo "no anureo beta release found" >&2; exit 1; }
     VERSION="${TAG#v}"
     echo "Installing anureo pre-release $VERSION"
