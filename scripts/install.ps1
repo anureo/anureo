@@ -73,9 +73,10 @@ try {
         throw "release archive does not contain anureo.exe"
     }
 
+    $installName = if ($Beta) { 'anureo-beta.exe' } else { 'anureo.exe' }
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-    Copy-Item -LiteralPath $binary -Destination (Join-Path $InstallDir 'anureo.exe') -Force
-    Write-Host "anureo installed to $(Join-Path $InstallDir 'anureo.exe')"
+    Copy-Item -LiteralPath $binary -Destination (Join-Path $InstallDir $installName) -Force
+    Write-Host "anureo installed to $(Join-Path $InstallDir $installName)"
 
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
     $pathEntries = @($userPath -split ';' | Where-Object { $_ })

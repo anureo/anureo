@@ -125,10 +125,14 @@ mkdir -p "$INSTALL_DIR"
 tar -xzf "$ARCHIVE_PATH" -C "$TMP_DIR"
 [ -f "$TMP_DIR/anureo" ] || { echo "release archive does not contain anureo" >&2; exit 1; }
 chmod 755 "$TMP_DIR/anureo"
-mv "$TMP_DIR/anureo" "$INSTALL_DIR/anureo"
+INSTALL_NAME="anureo"
+if [ -n "$BETA" ]; then
+    INSTALL_NAME="anureo-beta"
+fi
+mv "$TMP_DIR/anureo" "$INSTALL_DIR/$INSTALL_NAME"
 
-echo "anureo installed to $INSTALL_DIR/anureo"
+echo "anureo installed to $INSTALL_DIR/$INSTALL_NAME"
 case ":${PATH:-}:" in
     *:"$INSTALL_DIR":*) ;;
-    *) echo "Add $INSTALL_DIR to PATH to run: anureo" ;;
+    *) echo "Add $INSTALL_DIR to PATH to run: $INSTALL_NAME" ;;
 esac

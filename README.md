@@ -52,7 +52,7 @@ To install the latest Windows beta release:
 $env:ANUREO_BETA = "1"; irm https://raw.githubusercontent.com/anureo/anureo/dev/scripts/install.ps1 | iex
 ```
 
-The installers use a user-level directory and do not require administrator privileges. Set `ANUREO_VERSION`, `ANUREO_REPO`, or `ANUREO_INSTALL_DIR` to override the release, repository, or destination. Pass `--beta` (or set `ANUREO_BETA=1`) to install the latest pre-release build (tags like `v0.7.3-beta`); rerun the installer without it to go back to the latest stable.
+The installers use a user-level directory and do not require administrator privileges. Set `ANUREO_VERSION`, `ANUREO_REPO`, or `ANUREO_INSTALL_DIR` to override the release, repository, or destination. Pass `--beta` (or set `ANUREO_BETA=1`) to install the latest pre-release build (tags like `v0.7.3-beta`) as `anureo-beta` (`anureo-beta.exe` on Windows), alongside the stable `anureo` executable.
 
 ### 1. Configure Your Model
 

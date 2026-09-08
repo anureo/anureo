@@ -188,7 +188,7 @@ jobs:
         run: |
           install_dir="$RUNNER_TEMP/anureo-beta-bin"
           sh scripts/install.sh --beta --install-dir "$install_dir"
-          "$install_dir/anureo" --help
+          "$install_dir/anureo-beta" --help
 
       - name: Verify Windows installer beta channel
         if: matrix.os == 'windows-latest' && contains(github.ref_name, '-beta')
@@ -196,4 +196,4 @@ jobs:
         run: |
           $installDir = Join-Path $env:RUNNER_TEMP 'anureo-beta-bin'
           & .\scripts\install.ps1 -Beta -InstallDir $installDir
-          & (Join-Path $installDir 'anureo.exe') --help
+          & (Join-Path $installDir 'anureo-beta.exe') --help
