@@ -922,8 +922,18 @@ impl SessionRepository {
     /// own activity and every active ancestor's tree activity are updated in
     /// the same transaction and receive one owner-scoped index version.
     pub fn record_activity(&self, session_id: &str) -> rusqlite::Result<Vec<SessionIndexRecord>> {
+        // Concurrent prompts share the session-index database. Retry the
+        // complete mutation so SQLITE_BUSY/LOCKED never reuses a stale read
+        // snapshot from a failed transaction upgrade.
+        retry_sqlite_busy(|| self.record_activity_once(session_id))
+    }
+
+    fn record_activity_once(&self, session_id: &str) -> rusqlite::Result<Vec<SessionIndexRecord>> {
         let mut connection = self.connection()?;
-        let transaction = connection.transaction()?;
+        // Acquire the writer reservation before reading activity/version
+        // state. A deferred transaction can let two prompts obtain read
+        // snapshots and then fail immediately when both attempt to upgrade.
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let Some((owner_principal, parent_session_id, previous_activity)) = transaction
             .query_row(
                 "SELECT owner_principal, parent_session_id, activity_at FROM acp_sessions WHERE session_id = ?1",
@@ -2242,6 +2252,65 @@ mod tests {
         assert!(records
             .iter()
             .all(|record| record.metadata["worker"].is_number()));
+    }
+
+    #[test]
+    fn concurrent_activity_updates_serialize_and_commit_all() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        const WORKERS: usize = 8;
+        let temp = tempfile::tempdir().unwrap();
+        let repository = Arc::new(SessionRepository::new(temp.path().join("sessions.db")).unwrap());
+        for worker in 0..WORKERS {
+            repository
+                .insert(
+                    &format!("activity-{worker}"),
+                    &format!("thread-{worker}"),
+                    "owner-a",
+                    temp.path(),
+                )
+                .unwrap();
+        }
+
+        let barrier = Arc::new(Barrier::new(WORKERS));
+        let workers = (0..WORKERS)
+            .map(|worker| {
+                let repository = Arc::clone(&repository);
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    let session_id = format!("activity-{worker}");
+                    repository
+                        .record_activity(&session_id)
+                        .unwrap_or_else(|error| {
+                            panic!("activity update {session_id} failed: {error}")
+                        })
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for worker in workers {
+            let records = worker.join().expect("activity worker panicked");
+            assert_eq!(records.len(), 1);
+        }
+        for worker in 0..WORKERS {
+            let record = repository
+                .get_index_record("owner-a", &format!("activity-{worker}"))
+                .unwrap()
+                .unwrap();
+            assert_eq!(record.revision, 2);
+        }
+
+        let connection = repository.connection().unwrap();
+        let current_version: i64 = connection
+            .query_row(
+                "SELECT current_version FROM acp_session_index_state WHERE owner_principal = 'owner-a'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(current_version, (WORKERS * 2) as i64);
     }
 
     #[test]
