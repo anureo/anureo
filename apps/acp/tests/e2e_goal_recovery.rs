@@ -8,8 +8,15 @@
 #[path = "e2e/common/mod.rs"]
 mod common;
 
+use std::time::Duration;
+
 use common::{with_anureo_home, AcpTestHarness, MockLlmServer, TestEnv};
-use serde_json::json;
+use common::jsonrpc::SessionNotification;
+use serde_json::{json, Value};
+
+fn goal_meta(notif: &SessionNotification) -> Option<&Value> {
+    notif.params["update"]["_meta"].get("goal")
+}
 
 fn initialize_params() -> serde_json::Value {
     json!({
@@ -57,6 +64,29 @@ async fn goal_persists_across_acp_process_restart() {
         // ── 进程 2：新进程直接 get 到持久 goal（thread_goals 表）──────
         let second = AcpTestHarness::spawn(&env, &llm.url()).await;
         second.request("initialize", initialize_params()).await;
+        second
+            .request(
+                "session/load",
+                json!({
+                    "sessionId": session_id,
+                    "cwd": env.cwd.to_string_lossy(),
+                    "mcpServers": []
+                }),
+            )
+            .await;
+        let restored = second
+            .wait_for_notification(
+                |notification| {
+                    goal_meta(notification)
+                        .is_some_and(|goal| goal["status"] == "active")
+                },
+                Duration::from_secs(10),
+            )
+            .await;
+        assert_eq!(
+            goal_meta(&restored[0]).expect("restored goal")["objective"],
+            "persistent goal: survive an ACP process restart"
+        );
 
         let got = second
             .request("_anureo.dev/goal/get", json!({"id": goal_id}))

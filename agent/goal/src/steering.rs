@@ -104,7 +104,9 @@ pub fn budget_limit(goal: &Goal) -> String {
         goal.goal_id,
         escape_xml_text(&goal.objective),
         goal.tokens_used,
-        goal.token_budget.map(|b| b.to_string()).unwrap_or_else(|| "unlimited".into()),
+        goal.token_budget
+            .map(|b| b.to_string())
+            .unwrap_or_else(|| "unlimited".into()),
     )
 }
 
@@ -150,7 +152,10 @@ mod tests {
         let text = continuation(&sample(), Some("## Prior progress\n- tried A"));
         assert!(text.contains("Goal ID: g1"));
         assert!(text.contains("<untrusted_objective>"));
-        assert!(text.contains("ship &lt;the&gt; thing &amp; fast"), "objective 须 XML 转义");
+        assert!(
+            text.contains("ship &lt;the&gt; thing &amp; fast"),
+            "objective 须 XML 转义"
+        );
         assert!(text.contains("== RESEARCH & VERIFY =="));
         assert!(text.contains("== PROGRESS LOG =="));
         assert!(text.contains("== COMPLETION AUDIT =="));

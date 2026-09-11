@@ -675,10 +675,12 @@ where
                 let runtime = r_ext.clone();
                 let connection = conn_for_ext.clone();
                 async move {
-                    // P8：`_session/goal`（中立 goal 控制方法）与 `_anureo.dev/*`
-                    // 扩展方法走同一分发表（registry 别名路由）。
+                    // P8：中立 goal 控制方法、codex-acp legacy alias 与
+                    // `_anureo.dev/*` 扩展方法走同一分发表（registry 别名路由）。
                     if !req.method.starts_with(crate::extensions::EXTENSION_PREFIX)
                         && req.method != crate::extensions::goal::NEUTRAL_GOAL_CONTROL_METHOD
+                        && req.method
+                            != crate::extensions::goal::LEGACY_CODEX_GOAL_CONTROL_METHOD
                     {
                         return Ok(Handled::No {
                             message: (req, responder),

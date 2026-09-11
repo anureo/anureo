@@ -108,9 +108,14 @@ mod tests {
     #[tokio::test]
     async fn write_and_remove_roundtrip() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let p = write(dir.path(), "t1", "long objective").await.expect("write");
+        let p = write(dir.path(), "t1", "long objective")
+            .await
+            .expect("write");
         assert_eq!(p, file_path(dir.path(), "t1"));
-        assert_eq!(tokio::fs::read_to_string(&p).await.expect("read"), "long objective");
+        assert_eq!(
+            tokio::fs::read_to_string(&p).await.expect("read"),
+            "long objective"
+        );
         remove(dir.path(), "t1").await;
         assert!(!p.exists());
         // remove 幂等（不存在不报错）

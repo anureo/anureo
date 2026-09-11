@@ -36,7 +36,9 @@ pub fn goal_token_delta(last: TokenTotals, current: TokenTotals) -> i64 {
     let d_cached = current.cached_tokens.saturating_sub(last.cached_tokens);
     let d_output = current.output_tokens.saturating_sub(last.output_tokens); // saturating = max(Δ,0)
     let non_cached_input = d_input.saturating_sub(d_cached);
-    non_cached_input.saturating_add(d_output).min(i64::MAX as u64) as i64
+    non_cached_input
+        .saturating_add(d_output)
+        .min(i64::MAX as u64) as i64
 }
 
 /// 单个 thread 的记账器：内存基线 + progress 锁 + budget 一次性 steering。
@@ -121,13 +123,11 @@ impl GoalAccounting {
         mode: AccountingMode,
         flush_clock: bool,
     ) -> Result<AccountingOutcome, GoalStoreError> {
-        let _permit = tokio::time::timeout(
-            LOCK_TIMEOUT,
-            self.progress_permit.clone().acquire_owned(),
-        )
-        .await
-        .map_err(|_| GoalStoreError::LockTimeout)?
-        .map_err(|_| GoalStoreError::LockTimeout)?;
+        let _permit =
+            tokio::time::timeout(LOCK_TIMEOUT, self.progress_permit.clone().acquire_owned())
+                .await
+                .map_err(|_| GoalStoreError::LockTimeout)?
+                .map_err(|_| GoalStoreError::LockTimeout)?;
 
         let mut inner = self.inner.lock().await;
 
@@ -144,8 +144,8 @@ impl GoalAccounting {
                 Ok(AccountingOutcome::Unchanged)
             }
             other => {
-                let (gid, baseline) = other
-                    .unwrap_or_else(|| (goal.goal_id.clone(), current.unwrap_or_default()));
+                let (gid, baseline) =
+                    other.unwrap_or_else(|| (goal.goal_id.clone(), current.unwrap_or_default()));
                 let delta_tokens = current.map(|c| goal_token_delta(baseline, c)).unwrap_or(0);
                 let delta_seconds = if flush_clock {
                     inner
@@ -222,12 +222,17 @@ impl GoalAccounting {
 
     /// goal active 时开始计时（on_turn_start 调用）；非 active 为 no-op。
     pub async fn start_wall_clock_if_active(&self) -> Result<(), GoalStoreError> {
-        let active = matches!(
-            self.store.read(&self.thread_id).await?,
-            Some(g) if g.status == GoalStatus::Active
-        );
+        let goal = self.store.read(&self.thread_id).await?;
         let mut inner = self.inner.lock().await;
-        inner.wall_clock_since = if active { Some(Instant::now()) } else { None };
+        if let Some(goal) = goal.filter(|g| g.status == GoalStatus::Active) {
+            // ACP 宿主提供的是“本次 prompt”的用量，而不是跨 prompt 的累计值。
+            // 每个 turn 从零建立基线，避免把上一轮 totals 当成本轮累计快照而少算。
+            inner.token_baseline = Some((goal.goal_id, TokenTotals::default()));
+            inner.wall_clock_since = Some(Instant::now());
+        } else {
+            inner.token_baseline = None;
+            inner.wall_clock_since = None;
+        }
         Ok(())
     }
 
@@ -273,10 +278,14 @@ impl GoalAccounting {
         guard.token_baseline.as_ref().map(|(_, t)| *t)
     }
 
-    /// 最近已知累计用量（goal 武装点基线用；无基线时返回零值）。
+    /// 当前 ACP prompt 最近一次用量快照（goal 武装点基线用；无基线时返回零值）。
     pub async fn last_totals(&self) -> TokenTotals {
         let guard = self.inner.lock().await;
-        guard.token_baseline.as_ref().map(|(_, t)| *t).unwrap_or_default()
+        guard
+            .token_baseline
+            .as_ref()
+            .map(|(_, t)| *t)
+            .unwrap_or_default()
     }
 }
 
@@ -312,20 +321,33 @@ mod tests {
     }
 
     fn totals(input: u64, output: u64, cached: u64) -> TokenTotals {
-        TokenTotals { input_tokens: input, output_tokens: output, cached_tokens: cached }
+        TokenTotals {
+            input_tokens: input,
+            output_tokens: output,
+            cached_tokens: cached,
+        }
     }
 
     /// Codex 对拍：公式逐 case（负 delta、cached>input、saturating）。
     #[test]
     fn token_formula_matches_codex() {
         // 正常增量：(200−50)+30 = 180
-        assert_eq!(goal_token_delta(totals(100, 50, 10), totals(300, 80, 60)), 180);
+        assert_eq!(
+            goal_token_delta(totals(100, 50, 10), totals(300, 80, 60)),
+            180
+        );
         // 输出回退（乱序/合并上报）→ max(Δoutput,0)=0
         assert_eq!(goal_token_delta(totals(100, 80, 0), totals(150, 50, 0)), 50);
         // cached 增量超过 input 增量 → saturating 到 0
-        assert_eq!(goal_token_delta(totals(100, 10, 20), totals(120, 10, 200)), 0);
+        assert_eq!(
+            goal_token_delta(totals(100, 10, 20), totals(120, 10, 200)),
+            0
+        );
         // 完全回退 → 0（不得出现负记账）
-        assert_eq!(goal_token_delta(totals(500, 500, 100), totals(100, 100, 50)), 0);
+        assert_eq!(
+            goal_token_delta(totals(500, 500, 100), totals(100, 100, 50)),
+            0
+        );
         // u64 溢出 saturating，且不超 i64::MAX
         let huge = u64::MAX;
         assert_eq!(
@@ -342,7 +364,13 @@ mod tests {
         let (_d, acc, store) = setup(Some(10_000)).await;
 
         let out = acc.record_usage(totals(100, 50, 10)).await.expect("record");
-        assert!(matches!(out, AccountingOutcome::Updated { tokens_used: 140, .. }));
+        assert!(matches!(
+            out,
+            AccountingOutcome::Updated {
+                tokens_used: 140,
+                ..
+            }
+        ));
         assert_eq!(acc.token_baseline().await, Some(totals(100, 50, 10)));
 
         // 重复上报同一总量 → 0 delta → Unchanged，基线推进到相同值
@@ -363,17 +391,34 @@ mod tests {
             .await
             .expect("replace");
         let out = acc.record_usage(totals(500, 100, 0)).await.expect("record");
-        assert_eq!(out, AccountingOutcome::Unchanged, "旧 turn 的 delta 必须被丢弃");
-        assert_eq!(acc.token_baseline().await, Some(totals(500, 100, 0)), "基线 adoption 新 goal");
+        assert_eq!(
+            out,
+            AccountingOutcome::Unchanged,
+            "旧 turn 的 delta 必须被丢弃"
+        );
+        assert_eq!(
+            acc.token_baseline().await,
+            Some(totals(500, 100, 0)),
+            "基线 adoption 新 goal"
+        );
 
         // adoption 之后：同一总量不再重复计入；后续增量从 adoption 点起算
         let out = acc.record_usage(totals(500, 100, 0)).await.expect("record");
         assert_eq!(out, AccountingOutcome::Unchanged);
         let out = acc.record_usage(totals(600, 100, 0)).await.expect("record");
-        assert!(matches!(out, AccountingOutcome::Updated { tokens_used: 100, .. }));
+        assert!(matches!(
+            out,
+            AccountingOutcome::Updated {
+                tokens_used: 100,
+                ..
+            }
+        ));
 
         let g = store.read("t1").await.expect("read").expect("exists");
-        assert_eq!(g.tokens_used, 100, "新 goal 不得被旧基线污染，只计 adoption 之后增量");
+        assert_eq!(
+            g.tokens_used, 100,
+            "新 goal 不得被旧基线污染，只计 adoption 之后增量"
+        );
     }
 
     /// R5（P1 移交）：并发 record_usage 不重复消费同一 delta；
@@ -406,11 +451,21 @@ mod tests {
         store.pause("t1", &goal.goal_id).await.expect("pause");
         let out = acc.record_usage(totals(900, 0, 0)).await.expect("record");
         assert_eq!(out, AccountingOutcome::Unchanged);
-        assert_eq!(acc.token_baseline().await, Some(totals(800, 0, 0)), "基线不推进");
+        assert_eq!(
+            acc.token_baseline().await,
+            Some(totals(800, 0, 0)),
+            "基线不推进"
+        );
 
         store.resume("t1", &goal.goal_id).await.expect("resume");
         let out = acc.record_usage(totals(1000, 0, 0)).await.expect("record");
-        assert!(matches!(out, AccountingOutcome::Updated { tokens_used: 1000, .. }));
+        assert!(matches!(
+            out,
+            AccountingOutcome::Updated {
+                tokens_used: 1000,
+                ..
+            }
+        ));
     }
 
     /// §6.5：budget 翻转只上报一次；宿主拿到 budget steering 文本。
@@ -421,20 +476,35 @@ mod tests {
         let out = acc.record_usage(totals(150, 0, 0)).await.expect("record");
         assert!(matches!(
             out,
-            AccountingOutcome::Updated { status: GoalStatus::BudgetLimited, .. }
+            AccountingOutcome::Updated {
+                status: GoalStatus::BudgetLimited,
+                ..
+            }
         ));
 
-        let s1 = acc.take_budget_steering_if_flipped(&out).await.expect("take");
+        let s1 = acc
+            .take_budget_steering_if_flipped(&out)
+            .await
+            .expect("take");
         assert!(s1.is_some(), "首次翻转必须产出 steering");
         assert!(s1.unwrap().contains("budget_limited"));
 
         // 同一 goal 第二次（ActiveOnly 补账触发的 Updated{budget_limited}）不再上报
-        let out2 = acc.finish_turn(Some(totals(160, 0, 0))).await.expect("catchup");
+        let out2 = acc
+            .finish_turn(Some(totals(160, 0, 0)))
+            .await
+            .expect("catchup");
         assert!(matches!(
             out2,
-            AccountingOutcome::Updated { status: GoalStatus::BudgetLimited, .. }
+            AccountingOutcome::Updated {
+                status: GoalStatus::BudgetLimited,
+                ..
+            }
         ));
-        let s2 = acc.take_budget_steering_if_flipped(&out2).await.expect("take");
+        let s2 = acc
+            .take_budget_steering_if_flipped(&out2)
+            .await
+            .expect("take");
         assert_eq!(s2, None, "budget_limit_reported_goal_id 去重失效");
     }
 
@@ -447,12 +517,20 @@ mod tests {
         acc.start_wall_clock_if_active().await.expect("start");
         // 非 active 时 start 是 no-op
         store.pause("t1", &goal.goal_id).await.expect("pause");
-        acc.start_wall_clock_if_active().await.expect("start (paused)");
+        acc.start_wall_clock_if_active()
+            .await
+            .expect("start (paused)");
 
         // pause 转移后 flush：把 active 段落账（秒数可能为 0）
-        let out = acc.flush_wall_clock(AccountingMode::ActiveOrStopped).await.expect("flush");
+        let out = acc
+            .flush_wall_clock(AccountingMode::ActiveOrStopped)
+            .await
+            .expect("flush");
         // baseline 被清后 wall_clock_since 也已 take → 再次 flush 为 Unchanged
-        let out2 = acc.flush_wall_clock(AccountingMode::ActiveOrStopped).await.expect("flush2");
+        let out2 = acc
+            .flush_wall_clock(AccountingMode::ActiveOrStopped)
+            .await
+            .expect("flush2");
         assert_eq!(out2, AccountingOutcome::Unchanged);
         let _ = out;
 

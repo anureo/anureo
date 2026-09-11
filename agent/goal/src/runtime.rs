@@ -79,7 +79,9 @@ impl GoalRuntimeHandle {
 
     /// on_turn_start：清 deferral（§6.6）+ 墙钟起表（仅 active）。
     pub async fn on_turn_start(&self) -> Result<(), GoalStoreError> {
-        self.store.clear_continuation_deferral(&self.thread_id).await?;
+        self.store
+            .clear_continuation_deferral(&self.thread_id)
+            .await?;
         self.accounting.start_wall_clock_if_active().await?;
         Ok(())
     }
@@ -128,6 +130,18 @@ impl GoalRuntimeHandle {
     /// provider 配额耗尽（alignment 附录 B.5 `QuotaExhausted`）：
     /// active → `usage_limited`（系统置位，非 runner 失败）。
     pub async fn on_provider_quota_exhausted(&self, reason: &str) -> Result<(), GoalStoreError> {
+        self.on_provider_quota_exhausted_with_usage(reason, None)
+            .await
+    }
+
+    /// provider 配额错误的完整 turn-end 路径：先按异常模式补记当前 turn，
+    /// 再把仍为 active 的 goal 置为 usage_limited。
+    pub async fn on_provider_quota_exhausted_with_usage(
+        &self,
+        reason: &str,
+        totals: Option<TokenTotals>,
+    ) -> Result<(), GoalStoreError> {
+        let _ = self.accounting.stop_abnormal(totals).await?;
         if let Ok(Some(goal)) = self.store.read(&self.thread_id).await {
             if self
                 .store
@@ -141,6 +155,23 @@ impl GoalRuntimeHandle {
         Ok(())
     }
 
+    /// 模型通过 update_goal 改为 complete/blocked 前，补记工具调用前已经产生的
+    /// usage 并 flush 墙钟。否则状态先离开 active 后，turn-end 的 ActiveOnly
+    /// 门控会有意拒绝这段最后用量。
+    pub async fn before_model_status_update(
+        &self,
+        totals: Option<TokenTotals>,
+    ) -> Result<(), GoalStoreError> {
+        if let Some(totals) = totals {
+            let _ = self.accounting.record_usage(totals).await?;
+        }
+        let _ = self
+            .accounting
+            .flush_wall_clock(AccountingMode::ActiveOrStopped)
+            .await?;
+        Ok(())
+    }
+
     /// on_session_idle → `continue_if_idle` 全流程（§6.6）。
     /// 返回是否启动了续跑 turn。
     pub async fn continue_if_idle(&self) -> Result<bool, GoalStoreError> {
@@ -149,7 +180,11 @@ impl GoalRuntimeHandle {
             return Ok(false);
         };
         // 2. 有 deferral → 本轮不续跑
-        if self.store.has_continuation_deferral(&self.thread_id).await? {
+        if self
+            .store
+            .has_continuation_deferral(&self.thread_id)
+            .await?
+        {
             metrics::global().record_continuation_deferred(&self.thread_id);
             return Ok(false);
         }
@@ -183,7 +218,9 @@ impl GoalRuntimeHandle {
     /// 保护窗结束（session fork 完成 / 保护性 mutation 收尾）：清除 deferral
     /// 并返回是否确有 deferral 被清（宿主可据此立刻 [`Self::continue_if_idle`] 恢复）。
     pub async fn clear_deferral(&self) -> Result<bool, GoalStoreError> {
-        self.store.clear_continuation_deferral(&self.thread_id).await
+        self.store
+            .clear_continuation_deferral(&self.thread_id)
+            .await
     }
 
     /// 用户 set/clear 之后由宿主调用：基线重置。
@@ -202,13 +239,24 @@ impl GoalRuntimeHandle {
         self.accounting.reset_baselines(goal_id, totals).await;
     }
 
+    /// 模型在 turn 中途创建 goal 时，以工具调用前的实时 usage 作为武装点，
+    /// 防止把创建 goal 之前的 token 计入新目标。
+    pub async fn note_goal_armed_at(&self, goal_id: &str, totals: TokenTotals) {
+        self.accounting.reset_baselines(goal_id, totals).await;
+    }
+
     /// 用户 pause / resume 之后由宿主调用：flush（pause）或重启（resume）墙钟。
-    pub async fn on_goal_status_changed(&self, new_status: GoalStatus) -> Result<(), GoalStoreError> {
+    pub async fn on_goal_status_changed(
+        &self,
+        new_status: GoalStatus,
+    ) -> Result<(), GoalStoreError> {
         if new_status == GoalStatus::Active {
             self.accounting.start_wall_clock_if_active().await
         } else {
             // 补记已计时的 active 段并清基线
-            self.accounting.flush_wall_clock(AccountingMode::ActiveOrStopped).await?;
+            self.accounting
+                .flush_wall_clock(AccountingMode::ActiveOrStopped)
+                .await?;
             Ok(())
         }
     }
@@ -217,7 +265,11 @@ impl GoalRuntimeHandle {
         &self,
         outcome: crate::types::AccountingOutcome,
     ) -> Result<Option<String>, GoalStoreError> {
-        let Some(text) = self.accounting.take_budget_steering_if_flipped(&outcome).await? else {
+        let Some(text) = self
+            .accounting
+            .take_budget_steering_if_flipped(&outcome)
+            .await?
+        else {
             return Ok(None);
         };
         metrics::global().record_budget_limited(&self.thread_id);
@@ -276,12 +328,22 @@ mod tests {
                 return Ok(false);
             }
             *running = true;
-            self.started.lock().await.push(format!("{thread_id}|{message}"));
+            self.started
+                .lock()
+                .await
+                .push(format!("{thread_id}|{message}"));
             Ok(true)
         }
     }
 
-    async fn setup(budget: Option<i64>) -> (tempfile::TempDir, Arc<GoalRuntimeHandle>, Arc<MockDriver>, GoalStore) {
+    async fn setup(
+        budget: Option<i64>,
+    ) -> (
+        tempfile::TempDir,
+        Arc<GoalRuntimeHandle>,
+        Arc<MockDriver>,
+        GoalStore,
+    ) {
         let dir = tempfile::tempdir().expect("tempdir");
         let db = task_core::TaskDb::open(&dir.path().join("tasks.db"))
             .await
@@ -295,7 +357,9 @@ mod tests {
             .set("t1", "objective", budget)
             .await
             .expect("set");
-        handle.on_goal_replaced(Some(&g.goal_id), TokenTotals::default()).await;
+        handle
+            .on_goal_replaced(Some(&g.goal_id), TokenTotals::default())
+            .await;
         (dir, handle, driver, store)
     }
 
@@ -345,9 +409,7 @@ mod tests {
         // 持锁模拟 continue_if_idle 的读→start 窗口
         let permit = handle.state_lock().acquire().await.expect("acquire");
         let svc = handle.service().clone();
-        let setter = tokio::spawn(async move {
-            svc.set("t1", "during window", None).await
-        });
+        let setter = tokio::spawn(async move { svc.set("t1", "during window", None).await });
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert!(!setter.is_finished(), "持锁期间用户 set 必须等待");
 
@@ -367,7 +429,14 @@ mod tests {
 
         handle.on_turn_start().await.expect("start");
         let steering = handle
-            .on_turn_error("boom", Some(TokenTotals { input_tokens: 500, output_tokens: 0, cached_tokens: 0 }))
+            .on_turn_error(
+                "boom",
+                Some(TokenTotals {
+                    input_tokens: 500,
+                    output_tokens: 0,
+                    cached_tokens: 0,
+                }),
+            )
             .await
             .expect("error hook");
         assert_eq!(steering, None);
@@ -377,6 +446,55 @@ mod tests {
         assert_eq!(g.status_reason.as_deref(), Some("boom"));
     }
 
+    #[tokio::test]
+    async fn consecutive_turns_account_each_prompt_from_zero() {
+        let (_d, handle, _driver, store) = setup(Some(100_000)).await;
+
+        handle.on_turn_start().await.expect("turn 1 start");
+        handle
+            .on_turn_finish(Some(TokenTotals {
+                input_tokens: 100,
+                output_tokens: 0,
+                cached_tokens: 0,
+            }))
+            .await
+            .expect("turn 1 finish");
+
+        handle.on_turn_start().await.expect("turn 2 start");
+        handle
+            .on_turn_finish(Some(TokenTotals {
+                input_tokens: 80,
+                output_tokens: 0,
+                cached_tokens: 0,
+            }))
+            .await
+            .expect("turn 2 finish");
+
+        let goal = store.read("t1").await.expect("read").expect("goal");
+        assert_eq!(goal.tokens_used, 180, "每个 ACP prompt 的 usage 都必须计入");
+    }
+
+    #[tokio::test]
+    async fn quota_error_accounts_before_marking_limited() {
+        let (_d, handle, _driver, store) = setup(Some(100_000)).await;
+        handle.on_turn_start().await.expect("start");
+        handle
+            .on_provider_quota_exhausted_with_usage(
+                "quota exhausted",
+                Some(TokenTotals {
+                    input_tokens: 75,
+                    output_tokens: 25,
+                    cached_tokens: 0,
+                }),
+            )
+            .await
+            .expect("quota hook");
+
+        let goal = store.read("t1").await.expect("read").expect("goal");
+        assert_eq!(goal.tokens_used, 100);
+        assert_eq!(goal.status, GoalStatus::UsageLimited);
+    }
+
     /// §6.5：预算越界四断言——DB 翻转 / 收尾 turn 注入一次 / 后续 idle 不续跑。
     #[tokio::test]
     async fn budget_overrun_injects_wrapup_once() {
@@ -384,7 +502,11 @@ mod tests {
 
         handle.on_turn_start().await.expect("start");
         let s1 = handle
-            .on_turn_finish(Some(TokenTotals { input_tokens: 150, output_tokens: 0, cached_tokens: 0 }))
+            .on_turn_finish(Some(TokenTotals {
+                input_tokens: 150,
+                output_tokens: 0,
+                cached_tokens: 0,
+            }))
             .await
             .expect("finish");
         assert!(s1.is_some(), "首次翻转必须注入收尾 steering");
@@ -393,7 +515,11 @@ mod tests {
 
         // 后续补账不再注入
         let s2 = handle
-            .on_turn_finish(Some(TokenTotals { input_tokens: 160, output_tokens: 0, cached_tokens: 0 }))
+            .on_turn_finish(Some(TokenTotals {
+                input_tokens: 160,
+                output_tokens: 0,
+                cached_tokens: 0,
+            }))
             .await
             .expect("finish2");
         assert_eq!(s2, None, "budget_limit_reported_goal_id 去重失效");
@@ -409,7 +535,10 @@ mod tests {
     #[tokio::test]
     async fn quota_exhausted_marks_usage_limited() {
         let (_d, handle, _driver, store) = setup(None).await;
-        handle.on_provider_quota_exhausted("provider 429").await.expect("quota");
+        handle
+            .on_provider_quota_exhausted("provider 429")
+            .await
+            .expect("quota");
         let g = store.read("t1").await.expect("read").expect("exists");
         assert_eq!(g.status, GoalStatus::UsageLimited);
         assert_eq!(g.status_reason.as_deref(), Some("provider 429"));

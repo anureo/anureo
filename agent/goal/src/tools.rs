@@ -20,9 +20,16 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use tool_core::{Tool, ToolCallContent, ToolSourceError, ToolSpec};
 
+use crate::accounting::TokenTotals;
 use crate::runtime::GoalRuntimeHandle;
 use crate::store::GoalStoreError;
 use crate::types::{CreateGoalRequest, Goal};
+
+/// 宿主提供的当前 turn usage 快照。模型工具在 turn 中途改变 goal 状态时，
+/// 需要先按该快照补账；goal crate 不依赖具体 LLM/ACP usage 类型。
+pub trait GoalUsageSnapshot: Send + Sync {
+    fn totals(&self) -> TokenTotals;
+}
 
 // ============================================================================
 // verify 完成门（§6.9）
@@ -47,7 +54,9 @@ pub struct ShellVerifyRunner {
 
 impl Default for ShellVerifyRunner {
     fn default() -> Self {
-        Self { timeout: Duration::from_secs(600) }
+        Self {
+            timeout: Duration::from_secs(600),
+        }
     }
 }
 
@@ -73,15 +82,24 @@ impl VerifyRunner for ShellVerifyRunner {
                     text.push_str(&String::from_utf8_lossy(&out.stderr));
                     let mut text = text.chars().take(4000).collect::<String>();
                     if out.status.success() {
-                        VerifyOutcome { ok: true, output: text }
+                        VerifyOutcome {
+                            ok: true,
+                            output: text,
+                        }
                     } else {
                         if text.trim().is_empty() {
                             text = format!("exit code: {}", out.status.code().unwrap_or(-1));
                         }
-                        VerifyOutcome { ok: false, output: text }
+                        VerifyOutcome {
+                            ok: false,
+                            output: text,
+                        }
                     }
                 }
-                Err(e) => VerifyOutcome { ok: false, output: format!("failed to spawn: {e}") },
+                Err(e) => VerifyOutcome {
+                    ok: false,
+                    output: format!("failed to spawn: {e}"),
+                },
             }
         };
         match tokio::time::timeout(self.timeout, run).await {
@@ -171,7 +189,10 @@ impl Tool for GetGoalTool {
             .map_err(|e| ToolSourceError::ToolError(e.to_string()))?;
         let text = match goal {
             None => no_goal_text(self.handle.thread_id()),
-            Some(g) => render_snapshot(&g),
+            Some(g) => {
+                let g = self.handle.service().resolve_objective(g).await;
+                render_snapshot(&g)
+            }
         };
         Ok(ToolCallContent::text(text))
     }
@@ -183,9 +204,11 @@ impl Tool for GetGoalTool {
 
 pub struct CreateGoalTool {
     handle: Arc<GoalRuntimeHandle>,
+    usage: Option<Arc<dyn GoalUsageSnapshot>>,
 }
 
-const CREATE_DESCRIPTION: &str = "Create the goal for this session. ONLY create a goal when the user \
+const CREATE_DESCRIPTION: &str =
+    "Create the goal for this session. ONLY create a goal when the user \
 or the system explicitly asks to set/track a goal — never on your own initiative. Rules:\n\
 - You cannot create a new goal while an unfinished one exists (complete or get it blocked first).\n\
 - `objective` must be a concrete, verifiable statement of done.\n\
@@ -224,8 +247,15 @@ impl Tool for CreateGoalTool {
         let objective = args
             .get("objective")
             .and_then(Value::as_str)
-            .ok_or_else(|| ToolSourceError::InvalidInput("objective (string) is required".into()))?;
-        let token_budget = args.get("token_budget").and_then(Value::as_i64);
+            .ok_or_else(|| {
+                ToolSourceError::InvalidInput("objective (string) is required".into())
+            })?;
+        let token_budget = match args.get("token_budget") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(value.as_i64().ok_or_else(|| {
+                ToolSourceError::InvalidInput("token_budget must be an integer".into())
+            })?),
+        };
 
         let req = CreateGoalRequest {
             thread_id: self.handle.thread_id().to_string(),
@@ -240,21 +270,27 @@ impl Tool for CreateGoalTool {
             .create(&req, &crate::service::new_goal_id())
             .await
         {
-            Err(GoalStoreError::ExistingUnfinishedGoal(_)) => Ok(ToolCallContent::text(
-                String::from(
+            Err(GoalStoreError::ExistingUnfinishedGoal(_)) => {
+                Ok(ToolCallContent::text(String::from(
                     "Refused: this session already has an unfinished goal. Check it with \
                      get_goal, drive it to `complete` via update_goal, or mark it `blocked` \
                      with a reason; then create the new goal. You may not overwrite an \
                      unfinished goal.",
-                ),
-            )),
+                )))
+            }
             Err(GoalStoreError::Validation(e)) => {
                 Ok(ToolCallContent::text(format!("Invalid goal: {e}")))
             }
             Err(e) => Err(ToolSourceError::ToolError(e.to_string())),
             Ok(goal) => {
                 // 基线重置到新 goal 武装点（沿用最近已知累计用量）
-                self.handle.note_goal_armed(&goal.goal_id).await;
+                if let Some(usage) = &self.usage {
+                    self.handle
+                        .note_goal_armed_at(&goal.goal_id, usage.totals())
+                        .await;
+                } else {
+                    self.handle.note_goal_armed(&goal.goal_id).await;
+                }
                 Ok(ToolCallContent::text(format!(
                     "Goal created and armed.\n\n{}",
                     render_snapshot(&goal)
@@ -271,6 +307,7 @@ impl Tool for CreateGoalTool {
 pub struct UpdateGoalTool {
     handle: Arc<GoalRuntimeHandle>,
     verify: Arc<dyn VerifyRunner>,
+    usage: Option<Arc<dyn GoalUsageSnapshot>>,
 }
 
 const UPDATE_DESCRIPTION: &str = "Update the active goal's lifecycle status. Rules:\n\
@@ -337,11 +374,22 @@ impl Tool for UpdateGoalTool {
                 let Some(goal) = goal else {
                     return Ok(ToolCallContent::text(no_goal_text(&thread)));
                 };
-                let reason = if reason.is_empty() { "blocked by model" } else { reason };
+                self.handle
+                    .before_model_status_update(self.usage.as_ref().map(|u| u.totals()))
+                    .await
+                    .map_err(|e| ToolSourceError::ToolError(e.to_string()))?;
+                let reason = if reason.is_empty() {
+                    "blocked by model"
+                } else {
+                    reason
+                };
                 match store.mark_blocked(&thread, &goal.goal_id, reason).await {
-                    Err(GoalStoreError::NotFoundOrDisallowed(_)) => Ok(ToolCallContent::text(
-                        format!("Goal {} is not in active state; cannot mark blocked.", goal.goal_id),
-                    )),
+                    Err(GoalStoreError::NotFoundOrDisallowed(_)) => {
+                        Ok(ToolCallContent::text(format!(
+                            "Goal {} is not in active state; cannot mark blocked.",
+                            goal.goal_id
+                        )))
+                    }
                     Err(e) => Err(ToolSourceError::ToolError(e.to_string())),
                     Ok(g) => {
                         crate::metrics::global().record_blocked(&thread);
@@ -373,10 +421,17 @@ impl Tool for UpdateGoalTool {
                         )));
                     }
                 }
+                self.handle
+                    .before_model_status_update(self.usage.as_ref().map(|u| u.totals()))
+                    .await
+                    .map_err(|e| ToolSourceError::ToolError(e.to_string()))?;
                 match store.mark_complete(&thread, &goal.goal_id).await {
-                    Err(GoalStoreError::NotFoundOrDisallowed(_)) => Ok(ToolCallContent::text(
-                        format!("Goal {} is not in active state; cannot complete.", goal.goal_id),
-                    )),
+                    Err(GoalStoreError::NotFoundOrDisallowed(_)) => {
+                        Ok(ToolCallContent::text(format!(
+                            "Goal {} is not in active state; cannot complete.",
+                            goal.goal_id
+                        )))
+                    }
                     Err(e) => Err(ToolSourceError::ToolError(e.to_string())),
                     Ok(g) => {
                         crate::metrics::global().record_complete(&thread);
@@ -387,7 +442,9 @@ impl Tool for UpdateGoalTool {
                         text.push_str(&format!(
                             "\nFinal accounting: {}/{} tokens, {}s.",
                             g.tokens_used,
-                            g.token_budget.map(|b| b.to_string()).unwrap_or_else(|| "∞".into()),
+                            g.token_budget
+                                .map(|b| b.to_string())
+                                .unwrap_or_else(|| "∞".into()),
                             g.time_used_seconds,
                         ));
                         Ok(ToolCallContent::text(text))
@@ -410,10 +467,28 @@ pub fn goal_tools(
     handle: Arc<GoalRuntimeHandle>,
     verify: Arc<dyn VerifyRunner>,
 ) -> Vec<Arc<dyn Tool>> {
+    goal_tools_with_usage(handle, verify, None)
+}
+
+/// 构建带实时 turn usage 的主 session goal 工具集。
+pub fn goal_tools_with_usage(
+    handle: Arc<GoalRuntimeHandle>,
+    verify: Arc<dyn VerifyRunner>,
+    usage: Option<Arc<dyn GoalUsageSnapshot>>,
+) -> Vec<Arc<dyn Tool>> {
     vec![
-        Arc::new(GetGoalTool { handle: handle.clone() }),
-        Arc::new(CreateGoalTool { handle: handle.clone() }),
-        Arc::new(UpdateGoalTool { handle, verify }),
+        Arc::new(GetGoalTool {
+            handle: handle.clone(),
+        }),
+        Arc::new(CreateGoalTool {
+            handle: handle.clone(),
+            usage: usage.clone(),
+        }),
+        Arc::new(UpdateGoalTool {
+            handle,
+            verify,
+            usage,
+        }),
     ]
 }
 
@@ -436,9 +511,20 @@ mod tests {
         ok: Mutex<bool>,
         calls: Mutex<Vec<String>>,
     }
+
+    struct StaticUsage(TokenTotals);
+
+    impl GoalUsageSnapshot for StaticUsage {
+        fn totals(&self) -> TokenTotals {
+            self.0
+        }
+    }
     impl MockVerify {
         fn passing() -> Arc<Self> {
-            Arc::new(Self { ok: Mutex::new(true), calls: Mutex::new(Vec::new()) })
+            Arc::new(Self {
+                ok: Mutex::new(true),
+                calls: Mutex::new(Vec::new()),
+            })
         }
     }
     #[async_trait]
@@ -446,7 +532,14 @@ mod tests {
         async fn run(&self, command: &str) -> VerifyOutcome {
             self.calls.lock().await.push(command.to_string());
             let ok = *self.ok.lock().await;
-            VerifyOutcome { ok, output: if ok { "all tests passed".into() } else { "1 test FAILED".into() } }
+            VerifyOutcome {
+                ok,
+                output: if ok {
+                    "all tests passed".into()
+                } else {
+                    "1 test FAILED".into()
+                },
+            }
         }
     }
 
@@ -501,23 +594,98 @@ mod tests {
         // verify 失败 → 拒绝，状态保持 active
         *verify.ok.lock().await = false;
         let out = update
-            .call(json!({ "status": "complete", "completion_budget_report": "done things" }), None)
+            .call(
+                json!({ "status": "complete", "completion_budget_report": "done things" }),
+                None,
+            )
             .await
             .expect("call");
         assert!(matches!(&out, ToolCallContent::Text(t) if t.contains("REFUSED")));
-        let g = handle.service().show("t1").await.expect("show").expect("exists");
-        assert_eq!(g.status, crate::types::GoalStatus::Active, "verify 失败不得落账");
+        let g = handle
+            .service()
+            .show("t1")
+            .await
+            .expect("show")
+            .expect("exists");
+        assert_eq!(
+            g.status,
+            crate::types::GoalStatus::Active,
+            "verify 失败不得落账"
+        );
 
         // verify 通过 → 落账 complete + 附 report
         *verify.ok.lock().await = true;
         let out = update
-            .call(json!({ "status": "complete", "completion_budget_report": "done things" }), None)
+            .call(
+                json!({ "status": "complete", "completion_budget_report": "done things" }),
+                None,
+            )
             .await
             .expect("call");
-        assert!(matches!(&out, ToolCallContent::Text(t) if t.contains("marked complete") && t.contains("done things")));
-        let g = handle.service().show("t1").await.expect("show").expect("exists");
+        assert!(
+            matches!(&out, ToolCallContent::Text(t) if t.contains("marked complete") && t.contains("done things"))
+        );
+        let g = handle
+            .service()
+            .show("t1")
+            .await
+            .expect("show")
+            .expect("exists");
         assert_eq!(g.status, crate::types::GoalStatus::Complete);
         assert_eq!(verify.calls.lock().await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn update_complete_accounts_usage_before_terminal_transition() {
+        let handle = setup(Some(10_000), None).await;
+        handle.on_turn_start().await.expect("turn start");
+        let usage = Arc::new(StaticUsage(TokenTotals {
+            input_tokens: 120,
+            output_tokens: 30,
+            cached_tokens: 20,
+        }));
+        let tools = goal_tools_with_usage(handle.clone(), MockVerify::passing(), Some(usage));
+
+        tools[2]
+            .call(
+                json!({"status": "complete", "completion_budget_report": "done"}),
+                None,
+            )
+            .await
+            .expect("complete");
+
+        let goal = handle
+            .service()
+            .show("t1")
+            .await
+            .expect("show")
+            .expect("goal");
+        assert_eq!(goal.status, crate::types::GoalStatus::Complete);
+        assert_eq!(goal.tokens_used, 130, "(120 - 20 cached) + 30 output");
+    }
+
+    #[tokio::test]
+    async fn get_goal_resolves_file_backed_objective_for_model() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = task_core::TaskDb::open(&dir.path().join("tasks.db"))
+            .await
+            .expect("open TaskDb");
+        let store = GoalStore::from_task_db(&db).with_goals_dir(dir.path().join("goals"));
+        let handle = GoalRuntimeHandle::new(store, "long", Arc::new(MockDriver));
+        let objective = "目标".repeat(2500);
+        handle
+            .service()
+            .set("long", &objective, None)
+            .await
+            .expect("set long objective");
+
+        let out = goal_tools(handle, MockVerify::passing())[0]
+            .call(json!({}), None)
+            .await
+            .expect("get_goal");
+        assert!(
+            matches!(out, ToolCallContent::Text(text) if text.contains(&objective) && !text.contains("@file:"))
+        );
     }
 
     #[tokio::test]
@@ -527,11 +695,19 @@ mod tests {
         let update = &tools[2];
 
         let out = update
-            .call(json!({ "status": "blocked", "reason": "missing credentials" }), None)
+            .call(
+                json!({ "status": "blocked", "reason": "missing credentials" }),
+                None,
+            )
             .await
             .expect("call");
         assert!(matches!(&out, ToolCallContent::Text(t) if t.contains("blocked")));
-        let g = handle.service().show("t1").await.expect("show").expect("exists");
+        let g = handle
+            .service()
+            .show("t1")
+            .await
+            .expect("show")
+            .expect("exists");
         assert_eq!(g.status, crate::types::GoalStatus::Blocked);
         assert_eq!(g.status_reason.as_deref(), Some("missing credentials"));
 
@@ -546,7 +722,10 @@ mod tests {
     async fn missing_objective_is_invalid_input() {
         let handle = setup(None, None).await;
         let tools = goal_tools(handle.clone(), MockVerify::passing());
-        let err = tools[1].call(json!({}), None).await.expect_err("must reject");
+        let err = tools[1]
+            .call(json!({}), None)
+            .await
+            .expect_err("must reject");
         assert!(matches!(err, ToolSourceError::InvalidInput(_)));
     }
 

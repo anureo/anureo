@@ -5,7 +5,7 @@
 //!    controlMethod/actions）；
 //! 2. `_session/goal` set → 响应中立快照 + `session_info_update._meta.goal`
 //!    全量快照（camelCase / 毫秒 / controlMethod）经 session/update 推送；
-//! 3. pause / invalid action（中立错误面）；
+//! 3. codex-acp legacy alias / pause / invalid action（兼容与错误面）；
 //! 4. `_session/goal` clear → `goal: null` 清除快照。
 //!
 //! **idle 续跑全链路（prompt 外 turn + budget_limited 投影）不在此覆盖**：
@@ -77,6 +77,18 @@ async fn neutral_goal_capability_control_and_snapshot_publication() {
             .await;
         let session_id = session["sessionId"].as_str().expect("sessionId").to_string();
 
+        let unknown = h
+            .request_raw(
+                "_session/goal",
+                json!({
+                    "sessionId": "unknown-session",
+                    "action": "set",
+                    "objective": "must not create an orphan goal"
+                }),
+            )
+            .await;
+        assert_eq!(unknown["error"]["code"], -32602, "unknown session: {unknown}");
+
         let set = h
             .request(
                 "_session/goal",
@@ -123,10 +135,10 @@ async fn neutral_goal_capability_control_and_snapshot_publication() {
         )
         .await;
 
-        // resume 对 paused 合法（暂停态可恢复），回到 active。
+        // resume 对 paused 合法；通过 codex-acp 未广播 legacy alias 调用。
         let resumed = h
             .request(
-                "_session/goal",
+                "_codex/session/goal_control",
                 json!({"sessionId": session_id, "action": "resume"}),
             )
             .await;
@@ -160,6 +172,72 @@ async fn neutral_goal_capability_control_and_snapshot_publication() {
         )
         .await;
 
+        let status = h.shutdown().await;
+        assert!(status.success(), "ACP process exited non-zero: {status:?}");
+    })
+    .await;
+}
+
+/// 真实 ACP 链路：stdio bridge → WebSocket server → mock LLM。
+/// `set` 本身必须启动首轮，随后 active goal 自主续跑；两轮各记 2 tokens，
+/// 达到 budget=3 后发布 limited 快照并停止普通 continuation。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn neutral_goal_set_starts_and_accounts_across_turns() {
+    let env = TestEnv::setup();
+    let llm = MockLlmServer::start().await;
+    llm.mount_default_chat_completion().await;
+    let usage_sse = MockLlmServer::sse_text_chunks_with_usage("ok", 1, 1, 2, None);
+    llm.expect_chat_completion_sse(&usage_sse, 3, None).await;
+
+    with_anureo_home(&env, async {
+        let h = AcpTestHarness::spawn(&env, &llm.url()).await;
+        h.request(
+            "initialize",
+            json!({
+                "protocolVersion": 1,
+                "clientInfo": {"name": "goal-basic-e2e", "version": "0.1.0"},
+                "capabilities": {}
+            }),
+        )
+        .await;
+        let session = h
+            .request(
+                "session/new",
+                json!({"cwd": env.cwd.to_string_lossy(), "mcpServers": []}),
+            )
+            .await;
+        let session_id = session["sessionId"].as_str().expect("sessionId");
+
+        h.request(
+            "_session/goal",
+            json!({
+                "sessionId": session_id,
+                "action": "set",
+                "objective": "finish the bounded mock task",
+                "tokenBudget": 3
+            }),
+        )
+        .await;
+        let limited = h
+            .wait_for_notification(
+                |n| {
+                    goal_meta(n).is_some_and(|goal| {
+                        goal["status"] == "limited"
+                            && goal["tokensUsed"].as_i64().is_some_and(|used| used >= 4)
+                    })
+                },
+                Duration::from_secs(30),
+            )
+            .await;
+        let goal = goal_meta(&limited[0]).expect("limited goal snapshot");
+        assert_eq!(goal["statusReason"], "budget_limited", "snapshot: {goal}");
+
+        h.request(
+            "_session/goal",
+            json!({"sessionId": session_id, "action": "clear"}),
+        )
+        .await;
         let status = h.shutdown().await;
         assert!(status.success(), "ACP process exited non-zero: {status:?}");
     })

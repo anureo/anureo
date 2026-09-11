@@ -10,8 +10,8 @@
 //!   （对标 codex-acp 对 `_codex/session/goal_control` 的同款策略）：保留可用、
 //!   不进任何能力广告；中立面经 initialize `_meta.goal` 广播。
 //! - 中立控制方法 `_session/goal`（注册为别名 → 本域 `session_control`）：
-//!   `{sessionId, action ∈ set|pause|resume|clear}`；响应携带中立快照
-//!   （`{goal: {...}}`；clear 为 `{cleared: bool}`）。
+//!   `{sessionId, action ∈ set|pause|resume|clear}`；同时接受 codex-acp
+//!   未广播的 legacy alias `_codex/session/goal_control`。
 //! - 快照发布：goal 变更后经 `SessionInfoUpdate._meta.goal` 携带全量快照
 //!   （清除时 `goal: null`）；与 `/goal` 命令路径共用
 //!   [`publish_neutral_goal_meta`]。
@@ -256,6 +256,9 @@ fn internal_error(msg: impl Into<String>) -> ExtensionError {
 /// 中立控制方法名（initialize `_meta.goal.controlMethod` 同名）。
 pub const NEUTRAL_GOAL_CONTROL_METHOD: &str = "_session/goal";
 
+/// codex-acp 兼容别名：可调用但不进入 capability 广告。
+pub const LEGACY_CODEX_GOAL_CONTROL_METHOD: &str = "_codex/session/goal_control";
+
 /// `_meta.goal.actions` 广播子集（本实现四项全支持）。
 pub const NEUTRAL_GOAL_ACTIONS: [&str; 4] = ["set", "pause", "resume", "clear"];
 
@@ -284,10 +287,11 @@ fn neutral_status(status: goal::GoalStatus) -> &'static str {
 /// 可选字段 `iterationCount`、`lastContinuationReason` 暂不填
 /// （TODO(P8+)：runtime 侧迭代计数与续跑原因落库后补）。
 ///
-/// P7 objective 文件化：DB 行存 `@file:` 标记时投影 `objectiveFile: true`
-/// 代替全文（FE 按 `<anureo_home>/goals/<sessionId>.md` 另拉）。
+/// 调用方必须先通过 `GoalService::resolve_objective` 还原文件化 objective；
+/// codex-acp 的 `GoalSnapshot.objective` 是必填字符串，不得以本地文件标记替代。
 fn neutral_goal_snapshot(goal: &goal::Goal) -> Value {
     let mut snapshot = json!({
+        "objective": goal.objective,
         "status": neutral_status(goal.status),
         "createdAt": goal.created_at_ms,
         "updatedAt": goal.updated_at_ms,
@@ -296,11 +300,6 @@ fn neutral_goal_snapshot(goal: &goal::Goal) -> Value {
         "timeUsedSeconds": goal.time_used_seconds,
         "controlMethod": NEUTRAL_GOAL_CONTROL_METHOD,
     });
-    if goal::objective_file::is_file_backed(&goal.objective) {
-        snapshot["objectiveFile"] = json!(true);
-    } else {
-        snapshot["objective"] = json!(goal.objective);
-    }
     // 可选扩展字段（规范允许）：真值透出，供 FE 区分 limited 的两种成因。
     if let Some(reason) = &goal.status_reason {
         snapshot["statusReason"] = json!(reason);
@@ -320,8 +319,7 @@ pub fn publish_neutral_goal_meta(
     let mut meta = Meta::new();
     meta.insert(
         "goal".to_string(),
-        goal.map(neutral_goal_snapshot)
-            .unwrap_or(Value::Null),
+        goal.map(neutral_goal_snapshot).unwrap_or(Value::Null),
     );
     SessionNotifier::new(tx.clone(), session_id.clone()).try_send_session_meta(meta);
 }
@@ -378,25 +376,35 @@ impl GoalHandler {
 
     /// 取后端快照（std Mutex guard 不跨 await）。
     fn backend(&self) -> GoalBackend {
-        self.backend.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.backend
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// sessionId → thread_id（生产路径经 SessionStore 反查；
     /// 查不到时降级用 sessionId 本身作键并告警）。
-    fn resolve_thread_key(&self, session_id: &str) -> String {
+    fn resolve_thread_key(
+        &self,
+        session_id: &str,
+        principal: &str,
+    ) -> Result<String, ExtensionError> {
         if let GoalBackend::Agent(weak) = self.backend() {
-            if let Some(agent) = weak.upgrade() {
-                let sid = crate::session::SessionId::new(session_id.to_string());
-                if let Some(entry) = agent.sessions().get(&sid) {
-                    return entry.thread_id;
-                }
-                tracing::warn!(
-                    session_id,
-                    "goal extension: session not in store; using session id as thread key"
-                );
+            let agent = weak
+                .upgrade()
+                .ok_or_else(|| internal_error("goal backend unavailable (agent dropped)"))?;
+            let sid = crate::session::SessionId::new(session_id.to_string());
+            let entry = agent.sessions().get(&sid).ok_or_else(|| {
+                ExtensionError::invalid_params(format!("unknown session: {session_id}"))
+            })?;
+            if entry.owner_principal != principal {
+                return Err(ExtensionError::forbidden(
+                    "session is owned by a different principal",
+                ));
             }
+            return Ok(entry.thread_id);
         }
-        session_id.to_string()
+        Ok(session_id.to_string())
     }
 
     /// 打开目标 thread 的（service, 可选 runtime 钩子）。
@@ -430,10 +438,7 @@ impl GoalHandler {
                 let agent = weak
                     .upgrade()
                     .ok_or_else(|| internal_error("goal backend unavailable (agent dropped)"))?;
-                let db = agent
-                    .goal_task_db()
-                    .await
-                    .map_err(internal_error)?;
+                let db = agent.goal_task_db().await.map_err(internal_error)?;
                 Ok(goal::GoalStore::from_task_db(&db))
             }
         }
@@ -481,34 +486,45 @@ impl GoalHandler {
         }
         auth::check_server_policy(ctx, "goal", &format!("session_control_{action}"))?;
 
-        let thread_id = self.resolve_thread_key(&session_id);
+        let thread_id = self.resolve_thread_key(&session_id, &ctx.principal)?;
         let (service, runtime) = self.open(&thread_id).await?;
-        let session = GoalSession {
-            service,
-            runtime,
-        };
+        let session = GoalSession { service, runtime };
 
         match action.as_str() {
             "set" => {
                 let objective = Self::require_param_str(&params, "objective")?;
-                let token_budget = params
-                    .get("tokenBudget")
-                    .and_then(|v| v.as_i64())
-                    .filter(|b| *b > 0);
+                let token_budget = match params.get("tokenBudget") {
+                    None | Some(Value::Null) => None,
+                    Some(value) => {
+                        let budget = value.as_i64().ok_or_else(|| {
+                            ExtensionError::invalid_params("tokenBudget must be an integer")
+                        })?;
+                        if budget <= 0 {
+                            return Err(ExtensionError::invalid_params(
+                                "tokenBudget must be positive",
+                            ));
+                        }
+                        Some(budget)
+                    }
+                };
                 let outcome = session
                     .service
                     .set_with_verify_outcome(&thread_id, &objective, token_budget, None)
                     .await
                     .map_err(|e| Self::map_service_error("set", e))?;
                 session.after_start(&outcome.goal.goal_id).await;
-                if outcome.replaced_existing {
-                    // §6.6 快照替换：推迟 idle 续跑到下一 turn 边界。
-                    session.after_replace().await;
-                }
                 self.bump_generation();
-                self.publish_via_connections(Some(&outcome.goal));
-                self.publish_neutral(&session_id, Some(&outcome.goal));
-                Ok(json!({ "goal": neutral_goal_snapshot(&outcome.goal) }))
+                let resolved = session.service.resolve_objective(outcome.goal).await;
+                self.publish_via_connections(Some(&resolved));
+                self.publish_neutral(&session_id, Some(&resolved));
+                // codex-acp 的 set 会立即尝试启动 goal turn；控制请求只等待
+                // 幂等 busy gate 完成，不等待整个 LLM turn。
+                if let Some(rt) = &session.runtime {
+                    rt.continue_if_idle().await.map_err(|e| {
+                        internal_error(format!("set continuation failed: {e}"))
+                    })?;
+                }
+                Ok(json!({ "goal": neutral_goal_snapshot(&resolved) }))
             }
             "pause" => {
                 let paused = session
@@ -518,6 +534,7 @@ impl GoalHandler {
                     .map_err(|e| Self::map_service_error("pause", e))?;
                 session.after_pause().await;
                 self.bump_generation();
+                let paused = session.service.resolve_objective(paused).await;
                 self.publish_via_connections(Some(&paused));
                 self.publish_neutral(&session_id, Some(&paused));
                 Ok(json!({ "goal": neutral_goal_snapshot(&paused) }))
@@ -530,6 +547,7 @@ impl GoalHandler {
                     .map_err(|e| Self::map_service_error("resume", e))?;
                 session.after_resume().await;
                 self.bump_generation();
+                let resumed = session.service.resolve_objective(resumed).await;
                 self.publish_via_connections(Some(&resumed));
                 self.publish_neutral(&session_id, Some(&resumed));
                 Ok(json!({ "goal": neutral_goal_snapshot(&resumed) }))
@@ -544,7 +562,7 @@ impl GoalHandler {
                 self.bump_generation();
                 self.publish_via_connections(None);
                 self.publish_neutral(&session_id, None);
-                Ok(json!({ "cleared": cleared }))
+                Ok(json!({ "cleared": cleared, "goal": Value::Null }))
             }
             _ => unreachable!("validated above"),
         }
@@ -613,9 +631,9 @@ impl GoalHandler {
             goal::GoalServiceError::NoGoal(thread) => {
                 ExtensionError::not_found(format!("goal on thread {thread} not found"))
             }
-            goal::GoalServiceError::NotResumable { status } => ExtensionError::invalid_params(
-                format!("goal status is {status:?}; {op} rejected"),
-            ),
+            goal::GoalServiceError::NotResumable { status } => {
+                ExtensionError::invalid_params(format!("goal status is {status:?}; {op} rejected"))
+            }
             goal::GoalServiceError::Store(store_err) => match store_err {
                 goal::GoalStoreError::NotFoundOrDisallowed(_) => ExtensionError::invalid_params(
                     format!("goal status transition rejected by store; {op} failed"),
@@ -672,7 +690,8 @@ impl GoalSession {
 
     async fn after_clear(&self) {
         if let Some(rt) = &self.runtime {
-            rt.on_goal_replaced(None, goal::TokenTotals::default()).await;
+            rt.on_goal_replaced(None, goal::TokenTotals::default())
+                .await;
         }
     }
 
@@ -741,8 +760,7 @@ impl GoalHandler {
         };
 
         let store = self.store_for_read().await?;
-        let allowed: Option<Vec<goal::GoalStatus>> =
-            status_filter.as_deref().map(filter_statuses);
+        let allowed: Option<Vec<goal::GoalStatus>> = status_filter.as_deref().map(filter_statuses);
         let all = store
             .list_all()
             .await
@@ -798,8 +816,7 @@ impl GoalHandler {
             .ok_or_else(|| ExtensionError::not_found(format!("goal '{id}' not found")))?;
         // P7：文件化 goal 还原全文。
         let goal = store.resolve_objective(goal).await;
-        let mut projected =
-            serde_json::to_value(project_goal(&goal)).unwrap_or(Value::Null);
+        let mut projected = serde_json::to_value(project_goal(&goal)).unwrap_or(Value::Null);
         // 旧 get 响应含 steps（新后端无 step 跟踪，恒空数组）。
         if let Some(obj) = projected.as_object_mut() {
             obj.insert("steps".to_string(), json!([]));
@@ -827,12 +844,9 @@ impl GoalHandler {
             })?;
         let idempotency_key = Self::optional_param_str(&params, "idempotencyKey");
 
-        let thread_id = self.resolve_thread_key(&session_id);
+        let thread_id = self.resolve_thread_key(&session_id, &ctx.principal)?;
         let (service, runtime) = self.open(&thread_id).await?;
-        let session = GoalSession {
-            service,
-            runtime,
-        };
+        let session = GoalSession { service, runtime };
 
         // 幂等：同 key 已有 goal 且仍存在 → 返回既有。
         if let Some(key) = &idempotency_key {
@@ -890,8 +904,12 @@ impl GoalHandler {
         // P7：文件化 goal 还原全文（旧 face description 为全文）。
         let created_goal = session.service.resolve_objective(created.goal).await;
         let projected = project_goal(&created_goal);
-        let notification =
-            build_notification(&projected.id, GoalChangeType::Started, projected.status, None);
+        let notification = build_notification(
+            &projected.id,
+            GoalChangeType::Started,
+            projected.status,
+            None,
+        );
         let response = json!({
             "id": projected.id,
             "title": projected.title,
@@ -924,14 +942,7 @@ impl GoalHandler {
             .map_err(|e| internal_error(format!("goal lookup failed: {e}")))?
             .ok_or_else(|| ExtensionError::not_found(format!("goal '{id}' not found")))?;
         let (service, runtime) = self.open(&thread_id).await?;
-        Ok((
-            thread_id,
-            goal,
-            GoalSession {
-                service,
-                runtime,
-            },
-        ))
+        Ok((thread_id, goal, GoalSession { service, runtime }))
     }
 
     async fn handle_pause(
@@ -954,8 +965,7 @@ impl GoalHandler {
         // P7：文件化 goal 还原全文。
         let paused = session.service.resolve_objective(paused).await;
         let projected = project_goal(&paused);
-        let notification =
-            build_notification(&id, GoalChangeType::Paused, projected.status, None);
+        let notification = build_notification(&id, GoalChangeType::Paused, projected.status, None);
         let response = json!({
             "id": id,
             "status": "paused",
@@ -989,8 +999,7 @@ impl GoalHandler {
         // P7：文件化 goal 还原全文。
         let resumed = session.service.resolve_objective(resumed).await;
         let projected = project_goal(&resumed);
-        let notification =
-            build_notification(&id, GoalChangeType::Resumed, projected.status, None);
+        let notification = build_notification(&id, GoalChangeType::Resumed, projected.status, None);
         let response = json!({
             "id": id,
             "status": "active",
@@ -1128,7 +1137,12 @@ mod tests {
         (handler, dir)
     }
 
-    async fn start_goal(handler: &GoalHandler, ctx: &ExtensionContext, session: &str, title: &str) -> Value {
+    async fn start_goal(
+        handler: &GoalHandler,
+        ctx: &ExtensionContext,
+        session: &str,
+        title: &str,
+    ) -> Value {
         handler
             .handle(
                 "start",
@@ -1265,7 +1279,10 @@ mod tests {
         let ctx = make_ctx(dir.path().to_path_buf(), Some("s"));
         let started = start_goal(&handler, &ctx, "s", "objective text").await;
         let id = started["id"].as_str().unwrap().to_string();
-        let got = handler.handle("get", json!({"id": id}), &ctx).await.unwrap();
+        let got = handler
+            .handle("get", json!({"id": id}), &ctx)
+            .await
+            .unwrap();
         assert_eq!(got["id"], id);
         assert_eq!(got["status"], "active");
         assert_eq!(got["description"], "objective text");
@@ -1298,7 +1315,10 @@ mod tests {
         let started = start_goal(&handler, &ctx, "s", "work").await;
         let id = started["id"].as_str().unwrap().to_string();
 
-        let paused = handler.handle("pause", json!({"id": id}), &ctx).await.unwrap();
+        let paused = handler
+            .handle("pause", json!({"id": id}), &ctx)
+            .await
+            .unwrap();
         assert_eq!(paused["status"], "paused");
         assert!(paused["notification"]["change"] == "paused");
 
@@ -1309,7 +1329,10 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.code, -32602);
 
-        let resumed = handler.handle("resume", json!({"id": id}), &ctx).await.unwrap();
+        let resumed = handler
+            .handle("resume", json!({"id": id}), &ctx)
+            .await
+            .unwrap();
         assert_eq!(resumed["status"], "active");
         assert!(resumed["resumedAt"].is_string());
 
@@ -1356,12 +1379,10 @@ mod tests {
             .unwrap();
         assert_eq!(cancelled["status"], "cancelled");
         assert!(cancelled["cancelledAt"].is_string());
-        assert!(
-            cancelled["updated"]["metadata"]["cancellationReason"]
-                .as_str()
-                .unwrap()
-                .contains("user asked")
-        );
+        assert!(cancelled["updated"]["metadata"]["cancellationReason"]
+            .as_str()
+            .unwrap()
+            .contains("user asked"));
 
         // 新模型 clear 即无行：重复 cancel 视为对不存在 goal 的操作。
         let err = handler
@@ -1404,7 +1425,10 @@ mod tests {
             .unwrap();
         assert_eq!(cancelled["status"], "cancelled");
         // 终态行保留：get 仍可读（投影 completed）。
-        let got = handler.handle("get", json!({"id": id}), &ctx).await.unwrap();
+        let got = handler
+            .handle("get", json!({"id": id}), &ctx)
+            .await
+            .unwrap();
         assert_eq!(got["status"], "completed");
     }
 
@@ -1428,7 +1452,11 @@ mod tests {
             .handle("list", json!({"status": "cancelled"}), &ctx)
             .await
             .unwrap();
-        assert_eq!(result["items"].as_array().unwrap().len(), 0, "cancelled 永不匹配");
+        assert_eq!(
+            result["items"].as_array().unwrap().len(),
+            0,
+            "cancelled 永不匹配"
+        );
     }
 
     #[tokio::test]
@@ -1458,7 +1486,10 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let page1 = handler.handle("list", json!({"limit": 1}), &ctx).await.unwrap();
+        let page1 = handler
+            .handle("list", json!({"limit": 1}), &ctx)
+            .await
+            .unwrap();
         assert_eq!(page1["items"].as_array().unwrap().len(), 1);
         assert_eq!(page1["hasMore"], true);
         let cursor = page1["nextCursor"].as_str().unwrap().to_string();
@@ -1521,10 +1552,7 @@ mod tests {
         let caps = neutral_goal_capability();
         assert_eq!(caps["version"], 1);
         assert_eq!(caps["controlMethod"], "_session/goal");
-        assert_eq!(
-            caps["actions"],
-            json!(["set", "pause", "resume", "clear"])
-        );
+        assert_eq!(caps["actions"], json!(["set", "pause", "resume", "clear"]));
     }
 
     #[tokio::test]
@@ -1544,8 +1572,14 @@ mod tests {
         assert_eq!(goal["objective"], "fix login");
         assert_eq!(goal["tokenBudget"], 5000);
         assert_eq!(goal["controlMethod"], "_session/goal");
-        assert!(goal["createdAt"].as_i64().unwrap() > 1_000_000_000_000, "Unix 毫秒");
-        assert!(goal["updatedAt"].as_i64().unwrap() > 1_000_000_000_000, "Unix 毫秒");
+        assert!(
+            goal["createdAt"].as_i64().unwrap() > 1_000_000_000_000,
+            "Unix 毫秒"
+        );
+        assert!(
+            goal["updatedAt"].as_i64().unwrap() > 1_000_000_000_000,
+            "Unix 毫秒"
+        );
         assert!(goal.get("goalId").is_none(), "不暴露 goalId");
         assert!(goal.get("id").is_none(), "不暴露 id");
     }
@@ -1572,6 +1606,27 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code, -32602);
+    }
+
+    #[tokio::test]
+    async fn session_control_set_rejects_invalid_token_budget() {
+        let (handler, dir) = make_handler().await;
+        let ctx = make_ctx(dir.path().to_path_buf(), Some("s"));
+        for invalid in [json!(0), json!(-1), json!("100")] {
+            let result = handler
+                .handle(
+                    "session_control",
+                    json!({
+                        "sessionId": "s",
+                        "action": "set",
+                        "objective": "valid objective",
+                        "tokenBudget": invalid,
+                    }),
+                    &ctx,
+                )
+                .await;
+            assert!(matches!(result, Err(ExtensionError { code: -32602, .. })));
+        }
     }
 
     #[tokio::test]
@@ -1740,7 +1795,7 @@ mod tests {
 
     #[tokio::test]
     async fn registry_alias_routes_session_goal() {
-        // `_session/goal` 别名 → goal 域 session_control。
+        // 中立方法与 codex-acp legacy alias 都路由到 goal 域 session_control。
         use crate::extensions::ExtensionRegistry;
 
         let dir = tempfile::tempdir().unwrap();
@@ -1753,6 +1808,10 @@ mod tests {
         let mut registry = ExtensionRegistry::new();
         registry.register("goal", handler);
         registry.register_alias("_session/goal", "_anureo.dev/goal/session_control");
+        registry.register_alias(
+            "_codex/session/goal_control",
+            "_anureo.dev/goal/session_control",
+        );
 
         let ctx = make_ctx(dir.path().to_path_buf(), Some("s"));
         let result = registry
@@ -1765,6 +1824,16 @@ mod tests {
             .unwrap();
         assert_eq!(result["goal"]["objective"], "via alias");
         assert_eq!(result["goal"]["controlMethod"], "_session/goal");
+
+        let result = registry
+            .dispatch(
+                "_codex/session/goal_control",
+                json!({"sessionId": "s", "action": "pause"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result["goal"]["status"], "paused");
 
         // 未注册别名的其他 `_session/*` 方法仍 method_not_found。
         let err = registry
@@ -1829,40 +1898,40 @@ mod tests {
         assert_eq!(meta["timeUsedSeconds"], 33);
         assert_eq!(meta["controlMethod"], "_session/goal");
         assert_eq!(meta["statusReason"], "provider quota exhausted");
-        assert!(meta.get("goalId").is_none() && meta.get("id").is_none(), "不暴露 id");
+        assert!(
+            meta.get("goalId").is_none() && meta.get("id").is_none(),
+            "不暴露 id"
+        );
 
         // 无通道 → no-op（不 panic）。
         publish_neutral_goal_meta(None, &session_id, Some(&g));
         assert!(rx.try_recv().is_err());
     }
 
-    #[test]
-    fn neutral_snapshot_projects_objective_file_backed() {
-        // P7 objective 文件化：DB 行存 @file: 标记 → 投影 objectiveFile: true
-        // 代替全文。
-        let mut g = goal::Goal {
-            thread_id: "t1".into(),
-            goal_id: "g1".into(),
-            objective: "@file:t1.md".into(),
-            status: goal::GoalStatus::Active,
-            token_budget: None,
-            tokens_used: 0,
-            time_used_seconds: 0,
-            verify_command: None,
-            status_reason: None,
-            created_at_ms: 1,
-            updated_at_ms: 1,
-            objective_file: true,
-        };
-        let snapshot = neutral_goal_snapshot(&g);
-        assert_eq!(snapshot["objectiveFile"], true);
-        assert!(snapshot.get("objective").is_none(), "标记不得泄漏到快照");
+    #[tokio::test]
+    async fn session_control_resolves_file_objective_in_neutral_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = task_core::TaskDb::open(&dir.path().join("tasks.db"))
+            .await
+            .unwrap();
+        let handler = GoalHandler::new();
+        handler.bind_store(
+            goal::GoalStore::from_task_db(&db).with_goals_dir(dir.path().join("goals")),
+        );
+        let ctx = make_ctx(dir.path().to_path_buf(), Some("long"));
+        let objective = "目标".repeat(2500);
 
-        g.objective = "inline objective".into();
-        g.objective_file = false;
-        let snapshot = neutral_goal_snapshot(&g);
-        assert_eq!(snapshot["objective"], "inline objective");
-        assert!(snapshot.get("objectiveFile").is_none());
+        let result = handler
+            .handle(
+                "session_control",
+                json!({"sessionId": "long", "action": "set", "objective": objective}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result["goal"]["objective"], objective);
+        assert!(result["goal"].get("objectiveFile").is_none());
     }
 
     #[tokio::test]
@@ -1884,7 +1953,10 @@ mod tests {
             .unwrap();
         let handler2 = GoalHandler::new();
         handler2.bind_store(goal::GoalStore::from_task_db(&db));
-        let goal = handler2.handle("get", json!({"id": id}), &ctx).await.unwrap();
+        let goal = handler2
+            .handle("get", json!({"id": id}), &ctx)
+            .await
+            .unwrap();
         assert_eq!(goal["status"], "paused");
     }
 

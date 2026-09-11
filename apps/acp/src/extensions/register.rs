@@ -51,6 +51,10 @@ pub fn register_default_extensions(
     // goal 域 session_control；能力广告走 initialize `_meta.goal`（registry
     // 别名不进能力快照）。
     registry.register_alias("_session/goal", "_anureo.dev/goal/session_control");
+    registry.register_alias(
+        "_codex/session/goal_control",
+        "_anureo.dev/goal/session_control",
+    );
     registry.register(
         "scheduled-task",
         Arc::new(super::scheduled_task::ScheduledTaskHandler),

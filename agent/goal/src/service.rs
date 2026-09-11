@@ -25,7 +25,9 @@ pub struct GoalStateLock {
 
 impl GoalStateLock {
     pub fn new() -> Self {
-        Self { permit: Arc::new(Semaphore::new(1)) }
+        Self {
+            permit: Arc::new(Semaphore::new(1)),
+        }
     }
 
     /// 带超时获取；超时返回 `None`（调用方按「未获锁」处理，不阻塞用户操作）。
@@ -72,12 +74,18 @@ pub struct GoalService {
 
 impl GoalService {
     pub fn new(store: GoalStore) -> Self {
-        Self { store, state_lock: None }
+        Self {
+            store,
+            state_lock: None,
+        }
     }
 
     /// 持 goal_state_lock 的构造（§5：set/clear 窗口）。
     pub fn with_state_lock(store: GoalStore, state_lock: GoalStateLock) -> Self {
-        Self { store, state_lock: Some(state_lock) }
+        Self {
+            store,
+            state_lock: Some(state_lock),
+        }
     }
 
     pub fn store(&self) -> &GoalStore {
@@ -87,7 +95,11 @@ impl GoalService {
     async fn guard(&self) -> Result<Option<OwnedSemaphorePermit>, GoalServiceError> {
         match &self.state_lock {
             None => Ok(None),
-            Some(lock) => lock.acquire().await.ok_or(GoalServiceError::LockTimeout).map(Some),
+            Some(lock) => lock
+                .acquire()
+                .await
+                .ok_or(GoalServiceError::LockTimeout)
+                .map(Some),
         }
     }
 
@@ -100,7 +112,8 @@ impl GoalService {
         objective: &str,
         token_budget: Option<i64>,
     ) -> Result<Goal, GoalServiceError> {
-        self.set_with_verify(thread_id, objective, token_budget, None).await
+        self.set_with_verify(thread_id, objective, token_budget, None)
+            .await
     }
 
     /// 同 [`Self::set`]，附带 verify_command（完成门载体，§6.9）。
@@ -188,6 +201,7 @@ impl GoalService {
 
     /// 用户 pause：active → paused。
     pub async fn pause(&self, thread_id: &str) -> Result<Goal, GoalServiceError> {
+        let _guard = self.guard().await?;
         let goal = self.current(thread_id).await?;
         let paused = self.store.pause(thread_id, &goal.goal_id).await?;
         metrics::global().record_pause(thread_id);
@@ -197,9 +211,12 @@ impl GoalService {
     /// 用户 resume：仅 paused / blocked / usage_limited 可恢复（§6.1；
     /// 终态不可恢复）。
     pub async fn resume(&self, thread_id: &str) -> Result<Goal, GoalServiceError> {
+        let _guard = self.guard().await?;
         let goal = self.current(thread_id).await?;
         if !goal.status.user_resumable() {
-            return Err(GoalServiceError::NotResumable { status: goal.status });
+            return Err(GoalServiceError::NotResumable {
+                status: goal.status,
+            });
         }
         let resumed = self.store.resume(thread_id, &goal.goal_id).await?;
         metrics::global().record_resume(thread_id);
@@ -220,12 +237,14 @@ impl GoalService {
     }
 
     /// 用户 edit objective：仅非终态（§6.5 objective_updated steering）。
-    pub async fn edit(
-        &self,
-        thread_id: &str,
-        objective: &str,
-    ) -> Result<Goal, GoalServiceError> {
+    pub async fn edit(&self, thread_id: &str, objective: &str) -> Result<Goal, GoalServiceError> {
+        let _guard = self.guard().await?;
         let goal = self.current(thread_id).await?;
+        if goal.status.is_terminal() {
+            return Err(GoalServiceError::Store(
+                GoalStoreError::NotFoundOrDisallowed(thread_id.to_string()),
+            ));
+        }
         let stored = self.prepare_objective(thread_id, objective).await?;
         let edited = self
             .store
@@ -280,13 +299,21 @@ mod tests {
         assert_eq!(g2.objective, "second");
 
         // pause → resume
-        assert_eq!(svc.pause("t1").await.expect("pause").status, GoalStatus::Paused);
-        assert_eq!(svc.resume("t1").await.expect("resume").status, GoalStatus::Active);
+        assert_eq!(
+            svc.pause("t1").await.expect("pause").status,
+            GoalStatus::Paused
+        );
+        assert_eq!(
+            svc.resume("t1").await.expect("resume").status,
+            GoalStatus::Active
+        );
 
         // 终态 resume 拒绝（usage_limited 可恢复、complete 不可恢复）
         assert!(matches!(
             svc.resume("t1").await,
-            Err(GoalServiceError::NotResumable { status: GoalStatus::Active })
+            Err(GoalServiceError::NotResumable {
+                status: GoalStatus::Active
+            })
         ));
         svc.store()
             .mark_complete("t1", &g2.goal_id)
@@ -294,13 +321,17 @@ mod tests {
             .expect("complete");
         assert!(matches!(
             svc.resume("t1").await,
-            Err(GoalServiceError::NotResumable { status: GoalStatus::Complete })
+            Err(GoalServiceError::NotResumable {
+                status: GoalStatus::Complete
+            })
         ));
 
         // edit / clear
         assert!(matches!(
             svc.edit("t1", "nope").await,
-            Err(GoalServiceError::Store(GoalStoreError::NotFoundOrDisallowed(_)))
+            Err(GoalServiceError::Store(
+                GoalStoreError::NotFoundOrDisallowed(_)
+            ))
         ));
         assert!(svc.clear("t1").await.expect("clear"));
         assert_eq!(svc.show("t1").await.expect("show"), None);
@@ -363,13 +394,32 @@ mod tests {
         assert!(edited.objective_file);
         assert!(path.exists(), "edit 超限同样落盘");
 
+        // 终态 edit 必须在触碰 objective 文件前拒绝，不能留下 DB marker
+        // 指向已被提前改写或清理的文件。
+        svc.store()
+            .mark_complete("tf", &edited.goal_id)
+            .await
+            .expect("complete");
+        let before = tokio::fs::read_to_string(&path).await.expect("read before");
+        assert!(svc.edit("tf", "short replacement").await.is_err());
+        assert_eq!(
+            tokio::fs::read_to_string(&path).await.expect("read after"),
+            before
+        );
+
+        // 重新 set 会替换终态 goal，供后续 clear 路径继续验证。
+        svc.set("tf", &long, None).await.expect("replace terminal");
+
         // clear → 文件删除
         svc.clear("tf").await.expect("clear");
         assert!(!path.exists(), "clear 应删除文件");
 
         // 无 goals_dir 的 store：超限 objective 走 DB 内联校验拒绝
         let (_d2, svc2) = service().await;
-        let err = svc2.set("tf2", &long, None).await.expect_err("should reject");
+        let err = svc2
+            .set("tf2", &long, None)
+            .await
+            .expect_err("should reject");
         assert!(matches!(
             err,
             GoalServiceError::Store(GoalStoreError::Validation(
@@ -386,7 +436,8 @@ mod tests {
         let cjk_goal = svc.set("tfc", &cjk, None).await.expect("cjk set");
         assert!(cjk_goal.objective_file, "CJK 字节超限应文件化");
         assert_eq!(
-            svc.resolve_objective(cjk_goal).await.objective, cjk,
+            svc.resolve_objective(cjk_goal).await.objective,
+            cjk,
             "CJK 全文可还原"
         );
     }

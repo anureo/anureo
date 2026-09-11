@@ -24,9 +24,9 @@ use agent_client_protocol::schema::v1::{
     ForkSessionResponse, InitializeRequest, InitializeResponse, ListSessionsRequest,
     ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, NewSessionRequest,
     NewSessionResponse, PromptRequest, PromptResponse, ResumeSessionRequest, ResumeSessionResponse,
-    SessionConfigOptionValue, SessionId, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
-    SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse, StopReason,
-    Usage,
+    SessionConfigOptionValue, SessionId, SessionNotification, SessionUpdate,
+    SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest,
+    SetSessionModeResponse, StopReason, Usage,
 };
 use agent_client_protocol::schema::ProtocolVersion;
 use checkpoint::{Checkpointer, JsonSerializer, RunnableConfig};
@@ -36,8 +36,8 @@ use tool_basic::bash::LocalCommandExecutor;
 use agent::run::TypedAnyStreamEvent;
 use agent::run::{build_react_config, run_agent_from_config, RunCmd, RunError, RunParams};
 use agent::run::{RunCompletion, RunOptions};
-use config::load_full_config;
 use anureo_llm::message::{Message, UserContent};
+use config::load_full_config;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -343,10 +343,7 @@ impl AnureoAcpAgent {
     /// [`Self::register_goal_self`]) or the shared TaskDb cannot be opened;
     /// the prompt path then proceeds without goal accounting and `/goal`
     /// commands degrade with an explicit error.
-    pub async fn goal_runtime_for(
-        &self,
-        thread_id: &str,
-    ) -> Option<Arc<goal::GoalRuntimeHandle>> {
+    pub async fn goal_runtime_for(&self, thread_id: &str) -> Option<Arc<goal::GoalRuntimeHandle>> {
         let agent_weak = self.goal_self.get().cloned()?;
         // Hold the map lock across creation so concurrent first prompts for
         // the same thread share one handle (and one TaskDb pool).
@@ -366,9 +363,7 @@ impl AnureoAcpAgent {
             }
         };
         let store = goal::GoalStore::from_task_db(&db);
-        let driver = Arc::new(crate::goal_runtime::AcpTurnDriver {
-            agent: agent_weak,
-        });
+        let driver = Arc::new(crate::goal_runtime::AcpTurnDriver { agent: agent_weak });
         let handle = goal::GoalRuntimeHandle::new(store, thread_id, driver);
         runtimes.insert(thread_id.to_string(), handle.clone());
         Some(handle)
@@ -474,7 +469,9 @@ impl AnureoAcpAgent {
             return resolved;
         }
 
-        if let Some(last_selected) = crate::last_model::load().filter(|m| !m.is_empty() && m != "default") {
+        if let Some(last_selected) =
+            crate::last_model::load().filter(|m| !m.is_empty() && m != "default")
+        {
             let resolved = agent::run::resolve_model_config(Some(&last_selected)).await;
             tracing::info!(
                 last_selected_model = %last_selected,
@@ -1133,8 +1130,7 @@ impl AnureoAcpAgent {
             &new_entry.thread_id,
             &new_entry.owner_principal,
             new_entry.working_directory.as_ref().ok_or_else(|| {
-                agent_client_protocol::Error::internal_error()
-                    .data("forked session cwd missing")
+                agent_client_protocol::Error::internal_error().data("forked session cwd missing")
             })?,
         ) {
             self.sessions.delete(&new_our_id);
@@ -1321,10 +1317,8 @@ impl AnureoAcpAgent {
                         // or the shared goal TaskDb could not be opened).
                         // Degrade with an explicit error instead of guessing.
                         let Some(goal_rt) = goal_runtime.clone() else {
-                            return Err(
-                                agent_client_protocol::Error::internal_error()
-                                    .data("goal runtime unavailable"),
-                            );
+                            return Err(agent_client_protocol::Error::internal_error()
+                                .data("goal runtime unavailable"));
                         };
                         // P8：状态变更类动作（set/pause/resume/clear）后发布
                         // 中立快照（与 `_session/goal` 控制路径共用发布函数；
@@ -1343,7 +1337,16 @@ impl AnureoAcpAgent {
                         )
                         .await;
                         if publishes_snapshot {
-                            let snapshot = goal_rt.service().show(&entry.thread_id).await.ok().flatten();
+                            let snapshot = goal_rt
+                                .service()
+                                .show(&entry.thread_id)
+                                .await
+                                .ok()
+                                .flatten();
+                            let snapshot = match snapshot {
+                                Some(goal) => Some(goal_rt.service().resolve_objective(goal).await),
+                                None => None,
+                            };
                             crate::extensions::goal::publish_neutral_goal_meta(
                                 self.session_update_tx.as_ref(),
                                 &args.session_id,
@@ -1428,6 +1431,9 @@ impl AnureoAcpAgent {
         let resolved_for_review = resolved.clone();
 
         let context_window_size = resolve_context_window_size(resolved.model.as_deref()).await;
+        // Per-prompt usage is shared with model-facing goal tools so a tool that
+        // transitions the goal to complete/blocked can account before changing status.
+        let usage_acc: Arc<Mutex<TurnUsage>> = Arc::new(Mutex::new(TurnUsage::default()));
 
         let opts = RunOptions {
             message: user_content,
@@ -1479,9 +1485,12 @@ impl AnureoAcpAgent {
                 // plumbed into sub-agent/workflow tool registries, so those
                 // never see them).
                 if let Some(goal_rt) = &goal_runtime {
-                    tools.extend(goal::goal_tools(
+                    tools.extend(goal::goal_tools_with_usage(
                         goal_rt.clone(),
                         Arc::new(goal::ShellVerifyRunner::default()),
+                        Some(Arc::new(AcpGoalUsageSnapshot {
+                            usage: usage_acc.clone(),
+                        })),
                     ));
                 }
                 if tools.is_empty() {
@@ -1520,7 +1529,6 @@ impl AnureoAcpAgent {
 
         let session_id = args.session_id.clone();
         let tx = self.session_update_tx.clone();
-        let usage_acc: Arc<Mutex<TurnUsage>> = Arc::new(Mutex::new(TurnUsage::default()));
         let on_event: Option<Box<dyn FnMut(TypedAnyStreamEvent) + Send>> = {
             let acc = usage_acc.clone();
             match tx {
@@ -1638,7 +1646,10 @@ impl AnureoAcpAgent {
                     let msg = e.to_string();
                     let lower = msg.to_lowercase();
                     if lower.contains("quota") || msg.contains("429") {
-                        if let Err(err) = goal_rt.on_provider_quota_exhausted(&msg).await {
+                        if let Err(err) = goal_rt
+                            .on_provider_quota_exhausted_with_usage(&msg, Some(totals))
+                            .await
+                        {
                             tracing::warn!(
                                 thread_id = %goal_rt.thread_id(),
                                 error = %err,
@@ -1656,19 +1667,26 @@ impl AnureoAcpAgent {
             }
             // P8：turn 结束后 goal 状态可能翻转（预算软停 blocked/limited、
             // verify 完成 complete）——发布当前中立快照（有 goal 时）。
-            if let Some(current) = goal_rt.service().show(goal_rt.thread_id()).await.ok().flatten() {
+            if let Some(current) = goal_rt
+                .service()
+                .show(goal_rt.thread_id())
+                .await
+                .ok()
+                .flatten()
+            {
+                let current = goal_rt.service().resolve_objective(current).await;
                 crate::extensions::goal::publish_neutral_goal_meta(
                     self.session_update_tx.as_ref(),
                     &args.session_id,
                     Some(&current),
                 );
             }
-                    let cont = goal_rt.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = cont.continue_if_idle().await {
-                            tracing::warn!(error = %e, "goal idle continuation failed");
-                        }
-                    });
+            let cont = goal_rt.clone();
+            tokio::spawn(async move {
+                if let Err(e) = cont.continue_if_idle().await {
+                    tracing::warn!(error = %e, "goal idle continuation failed");
+                }
+            });
         }
 
         match result {
@@ -1947,7 +1965,8 @@ impl AnureoAcpAgent {
                 anureo_count = anureo_mcp.len(),
                 "MCP servers from session/load"
             );
-            self.sessions.update_mcp_servers(&our_session_id, anureo_mcp);
+            self.sessions
+                .update_mcp_servers(&our_session_id, anureo_mcp);
         }
 
         // Return LoadSessionResponse with config_options and modes
@@ -2030,6 +2049,21 @@ impl AnureoAcpAgent {
         // P5b：goals.json 重启恢复预约机制已退役——goal 现持久于 thread_goals
         // （tasks.db），恢复由 agent.rs 的 continue_if_idle 钩子在 prompt 后
         // 自然续跑承担，session/load 无需再扫描 goals.json。
+        // P8：notification 是易失的；load 必须重新发布权威 goal 快照，让
+        // neutral client 不依赖断线前的 session/update 缓存即可收敛。
+        if let Some(goal_rt) = self.goal_runtime_for(&entry.thread_id).await {
+            let snapshot = goal_rt
+                .service()
+                .show(&entry.thread_id)
+                .await
+                .ok()
+                .flatten();
+            let snapshot = match snapshot {
+                Some(goal) => Some(goal_rt.service().resolve_objective(goal).await),
+                None => None,
+            };
+            self.publish_goal_snapshot(&session_id, snapshot.as_ref());
+        }
         Ok(response)
     }
 
@@ -2177,8 +2211,10 @@ impl AnureoAcpAgent {
                 .data("cwd does not match the session working directory"));
         }
         if !args.mcp_servers.is_empty() {
-            self.sessions
-                .update_mcp_servers(&key, crate::mcp_convert::acp_mcp_to_anureo(&args.mcp_servers));
+            self.sessions.update_mcp_servers(
+                &key,
+                crate::mcp_convert::acp_mcp_to_anureo(&args.mcp_servers),
+            );
         }
         self.sessions.reopen(&key);
         self.session_repository
@@ -2190,8 +2226,21 @@ impl AnureoAcpAgent {
         let mode = if entry.session_config.current_agent.is_empty() {
             self.agent_registry.default_mode_id().to_string()
         } else {
-            entry.session_config.current_agent
+            entry.session_config.current_agent.clone()
         };
+        if let Some(goal_rt) = self.goal_runtime_for(&entry.thread_id).await {
+            let snapshot = goal_rt
+                .service()
+                .show(&entry.thread_id)
+                .await
+                .ok()
+                .flatten();
+            let snapshot = match snapshot {
+                Some(goal) => Some(goal_rt.service().resolve_objective(goal).await),
+                None => None,
+            };
+            self.publish_goal_snapshot(&session_id, snapshot.as_ref());
+        }
         Ok(ResumeSessionResponse::new().modes(self.agent_registry.to_session_mode_state(&mode)))
     }
 
@@ -2624,6 +2673,21 @@ pub(crate) struct TurnUsage {
     pub(crate) cached_tokens: u64,
 }
 
+struct AcpGoalUsageSnapshot {
+    usage: Arc<Mutex<TurnUsage>>,
+}
+
+impl goal::GoalUsageSnapshot for AcpGoalUsageSnapshot {
+    fn totals(&self) -> goal::TokenTotals {
+        let usage = self.usage.lock().unwrap_or_else(|e| e.into_inner());
+        goal::TokenTotals {
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            cached_tokens: usage.cached_tokens,
+        }
+    }
+}
+
 /// Derive a fallback title from the first user prompt: skips slash
 /// commands, normalizes whitespace (including newlines) to a single line,
 /// and clamps to the same 50-char budget as LLM-generated titles.
@@ -2763,9 +2827,7 @@ fn send_goal_receipt(
     session_id: &SessionId,
     text: String,
 ) {
-    use agent_client_protocol::schema::v1::{
-        ContentChunk, MessageId, SessionUpdate, TextContent,
-    };
+    use agent_client_protocol::schema::v1::{ContentChunk, MessageId, SessionUpdate, TextContent};
 
     let Some(tx) = tx else { return };
     let chunk = ContentChunk::new(agent_client_protocol::schema::v1::ContentBlock::Text(
@@ -3508,7 +3570,10 @@ mod tests {
         // 旧 legacy 六方法不得再出现在能力快照里。
         let anureo = meta.get("anureo.dev").expect("_meta[anureo.dev]");
         assert!(
-            anureo.get("goal").and_then(|g| g.as_object()).is_none_or(|g| g.is_empty()),
+            anureo
+                .get("goal")
+                .and_then(|g| g.as_object())
+                .is_none_or(|g| g.is_empty()),
             "legacy goal 方法已从能力广告移除：{anureo}"
         );
     }

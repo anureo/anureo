@@ -14,9 +14,7 @@ use std::path::{Path, PathBuf};
 use sqlx::sqlite::SqlitePool;
 use sqlx::Row;
 
-use crate::types::{
-    AccountingMode, AccountingOutcome, CreateGoalRequest, Goal, GoalStatus,
-};
+use crate::types::{AccountingMode, AccountingOutcome, CreateGoalRequest, Goal, GoalStatus};
 
 pub const SELECT_GOAL_COLUMNS: &str = concat!(
     "thread_id, goal_id, objective, status, token_budget, tokens_used, ",
@@ -45,11 +43,10 @@ fn now_ms() -> i64 {
 
 fn goal_from_row(row: &sqlx::sqlite::SqliteRow) -> sqlx::Result<Goal> {
     let status_str: String = row.try_get("status")?;
-    let status = GoalStatus::parse(&status_str)
-        .ok_or_else(|| sqlx::Error::ColumnDecode {
-            index: "status".to_string(),
-            source: format!("unknown goal status: {status_str}").into(),
-        })?;
+    let status = GoalStatus::parse(&status_str).ok_or_else(|| sqlx::Error::ColumnDecode {
+        index: "status".to_string(),
+        source: format!("unknown goal status: {status_str}").into(),
+    })?;
     let objective: String = row.try_get("objective")?;
     Ok(Goal {
         thread_id: row.try_get("thread_id")?,
@@ -78,7 +75,10 @@ pub struct GoalStore {
 
 impl GoalStore {
     pub fn new(pool: SqlitePool) -> Self {
-        Self { pool, goals_dir: None }
+        Self {
+            pool,
+            goals_dir: None,
+        }
     }
 
     /// 复用 TaskDb 连接池（同库多池会有写锁竞争，必须共享）。
@@ -92,7 +92,10 @@ impl GoalStore {
             .filter(|p| p.file_name() == Some(std::ffi::OsStr::new("tasks")))
             .and_then(Path::parent)
             .map(|home| home.join("goals"));
-        Self { pool: db.pool().clone(), goals_dir }
+        Self {
+            pool: db.pool().clone(),
+            goals_dir,
+        }
     }
 
     /// 显式覆盖 objective 文件化目录（P7）。
@@ -196,9 +199,8 @@ impl GoalStore {
     /// 全表投影（P5b `_anureo.dev/goal/list` 用）：`(thread_id, goal)` 列表，
     /// created_at 降序（与旧 goals.json 列表排序一致）。
     pub async fn list_all(&self) -> Result<Vec<(String, Goal)>, GoalStoreError> {
-        let sql = format!(
-            "SELECT {SELECT_GOAL_COLUMNS} FROM thread_goals ORDER BY created_at_ms DESC"
-        );
+        let sql =
+            format!("SELECT {SELECT_GOAL_COLUMNS} FROM thread_goals ORDER BY created_at_ms DESC");
         let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {
@@ -214,9 +216,8 @@ impl GoalStore {
         &self,
         goal_id: &str,
     ) -> Result<Option<(String, Goal)>, GoalStoreError> {
-        let sql = format!(
-            "SELECT {SELECT_GOAL_COLUMNS} FROM thread_goals WHERE goal_id = ?1 LIMIT 1"
-        );
+        let sql =
+            format!("SELECT {SELECT_GOAL_COLUMNS} FROM thread_goals WHERE goal_id = ?1 LIMIT 1");
         let row = sqlx::query(&sql)
             .bind(goal_id)
             .fetch_optional(&self.pool)
@@ -477,8 +478,13 @@ impl GoalStore {
         let sql = format!(
             "UPDATE thread_goals \
              SET tokens_used = tokens_used + ?3, \
-                 time_used_seconds = time_used_seconds + ?4, \
-                 status = CASE \
+                  time_used_seconds = time_used_seconds + ?4, \
+                  status_reason = CASE \
+                      WHEN token_budget IS NOT NULL \
+                           AND tokens_used + ?3 >= token_budget \
+                           AND status = 'active' \
+                      THEN 'budget_limited' ELSE status_reason END, \
+                  status = CASE \
                      WHEN token_budget IS NOT NULL \
                           AND tokens_used + ?3 >= token_budget \
                           AND status = 'active' \
@@ -504,7 +510,10 @@ impl GoalStore {
                 let status_str: String = r.try_get(1)?;
                 let status = GoalStatus::parse(&status_str)
                     .ok_or_else(|| GoalStoreError::CorruptStatus(status_str))?;
-                Ok(AccountingOutcome::Updated { tokens_used, status })
+                Ok(AccountingOutcome::Updated {
+                    tokens_used,
+                    status,
+                })
             }
         }
     }
@@ -517,19 +526,21 @@ impl GoalStore {
         if self.read(thread_id).await?.is_none() {
             return Ok(false);
         }
-        let res =
-            sqlx::query("INSERT OR IGNORE INTO thread_goal_continuation_deferrals (thread_id) VALUES (?1)")
-                .bind(thread_id)
-                .execute(&self.pool)
-                .await?;
+        let res = sqlx::query(
+            "INSERT OR IGNORE INTO thread_goal_continuation_deferrals (thread_id) VALUES (?1)",
+        )
+        .bind(thread_id)
+        .execute(&self.pool)
+        .await?;
         Ok(res.rows_affected() > 0)
     }
 
     pub async fn has_continuation_deferral(&self, thread_id: &str) -> Result<bool, GoalStoreError> {
-        let row = sqlx::query("SELECT 1 FROM thread_goal_continuation_deferrals WHERE thread_id = ?1")
-            .bind(thread_id)
-            .fetch_optional(&self.pool)
-            .await?;
+        let row =
+            sqlx::query("SELECT 1 FROM thread_goal_continuation_deferrals WHERE thread_id = ?1")
+                .bind(thread_id)
+                .fetch_optional(&self.pool)
+                .await?;
         Ok(row.is_some())
     }
 
@@ -538,10 +549,11 @@ impl GoalStore {
         &self,
         thread_id: &str,
     ) -> Result<bool, GoalStoreError> {
-        let res = sqlx::query("DELETE FROM thread_goal_continuation_deferrals WHERE thread_id = ?1")
-            .bind(thread_id)
-            .execute(&self.pool)
-            .await?;
+        let res =
+            sqlx::query("DELETE FROM thread_goal_continuation_deferrals WHERE thread_id = ?1")
+                .bind(thread_id)
+                .execute(&self.pool)
+                .await?;
         Ok(res.rows_affected() > 0)
     }
 }
@@ -595,7 +607,10 @@ mod tests {
     }
 
     async fn make_active(store: &GoalStore, thread: &str, budget: Option<i64>) -> Goal {
-        store.create(&req(thread, "objective", budget), "g1").await.expect("create")
+        store
+            .create(&req(thread, "objective", budget), "g1")
+            .await
+            .expect("create")
     }
 
     #[tokio::test]
@@ -625,7 +640,10 @@ mod tests {
         assert!(matches!(err, GoalStoreError::ExistingUnfinishedGoal(_)));
 
         // 用户替换入口不受限（盲审 A3）
-        let g = store.replace(&req("t1", "second", None), "g2").await.expect("replace");
+        let g = store
+            .replace(&req("t1", "second", None), "g2")
+            .await
+            .expect("replace");
         assert_eq!(g.goal_id, "g2");
     }
 
@@ -634,7 +652,10 @@ mod tests {
     async fn cas_stale_goal_id_is_unchanged() {
         let (_d, store) = test_store().await;
         make_active(&store, "t1", None).await;
-        store.replace(&req("t1", "v2", None), "g2").await.expect("replace");
+        store
+            .replace(&req("t1", "v2", None), "g2")
+            .await
+            .expect("replace");
 
         let out = store
             .account_thread_goal_usage("t1", "g1", Mode::ActiveStatusOnly, 500, 10)
@@ -654,25 +675,48 @@ mod tests {
             // 把行推到目标状态
             match status {
                 GoalStatus::Active => {}
-                GoalStatus::Paused => { store.pause("t1", &g.goal_id).await.expect("pause"); }
-                GoalStatus::Blocked => { store.mark_blocked("t1", &g.goal_id, "x").await.expect("blocked"); }
-                GoalStatus::UsageLimited => { store.mark_usage_limited("t1", &g.goal_id, "q").await.expect("usage"); }
+                GoalStatus::Paused => {
+                    store.pause("t1", &g.goal_id).await.expect("pause");
+                }
+                GoalStatus::Blocked => {
+                    store
+                        .mark_blocked("t1", &g.goal_id, "x")
+                        .await
+                        .expect("blocked");
+                }
+                GoalStatus::UsageLimited => {
+                    store
+                        .mark_usage_limited("t1", &g.goal_id, "q")
+                        .await
+                        .expect("usage");
+                }
                 GoalStatus::BudgetLimited => {
                     // 通过把预算调小实现触顶（直接经 account 不行——account 才是翻转路径；
                     // 这里用小预算 goal + 一次大 delta）
                     let _ = store.clear("t1").await;
-                    store.create(&req("t1", "obj", Some(100)), "gb").await.expect("create");
+                    store
+                        .create(&req("t1", "obj", Some(100)), "gb")
+                        .await
+                        .expect("create");
                     let out = store
                         .account_thread_goal_usage("t1", "gb", Mode::ActiveStatusOnly, 150, 0)
                         .await
                         .expect("account");
                     assert!(matches!(
                         out,
-                        AccountingOutcome::Updated { status: GoalStatus::BudgetLimited, .. }
+                        AccountingOutcome::Updated {
+                            status: GoalStatus::BudgetLimited,
+                            ..
+                        }
                     ));
                     continue;
                 }
-                GoalStatus::Complete => { store.mark_complete("t1", &g.goal_id).await.expect("complete"); }
+                GoalStatus::Complete => {
+                    store
+                        .mark_complete("t1", &g.goal_id)
+                        .await
+                        .expect("complete");
+                }
             }
             for mode in [
                 Mode::ActiveStatusOnly,
@@ -699,7 +743,10 @@ mod tests {
     #[tokio::test]
     async fn budget_flip_is_terminal_and_catchup_works() {
         let (_d, store) = test_store().await;
-        store.create(&req("t1", "obj", Some(100)), "g1").await.expect("create");
+        store
+            .create(&req("t1", "obj", Some(100)), "g1")
+            .await
+            .expect("create");
 
         let out = store
             .account_thread_goal_usage("t1", "g1", Mode::ActiveStatusOnly, 40, 0)
@@ -707,7 +754,10 @@ mod tests {
             .expect("account");
         assert_eq!(
             out,
-            AccountingOutcome::Updated { tokens_used: 40, status: GoalStatus::Active }
+            AccountingOutcome::Updated {
+                tokens_used: 40,
+                status: GoalStatus::Active
+            }
         );
 
         let out = store
@@ -716,8 +766,13 @@ mod tests {
             .expect("account");
         assert_eq!(
             out,
-            AccountingOutcome::Updated { tokens_used: 100, status: GoalStatus::BudgetLimited }
+            AccountingOutcome::Updated {
+                tokens_used: 100,
+                status: GoalStatus::BudgetLimited
+            }
         );
+        let limited = store.read("t1").await.expect("read").expect("goal");
+        assert_eq!(limited.status_reason.as_deref(), Some("budget_limited"));
 
         let normal = store
             .account_thread_goal_usage("t1", "g1", Mode::ActiveStatusOnly, 10, 0)
@@ -729,7 +784,13 @@ mod tests {
             .account_thread_goal_usage("t1", "g1", Mode::ActiveOnly, 10, 0)
             .await
             .expect("account");
-        assert!(matches!(catchup, AccountingOutcome::Updated { status: GoalStatus::BudgetLimited, .. }));
+        assert!(matches!(
+            catchup,
+            AccountingOutcome::Updated {
+                status: GoalStatus::BudgetLimited,
+                ..
+            }
+        ));
     }
 
     /// §6.1 用户 mutation 转移 + resume 对终态拒绝。
@@ -740,26 +801,44 @@ mod tests {
 
         let paused = store.pause("t1", &g.goal_id).await.expect("pause");
         assert_eq!(paused.status, GoalStatus::Paused);
-        assert!(store.pause("t1", &g.goal_id).await.is_err(), "paused 不可再 pause");
+        assert!(
+            store.pause("t1", &g.goal_id).await.is_err(),
+            "paused 不可再 pause"
+        );
 
         let active = store.resume("t1", &g.goal_id).await.expect("resume");
         assert_eq!(active.status, GoalStatus::Active);
 
         // blocked/usage_limited 可恢复
-        store.mark_usage_limited("t1", &g.goal_id, "quota").await.expect("usage");
-        assert_eq!(store.resume("t1", &g.goal_id).await.expect("resume").status, GoalStatus::Active);
-        store.mark_blocked("t1", &g.goal_id, "boom").await.expect("blocked");
+        store
+            .mark_usage_limited("t1", &g.goal_id, "quota")
+            .await
+            .expect("usage");
+        assert_eq!(
+            store.resume("t1", &g.goal_id).await.expect("resume").status,
+            GoalStatus::Active
+        );
+        store
+            .mark_blocked("t1", &g.goal_id, "boom")
+            .await
+            .expect("blocked");
         let r = store.resume("t1", &g.goal_id).await.expect("resume");
         assert_eq!(r.status, GoalStatus::Active);
         assert_eq!(r.status_reason, None, "resume 应清 status_reason");
 
         // 终态不可 resume
-        store.mark_complete("t1", &g.goal_id).await.expect("complete");
+        store
+            .mark_complete("t1", &g.goal_id)
+            .await
+            .expect("complete");
         assert!(store.resume("t1", &g.goal_id).await.is_err());
 
         // clear
         assert!(store.clear("t1").await.expect("clear"));
-        assert!(!store.clear("t1").await.expect("clear again"), "二次 clear 幂等");
+        assert!(
+            !store.clear("t1").await.expect("clear again"),
+            "二次 clear 幂等"
+        );
         assert_eq!(store.read("t1").await.expect("read"), None);
     }
 
@@ -780,14 +859,26 @@ mod tests {
         );
 
         // 无 goal 行时 defer 为 no-op（盲审 C2：fork 后新 session）
-        assert!(!store.defer_continuation("ghost").await.expect("defer ghost"));
-        assert!(!store.has_continuation_deferral("ghost").await.expect("has ghost"));
+        assert!(!store
+            .defer_continuation("ghost")
+            .await
+            .expect("defer ghost"));
+        assert!(!store
+            .has_continuation_deferral("ghost")
+            .await
+            .expect("has ghost"));
 
         // on_turn_start 清除路径
         let _ = make_active(&store, "t2", None).await;
         store.defer_continuation("t2").await.expect("defer");
-        assert!(store.clear_continuation_deferral("t2").await.expect("clear deferral"));
-        assert!(!store.clear_continuation_deferral("t2").await.expect("clear again"));
+        assert!(store
+            .clear_continuation_deferral("t2")
+            .await
+            .expect("clear deferral"));
+        assert!(!store
+            .clear_continuation_deferral("t2")
+            .await
+            .expect("clear again"));
         let _ = g;
     }
 
@@ -799,9 +890,15 @@ mod tests {
         let g = make_active(&store, "t1", None).await;
         store.defer_continuation("t1").await.expect("defer");
 
-        let v2 = store.replace(&req("t1", "v2", Some(50)), "g2").await.expect("replace");
+        let v2 = store
+            .replace(&req("t1", "v2", Some(50)), "g2")
+            .await
+            .expect("replace");
         assert_eq!(v2.goal_id, "g2");
-        assert!(!store.has_continuation_deferral("t1").await.expect("has"), "替换须级联清 deferral");
+        assert!(
+            !store.has_continuation_deferral("t1").await.expect("has"),
+            "替换须级联清 deferral"
+        );
 
         let out = store
             .account_thread_goal_usage("t1", &g.goal_id, Mode::ActiveOrStopped, 999, 9)
@@ -812,8 +909,14 @@ mod tests {
         // paused 也可被用户 set 直接替换
         let g2 = store.pause("t1", "g2").await.expect("pause");
         assert_eq!(g2.status, GoalStatus::Paused);
-        store.replace(&req("t1", "v3", None), "g3").await.expect("replace paused");
-        assert_eq!(store.read("t1").await.expect("read").map(|g| g.goal_id), Some("g3".into()));
+        store
+            .replace(&req("t1", "v3", None), "g3")
+            .await
+            .expect("replace paused");
+        assert_eq!(
+            store.read("t1").await.expect("read").map(|g| g.goal_id),
+            Some("g3".into())
+        );
     }
 
     #[tokio::test]
@@ -827,8 +930,17 @@ mod tests {
             .expect("edit");
         assert_eq!(edited.objective, "new objective");
 
-        store.mark_complete("t1", &g.goal_id).await.expect("complete");
-        assert!(store.edit_objective("t1", &g.goal_id, "nope").await.is_err(), "终态不可编辑");
+        store
+            .mark_complete("t1", &g.goal_id)
+            .await
+            .expect("complete");
+        assert!(
+            store
+                .edit_objective("t1", &g.goal_id, "nope")
+                .await
+                .is_err(),
+            "终态不可编辑"
+        );
         assert!(
             store.edit_objective("t1", &g.goal_id, "   ").await.is_err(),
             "空 objective 应被拒"
@@ -840,8 +952,7 @@ mod tests {
     /// deferral_lifecycle_and_fk_cascade 端到端验证。
     #[test]
     fn sqlite_connect_options_parse_with_query() {
-        let _ =
-            sqlx::sqlite::SqliteConnectOptions::from_str("sqlite:x.db?mode=rwc")
-                .expect("parse connect options");
+        let _ = sqlx::sqlite::SqliteConnectOptions::from_str("sqlite:x.db?mode=rwc")
+            .expect("parse connect options");
     }
 }

@@ -7,10 +7,10 @@
 //! 依赖方向约束：`apps/* → goal → task-core`；本 crate **不依赖 agent-core**。
 
 pub mod accounting;
-#[cfg(feature = "otel")]
-pub mod otel;
 pub mod metrics;
 pub mod objective_file;
+#[cfg(feature = "otel")]
+pub mod otel;
 pub mod runtime;
 pub mod service;
 pub mod steering;
@@ -25,8 +25,11 @@ pub use runtime::{GoalRuntimeHandle, TurnDriver};
 pub use service::{GoalService, GoalServiceError, GoalStateLock};
 pub use steering::{budget_limit, continuation, escape_xml_text, objective_updated};
 pub use store::{GoalStore, GoalStoreError};
-pub use tools::{goal_tools, render_goal_snapshot, ShellVerifyRunner, VerifyOutcome, VerifyRunner};
+pub use tools::{
+    goal_tools, goal_tools_with_usage, render_goal_snapshot, GoalUsageSnapshot, ShellVerifyRunner,
+    VerifyOutcome, VerifyRunner,
+};
 pub use types::{
-    max_goal_token_budget, AccountingMode, AccountingOutcome, CreateGoalRequest, Goal,
-    GoalStatus, GoalValidationError, MAX_OBJECTIVE_LEN,
+    max_goal_token_budget, AccountingMode, AccountingOutcome, CreateGoalRequest, Goal, GoalStatus,
+    GoalValidationError, MAX_OBJECTIVE_LEN,
 };

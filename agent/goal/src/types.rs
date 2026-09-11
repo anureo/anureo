@@ -200,7 +200,10 @@ pub enum GoalValidationError {
 /// 内存基线**不**推进，防止旧 turn 写到新 goal）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccountingOutcome {
-    Updated { tokens_used: i64, status: GoalStatus },
+    Updated {
+        tokens_used: i64,
+        status: GoalStatus,
+    },
     Unchanged,
 }
 
@@ -212,7 +215,12 @@ mod tests {
     fn terminal_states_are_budget_limited_and_complete() {
         assert!(GoalStatus::BudgetLimited.is_terminal());
         assert!(GoalStatus::Complete.is_terminal());
-        for s in [GoalStatus::Active, GoalStatus::Paused, GoalStatus::Blocked, GoalStatus::UsageLimited] {
+        for s in [
+            GoalStatus::Active,
+            GoalStatus::Paused,
+            GoalStatus::Blocked,
+            GoalStatus::UsageLimited,
+        ] {
             assert!(!s.is_terminal(), "{s:?} 不应是终态");
         }
     }
@@ -277,13 +285,25 @@ mod tests {
         assert!(ok.validate().is_ok());
         assert_eq!(ok.trimmed_objective(), "do it");
 
-        let empty = CreateGoalRequest { objective: "   ".into(), ..ok.clone() };
+        let empty = CreateGoalRequest {
+            objective: "   ".into(),
+            ..ok.clone()
+        };
         assert_eq!(empty.validate(), Err(GoalValidationError::EmptyObjective));
 
-        let nonpos = CreateGoalRequest { token_budget: Some(0), ..ok.clone() };
-        assert_eq!(nonpos.validate(), Err(GoalValidationError::BudgetMustBePositive));
+        let nonpos = CreateGoalRequest {
+            token_budget: Some(0),
+            ..ok.clone()
+        };
+        assert_eq!(
+            nonpos.validate(),
+            Err(GoalValidationError::BudgetMustBePositive)
+        );
 
-        let huge = CreateGoalRequest { token_budget: Some(i64::MAX), ..ok.clone() };
+        let huge = CreateGoalRequest {
+            token_budget: Some(i64::MAX),
+            ..ok.clone()
+        };
         assert!(matches!(
             huge.validate(),
             Err(GoalValidationError::BudgetAboveCap(_))
