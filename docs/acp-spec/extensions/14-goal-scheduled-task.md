@@ -33,12 +33,14 @@
 
 | action | 参数 | 语义 |
 |---|---|---|
-| `set` | `objective`（非空，可带 `tokenBudget`） | 置位/快照替换；替换既有 goal 时宿主写 deferral（§6.6） |
+| `set` | `objective`（非空，可带 anureo 扩展 `tokenBudget`） | 置位/快照替换并立即尝试启动 goal turn |
 | `pause` | — | active → paused |
 | `resume` | — | 仅 paused/blocked/usage_limited 可恢复（budget_limited/终态拒绝） |
 | `clear` | — | 任意状态 → 无 goal |
 
 未广播的 action 一律拒绝（JSON-RPC error）。
+
+`set` 与当前 codex-acp 行为一致，会立即尝试启动首轮；无需额外发送 `session/prompt`。`tokenBudget` 是 anureo 的可选扩展，如提供必须为正整数，否则返回 `-32602 invalid_params`。除权威 `_session/goal` 外，兼容接受但不广播 `_codex/session/goal_control`。
 
 ## 快照发布 `session_info_update._meta.goal`
 
@@ -46,7 +48,7 @@ goal 每次变更（控制动作 / `/goal` 命令 / turn 完成钩子）经 `ses
 
 | 字段 | 说明 |
 |---|---|
-| `objective` | 全文；文件化 goal（P7）以 `objectiveFile: true` 代替（文本在 `<anureo_home>/goals/<sessionId>.md`，FE 按需拉取） |
+| `objective` | 必填全文；文件化仅是服务端存储细节，发布前必须还原，不能泄漏 `@file:` 标记或用 `objectiveFile` 替代 |
 | `status` | 5 态投影：`active` / `paused` / `blocked` / `complete` / `limited`（`usage_limited` 与 `budget_limited` 归并；原始成因在可选 `statusReason`） |
 | `createdAt` / `updatedAt` | Unix 毫秒 |
 | `tokenBudget` / `tokensUsed` / `timeUsedSeconds` | 预算与记账 |
@@ -57,6 +59,8 @@ goal 每次变更（控制动作 / `/goal` 命令 / turn 完成钩子）经 `ses
 ## 生命周期解耦
 
 goal `active` ≠ prompt 运行中。turn 完成钩子驱动 `continue_if_idle` 自主续跑，产生的 `session/update` 在已完成的 prompt 请求之外发布；deferral（§6.6：goal 快照替换 / session fork 保护窗）推迟续跑到下一 turn 边界。
+
+notification 是易失的。客户端重连后按 `initialize → session/load` 恢复；`session/load` 会重新发布 `session_info_update._meta.goal` 权威快照（无 goal 时为 `null`），客户端必须用它覆盖本地缓存。
 
 ## 设计原则
 

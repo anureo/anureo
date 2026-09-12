@@ -1,6 +1,6 @@
 # Goal 对齐 Codex 开发 TODO
 
-> 状态：待开工（随 [goal-codex-alignment.md](./goal-codex-alignment.md) 评审结论联动）
+> 状态：P0-P8 已实施；核心 ACP 续跑/记账/恢复 e2e 已落地（2026-09-11）
 > 创建：2026-09-06
 > 依据：alignment 方案 §5–§11 展开为可勾选任务清单；语义基线以其 §6 为准
 > 用法：按 Phase 顺序推进，**前一 Phase 的 DoD 未达成不开下一 Phase**；完成后勾选并在「进度记录」追加一行；实现中如需偏离语义基线，先回 alignment 文档评审，不在代码处私自变更
@@ -245,7 +245,7 @@
 - [x] **状态投影（6→5）**：`usage_limited` 与 `budget_limited` 归并为 `limited`；active/paused/blocked/complete 直译（映射表 = alignment 附录 C.2）
 - [x] **`/goal` 命令动作对齐**：set/pause/resume/clear 即 neutral 面（含快照发布）；`show`/`edit` 保留为 anureo 扩展不进 actions
 - [x] **旧 `_anureo.dev/goal/*` 六方法降级**：保留为**不广播的 legacy alias**（`capabilities()` 返回空对象），映射到同一 GoalService；face 另做 P7 全文还原（文件化 goal 的 get/list/start/pause/resume/cancel 返回全文而非标记）
-- [x] **生命周期解耦验收**：goal `active` ≠ prompt 运行中；`continue_if_idle` 自主循环产生的 session/update 在已完成的 prompt 之外发布。**部分完成**：架构由 P3 保证 + goal crate 单测覆盖 gates/deferral/budget flip；e2e 稳定面（能力协商/控制/快照/清除/pause-resume）落地 `e2e_goal_neutral.rs`；**全链路续跑 e2e（prompt 外 turn + budget_limited 投影）未能稳定断言**——调查结论见进度记录 2026-09-08，登记追加发现项
+- [x] **生命周期解耦验收**：goal `active` ≠ prompt 运行中；`continue_if_idle` 自主循环产生 session/update。架构由 P3 保证；真实 ACP e2e 已覆盖能力协商、控制、快照、清除、pause/resume，以及 `set → 立即启动 → 自主续跑 → 跨 turn 累计记账 → budget_limited`；进程重启后 `session/load` 权威快照恢复也已覆盖。TC-3/TC-4/TC-5 竞态矩阵仍为后续增强
 - [ ] **FE 验收**：cowork/OpenChamber 前端 goal strip 零改动直连 anureo（能力识别 → set/pause/resume/clear → 快照渲染）
 
 测试：
@@ -253,7 +253,7 @@
 - [x] 控制方法矩阵：四动作成功路径 + 未广播 action 拒绝 + set 空 objective 拒绝——单测 + e2e
 - [x] 快照投影：limited 归并、毫秒时间戳、可选字段缺省、clear → goal:null——单测 + e2e（active/paused/clear 面）
 - [x] legacy alias 不广播但可用——单测
-- [ ] e2e：prompt 完成后 goal 仍 active 的自主续跑在 prompt 外发 update——**改为后续项**（调查结论：并行负载下钩子触发时序 0.05s~21s 不定 + 测试超时拆除（TempDir 删 cwd）与续跑 turn 竞态出伪 blocked；续跑链路由 goal crate 单测覆盖）
+- [x] e2e：`set` 立即启动，goal 仍 active 时自主续跑并在控制请求之外发 update；同时断言跨 turn `tokensUsed` 累加、预算到限投影为 `limited` 且 `statusReason=budget_limited`（`neutral_goal_set_starts_and_accounts_across_turns`，2026-09-11）
 
 **验证**：`cargo nextest run -p anureo-acp`；clippy 零警告；cowork 前端手动验收。
 
@@ -317,12 +317,13 @@
 | 2026-09-06 | 独立盲审（sub-agent，A/B/C 三向） | 13 项：B1 telegram-bot 消费方、B2 goal_mode 链路、B3 goal/changed 通知、B4 goals.json 映射、B5 legacy 共享类型、B6/B7 文档与杂项、A1 max_goal_token_budget 不存在、A2 usage_limited 信号源、A3 set-on-existing 语义、C1 跨仓依赖、C2 fork 边界、C3 REPL 项重叠 | 已补入对应 Phase |
 | 2026-09-06 | P0 | `thread_goals` 表结构缺 `verify_command` 载体（现状为 GoalMeta 字段，alignment §7.1 未含） | P1 建表补列，已回写附录 B.7 |
 | 2026-09-07 | 用户修正参考源 + 网络检索 | 外部面权威基准 = codex-acp 中立 goal 扩展（`_meta.goal` 协商 + `_session/goal` 控制 + `session_info_update._meta.goal` 快照、5 态 limited 归并、毫秒）；P5b 交付的 `_anureo.dev/goal/*` wire 形状与新基准不符 | 登记为 Phase 8；旧面降级为不广播 alias；alignment 附录 C 已写入 |
-| 2026-09-08 | P8 e2e | 全链路续跑 e2e（prompt 外 turn + budget_limited 投影）在并行负载/测试拆除竞态下无法稳定断言（详见进度记录 2026-09-08） | 稳定面 e2e 已落地；全链路断言登记为后续项：**实施设计已定稿 [goal-continuation-e2e-design.md](./goal-continuation-e2e-design.md)**（前置修复 F1-F4 + 场景矩阵 TC-1~TC-5 + 验收标准），需可控时钟或独立负载环境 + TempDir 生命周期与 server 生命周期解耦（如 cwd 移出受管 TempDir） |
+| 2026-09-08 | P8 e2e | 全链路续跑 e2e 曾在并行负载/测试拆除竞态下不稳定；2026-09-11 已用持久 cwd、显式 shutdown 与小预算 mock LLM 落地核心链路 | TC-1/TC-2 核心断言已实现；[goal-continuation-e2e-design.md](./goal-continuation-e2e-design.md) 保留为 TC-3/TC-4/TC-5 竞态矩阵后续设计 |
 
 ## 进度记录
 
 | 日期 | Phase | 记录 |
 |---|---|---|
+| 2026-09-11 | P8 修复/验收 | 修复 ACP 跨 prompt token 基线少算、模型终态/配额错误漏记最后用量、预算状态原因缺失、pause/resume/edit 与续跑竞态、长 objective 工具显示、`tokenBudget` 静默降级、重连快照缺失；新增真实 ACP 自主续跑/跨 turn 记账/预算停止 e2e 与进程重启恢复断言，并补充推荐快速上手文档 |
 | 2026-09-06 | — | TODO 文档创建，待评审开工 |
 | 2026-09-06 | — | 完整性复查：双向追溯 + 代码触点盘点，补 8 处遗漏，新增触点处置表与追加发现项机制 |
 | 2026-09-06 | — | 独立盲审回填：13 项发现全部分诊补入；盲审结论=原清单完备度约 85%，修补后可开工 |

@@ -1,7 +1,9 @@
 # goal 续跑全链路 e2e 测试用例设计（P8 生命周期解耦验收）
 
-> 状态：设计稿 v1（2026-09-08）
-> 关联：[goal-codex-alignment.md](./goal-codex-alignment.md) §6.5/附录 C、[goal-codex-alignment-todo.md](./goal-codex-alignment-todo.md) Phase 8「生命周期解耦验收」（部分完成，本文为其后续项的实施设计）
+> 状态：核心链路已实现（2026-09-11）；TC-3/TC-4/TC-5 竞态矩阵待补
+> 关联：[goal-codex-alignment.md](./goal-codex-alignment.md) §6.5/附录 C、[goal-codex-alignment-todo.md](./goal-codex-alignment-todo.md) Phase 8「生命周期解耦验收」
+
+> 实施记录：`apps/acp/tests/e2e_goal_neutral.rs::neutral_goal_set_starts_and_accounts_across_turns` 已通过真实 stdio bridge、WebSocket server 与 mock LLM 覆盖 set 立即启动及 TC-1/TC-2 核心语义；`apps/acp/tests/e2e_goal_recovery.rs::goal_persists_across_acp_process_restart` 覆盖进程重启后的 `session/load` 快照恢复。本文其余内容保留为后续竞态场景矩阵。
 > 现有覆盖：`apps/acp/tests/e2e_goal_neutral.rs`（稳定面：能力协商/控制/快照/清除）、`apps/acp/tests/e2e_goal_recovery.rs`（legacy 持久性）
 
 ---
@@ -54,7 +56,7 @@
 ### TC-2 预算耗尽 → limited 投影 + 自然停止
 
 - **前置**：usage 每 turn 2 token；`tokenBudget: 3`。
-- **步骤**：set → prompt（turn 1，2/3）→ 事件轮询等待 `limited`。
+- **步骤**：set（立即启动 turn 1，2/3）→ 事件轮询等待 `limited`。
 - **断言**：
   - B1 快照 `status == "limited"` 且 `tokensUsed ≥ 4`（6→5 投影在真实 wire 上成立）；
   - B2 `statusReason` 保留原始成因（`budget_limited`）；

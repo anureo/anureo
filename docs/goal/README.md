@@ -6,8 +6,10 @@
 
 | 文档 | 状态 | 一句话定位 |
 |---|---|---|
+| [../guides/goal-acp-quickstart.md](../guides/goal-acp-quickstart.md) | **推荐入口** | 当前 ACP goal 的最小可用流程：initialize → session/new → set 立即启动 → 自主续跑与控制 |
+| [codex-acp-compatibility-audit.md](./codex-acp-compatibility-audit.md) | **已审计**（上游 main `effb0fe6`，2026-09-11） | Goal Extension v1 的 capability、控制方法、快照、生命周期、legacy alias 与恢复逐项兼容结论 |
 | [goal-codex-alignment.md](./goal-codex-alignment.md) | **已实施**（P0-P8 落地；中立 goal 面 = `agentCapabilities._meta.goal` 协商 + `_session/goal` 控制 + 快照发布，规范见附录 C 与 spec 14） | 全量对齐 Codex 架构：session-integrated + `thread_goals` 单一事实源 + 3 个模型工具；取代 goal-system-workflow.md |
-| [goal-codex-alignment-todo.md](./goal-codex-alignment-todo.md) | P0-P8 已收尾；遗留：旧 runner 移除（独立版本）、全链路续跑 e2e（后续项）、FE 跨仓手动验收 | 上文的开发执行清单：Phase 0-8 可勾选任务 + 每 Phase DoD + 风险检查点（R1-R5），随开发滚动更新 |
+| [goal-codex-alignment-todo.md](./goal-codex-alignment-todo.md) | P0-P8 已收尾；核心 ACP 续跑/记账/恢复 e2e 已落地；遗留：旧 runner 移除（独立版本）、竞态场景矩阵、FE 跨仓手动验收 | 上文的开发执行清单：Phase 0-8 可勾选任务 + 每 Phase DoD + 风险检查点（R1-R5），随开发滚动更新 |
 | [goal-improvement-plan.md](./goal-improvement-plan.md) | **已搁置**（被 alignment 路线取代，2026-09-07） | 差距修补路线：保持 server-owned 架构，只借记账/审计/steering 机制（P0-P4，明确不采用 per-thread goal 与 idle 续跑） |
 | [goal-system-workflow.md](./goal-system-workflow.md) | 已被取代 | 多 Agent + Lua 双头编排（历史参考，勿据此实现） |
 | [session-goal-integration.md](./session-goal-integration.md) | 历史草案 | JS runtime 移植路线；Phase 1-2 基础设施被后续方案复用 |

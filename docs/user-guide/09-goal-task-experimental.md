@@ -1,5 +1,7 @@
 # Goal loop 与 task mode（实验性）
 
+> **当前推荐入口**：新接入请先阅读 [Goal ACP 快速上手](../guides/goal-acp-quickstart.md)。下面的 `anureo goal ...` 主要记录 legacy detached runner，不是当前 ACP goal 的首选用法。
+
 > **实验性功能。** `anureo goal` 的 autonomous goal loop，以及 `anureo task` / `task-cli` 的 AI Company task mode 都属于实验性能力。它们不是生产级 scheduler，也不提供无人值守执行、可靠恢复或“状态为完成即代码正确”的保证。请只在 disposable branch 或 disposable worktree 中评估。
 >
 > **2026-09-07 更新（goal-codex-alignment P0-P6 已实施）**：goal 主路径已重构为 session-integrated 架构——
@@ -14,7 +16,7 @@
 > `session_info_update._meta.goal` 快照推送（5 态，`usage_limited`/`budget_limited` 归并
 > 为 `limited`，清除发 `goal: null`）；旧 `_anureo.dev/goal/*` 六方法仍可用但不再广播。
 > 超长 objective（>4000 字符）自动文件化到 `<anureo_home>/goals/<sessionId>.md`，快照
-> 中以 `objectiveFile: true` 代替全文。协议细节见 `docs/acp-spec/extensions/14-goal-scheduled-task.md`。
+> 中始终发布完整 `objective`；文件化只是服务端存储细节。协议细节见 `docs/acp-spec/extensions/14-goal-scheduled-task.md`。
 
 本文面向希望试用 anureo autonomous goal loop 或 AI Company task mode 的用户。普通 Agent session、`--session-id` 恢复和稳定 workflow 的用法不在本文重复；goal/task 与它们的边界见最后一节。
 
