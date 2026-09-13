@@ -143,6 +143,8 @@ mod tests {
             status_reason: None,
             created_at_ms: 0,
             updated_at_ms: 0,
+            objective_revision: 0,
+            iteration_count: 0,
             objective_file: false,
         }
     }

@@ -64,6 +64,42 @@ impl goal::TurnDriver for AcpTurnDriver {
         });
         Ok(true)
     }
+
+    /// C1（G9）：goal 驱动 turn 的元数据日志（codex `turn_trigger:"goal"`
+    /// 等价物）。FE 实时区分依赖 `_meta.goal` 快照的 `iterationCount`（每次
+    /// goal turn +1）；`goal/continuation` 实时通知需 ConnectionRegistry
+    /// 注入 driver，随 FE 集成一并落地（见 gap-remediation §5 C1）。
+    async fn start_goal_turn(
+        &self,
+        thread_id: &str,
+        message: &str,
+        meta: goal::GoalTurnMeta,
+    ) -> Result<bool, String> {
+        tracing::info!(
+            thread_id = %thread_id,
+            goal_id = %meta.goal_id,
+            iteration = meta.iteration,
+            reason = ?meta.reason,
+            "goal-driven turn starting"
+        );
+        self.start_turn_if_idle(thread_id, message).await
+    }
+}
+
+/// A2（gap-remediation G5）：`/goal` 命令 turn 在 `prompt()` 内提前 return，
+/// 不会经过 prompt 尾部的 `continue_if_idle` 钩子，因此 fresh set / resume
+/// 需在此处自行 kick（对齐 `_session/goal` set/resume 与 codex
+/// `apply_external_goal_set` → `continue_if_idle`）。
+///
+/// 幂等由 `AcpTurnDriver::start_turn_if_idle` 的 busy gate + `prompt()` 的
+/// `begin_prompt` 互斥双重保证；detach spawn 避免阻塞回执发送。
+fn kick_idle_continuation(runtime: &std::sync::Arc<goal::GoalRuntimeHandle>) {
+    let runtime = runtime.clone();
+    tokio::spawn(async move {
+        if let Err(e) = runtime.continue_if_idle().await {
+            tracing::warn!(error = %e, "/goal command: idle continuation failed");
+        }
+    });
 }
 
 /// Execute a parsed `/goal` subcommand against the thread's goal runtime and
@@ -92,6 +128,9 @@ pub(crate) async fn run_goal_subcommand(
                         if let Err(e) = runtime.defer_continuation().await {
                             tracing::warn!(error = %e, "/goal set: defer after replace failed");
                         }
+                    } else {
+                        // A2：fresh set → 立即尝试 idle 续跑（三入口一致）。
+                        kick_idle_continuation(runtime);
                     }
                     // 文件化 goal 还原全文用于回执展示。
                     let goal = service.resolve_objective(outcome.goal).await;
@@ -112,14 +151,20 @@ pub(crate) async fn run_goal_subcommand(
         GoalSubcommand::Pause => match service.pause(thread_id).await {
             Ok(goal) => {
                 // Flush the wall clock and mirror the status in memory.
-                let _ = runtime.on_goal_status_changed(goal::GoalStatus::Paused).await;
+                let _ = runtime
+                    .on_goal_status_changed(goal::GoalStatus::Paused)
+                    .await;
                 format!("Goal paused ({} tokens used).", goal.tokens_used)
             }
             Err(e) => format!("Goal pause failed: {e}"),
         },
         GoalSubcommand::Resume => match service.resume(thread_id).await {
             Ok(_goal) => {
-                let _ = runtime.on_goal_status_changed(goal::GoalStatus::Active).await;
+                let _ = runtime
+                    .on_goal_status_changed(goal::GoalStatus::Active)
+                    .await;
+                // A2：resume 后立即尝试 idle 续跑（对齐 `_session/goal` resume）。
+                kick_idle_continuation(runtime);
                 "Goal resumed.".to_string()
             }
             Err(e) => format!("Goal resume failed: {e}"),
@@ -136,6 +181,18 @@ pub(crate) async fn run_goal_subcommand(
             Ok(false) => "No goal set.".to_string(),
             Err(e) => format!("Goal clear failed: {e}"),
         },
+        GoalSubcommand::Budget { tokens } => match service.update_budget(thread_id, tokens).await {
+            Ok(goal) => {
+                // B2：提额保留 goal_id/tokens_used；budget_limited 需再 resume
+                // 才恢复续跑（回执给出引导；resume 路径自带 kick）。
+                if goal.status == goal::GoalStatus::BudgetLimited {
+                    "Budget updated (tokens_used kept). Goal is budget_limited — run /goal resume to continue.".to_string()
+                } else {
+                    format!("Budget updated to {tokens} tokens (tokens_used kept).")
+                }
+            }
+            Err(e) => format!("Goal budget update failed: {e}"),
+        },
         GoalSubcommand::Edit { description } => match service.edit(thread_id, &description).await {
             Ok(goal) => {
                 // Objective changes are picked up by the runtime's
@@ -146,5 +203,123 @@ pub(crate) async fn run_goal_subcommand(
             }
             Err(e) => format!("Goal edit failed: {e}"),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_goal_subcommand;
+    use agent::commands::GoalSubcommand;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    struct RecordingDriver {
+        started: Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl goal::TurnDriver for RecordingDriver {
+        async fn start_turn_if_idle(&self, thread_id: &str, message: &str) -> Result<bool, String> {
+            self.started
+                .lock()
+                .await
+                .push(format!("{thread_id}|{message}"));
+            Ok(true)
+        }
+    }
+
+    async fn setup() -> (Arc<goal::GoalRuntimeHandle>, Arc<RecordingDriver>) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = task_core::TaskDb::open(&dir.path().join("tasks.db"))
+            .await
+            .expect("open TaskDb");
+        let store = goal::GoalStore::from_task_db(&db);
+        let driver = Arc::new(RecordingDriver {
+            started: Mutex::new(Vec::new()),
+        });
+        let runtime = goal::GoalRuntimeHandle::new(store, "t-embed", driver.clone());
+        std::mem::forget(dir); // 测试进程生命周期内保持
+        (runtime, driver)
+    }
+
+    async fn wait_for_starts(driver: &RecordingDriver, expected: usize) {
+        for _ in 0..200 {
+            if driver.started.lock().await.len() >= expected {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("continuation kick never reached {expected} starts");
+    }
+
+    /// A2（G5）：`/goal set`（fresh）走 prompt 提前 return 路径，必须在此处
+    /// 自行 kick idle 续跑——三入口行为一致。
+    #[tokio::test]
+    async fn fresh_set_kicks_idle_continuation() {
+        let (runtime, driver) = setup().await;
+        let receipt = run_goal_subcommand(
+            &runtime,
+            "t-embed",
+            GoalSubcommand::Set {
+                description: "do the thing".into(),
+            },
+        )
+        .await;
+        assert!(receipt.contains("Goal armed"), "{receipt}");
+        wait_for_starts(&driver, 1).await;
+        assert!(driver.started.lock().await[0].contains("Continue working"));
+    }
+
+    /// A2：替换（replaced_existing）保持 §6.6 deferral——不得立即续跑。
+    #[tokio::test]
+    async fn replaced_set_defers_continuation() {
+        let (runtime, driver) = setup().await;
+        let _ = run_goal_subcommand(
+            &runtime,
+            "t-embed",
+            GoalSubcommand::Set {
+                description: "first".into(),
+            },
+        )
+        .await;
+        wait_for_starts(&driver, 1).await;
+
+        let receipt = run_goal_subcommand(
+            &runtime,
+            "t-embed",
+            GoalSubcommand::Set {
+                description: "second".into(),
+            },
+        )
+        .await;
+        assert!(receipt.contains("Goal armed"), "{receipt}");
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+        let started = driver.started.lock().await;
+        assert_eq!(started.len(), 1, "替换 set 不得立即续跑（deferral 生效）");
+    }
+
+    /// A2：`/goal resume` 后 kick 续跑（对齐 `_session/goal` resume）；
+    /// pause 期间不 kick。
+    #[tokio::test]
+    async fn resume_kicks_idle_continuation_but_pause_does_not() {
+        let (runtime, driver) = setup().await;
+        let _ = run_goal_subcommand(
+            &runtime,
+            "t-embed",
+            GoalSubcommand::Set {
+                description: "g".into(),
+            },
+        )
+        .await;
+        wait_for_starts(&driver, 1).await;
+
+        let receipt = run_goal_subcommand(&runtime, "t-embed", GoalSubcommand::Pause).await;
+        assert!(receipt.contains("paused"), "{receipt}");
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+        assert_eq!(driver.started.lock().await.len(), 1, "paused 不得续跑");
+
+        let receipt = run_goal_subcommand(&runtime, "t-embed", GoalSubcommand::Resume).await;
+        assert!(receipt.contains("resumed"), "{receipt}");
+        wait_for_starts(&driver, 2).await;
     }
 }

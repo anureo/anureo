@@ -260,7 +260,9 @@ pub const NEUTRAL_GOAL_CONTROL_METHOD: &str = "_session/goal";
 pub const LEGACY_CODEX_GOAL_CONTROL_METHOD: &str = "_codex/session/goal_control";
 
 /// `_meta.goal.actions` 广播子集（本实现四项全支持）。
-pub const NEUTRAL_GOAL_ACTIONS: [&str; 4] = ["set", "pause", "resume", "clear"];
+/// B2：`edit`/`editBudget` 加入控制面（能力广播同步更新；附录 C.1）。
+pub const NEUTRAL_GOAL_ACTIONS: [&str; 6] =
+    ["set", "pause", "resume", "clear", "edit", "editBudget"];
 
 /// initialize 响应 `_meta.goal` 能力块（静态广告，不依赖 session）。
 pub fn neutral_goal_capability() -> Value {
@@ -293,6 +295,9 @@ fn neutral_goal_snapshot(goal: &goal::Goal) -> Value {
     let mut snapshot = json!({
         "objective": goal.objective,
         "status": neutral_status(goal.status),
+        // C1/C2：goal turn 迭代计数（>=1 即 goal 驱动 turn）与目标修订号。
+        "iterationCount": goal.iteration_count,
+        "objectiveRevision": goal.objective_revision,
         "createdAt": goal.created_at_ms,
         "updatedAt": goal.updated_at_ms,
         "tokenBudget": goal.token_budget,
@@ -520,9 +525,9 @@ impl GoalHandler {
                 // codex-acp 的 set 会立即尝试启动 goal turn；控制请求只等待
                 // 幂等 busy gate 完成，不等待整个 LLM turn。
                 if let Some(rt) = &session.runtime {
-                    rt.continue_if_idle().await.map_err(|e| {
-                        internal_error(format!("set continuation failed: {e}"))
-                    })?;
+                    rt.continue_if_idle()
+                        .await
+                        .map_err(|e| internal_error(format!("set continuation failed: {e}")))?;
                 }
                 Ok(json!({ "goal": neutral_goal_snapshot(&resolved) }))
             }
@@ -551,6 +556,46 @@ impl GoalHandler {
                 self.publish_via_connections(Some(&resumed));
                 self.publish_neutral(&session_id, Some(&resumed));
                 Ok(json!({ "goal": neutral_goal_snapshot(&resumed) }))
+            }
+            "editBudget" => {
+                // B2（G3/G14）：预算原地调整，保 goal_id 与 tokens_used；
+                // budget_limited 下提额后 resume 即可继续（resumeHint）。
+                let token_budget = params
+                    .get("tokenBudget")
+                    .and_then(|v| v.as_i64())
+                    .ok_or_else(|| {
+                        ExtensionError::invalid_params("tokenBudget must be an integer")
+                    })?;
+                let updated = session
+                    .service
+                    .update_budget(&thread_id, token_budget)
+                    .await
+                    .map_err(|e| Self::map_service_error("editBudget", e))?;
+                self.bump_generation();
+                self.publish_via_connections(Some(&updated));
+                self.publish_neutral(&session_id, Some(&updated));
+                Ok(json!({
+                    "goal": neutral_goal_snapshot(&updated),
+                    "resumeHint": updated.status == goal::GoalStatus::BudgetLimited,
+                }))
+            }
+            "edit" => {
+                // C2（G8）：objective 原地编辑（revision 落地后，mid-turn
+                // 编辑会在下一 goal turn 边界以 objective_updated steering
+                // 显式提示模型；当前仅更新目标文本）。
+                let objective = params
+                    .get("objective")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ExtensionError::invalid_params("objective must be a string"))?;
+                let updated = session
+                    .service
+                    .edit(&thread_id, objective)
+                    .await
+                    .map_err(|e| Self::map_service_error("edit", e))?;
+                self.bump_generation();
+                self.publish_via_connections(Some(&updated));
+                self.publish_neutral(&session_id, Some(&updated));
+                Ok(json!({ "goal": neutral_goal_snapshot(&updated) }))
             }
             "clear" => {
                 let cleared = session
@@ -1552,7 +1597,11 @@ mod tests {
         let caps = neutral_goal_capability();
         assert_eq!(caps["version"], 1);
         assert_eq!(caps["controlMethod"], "_session/goal");
-        assert_eq!(caps["actions"], json!(["set", "pause", "resume", "clear"]));
+        // B2/C2：控制面扩展（edit/editBudget）。
+        assert_eq!(
+            caps["actions"],
+            json!(["set", "pause", "resume", "clear", "edit", "editBudget"])
+        );
     }
 
     #[tokio::test]
@@ -1877,6 +1926,8 @@ mod tests {
             goal_id: "secret-id".into(),
             objective: "fix login".into(),
             status: goal::GoalStatus::UsageLimited,
+            objective_revision: 0,
+            iteration_count: 0,
             token_budget: Some(4000),
             tokens_used: 4200,
             time_used_seconds: 33,
@@ -1978,6 +2029,8 @@ mod tests {
             goal_id: "g1".into(),
             objective: "Fix the login bug\nmore context".into(),
             status: goal::GoalStatus::Active,
+            objective_revision: 0,
+            iteration_count: 0,
             token_budget: Some(1000),
             tokens_used: 100,
             time_used_seconds: 42,

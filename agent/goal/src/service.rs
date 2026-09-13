@@ -208,8 +208,8 @@ impl GoalService {
         Ok(paused)
     }
 
-    /// 用户 resume：仅 paused / blocked / usage_limited 可恢复（§6.1；
-    /// 终态不可恢复）。
+    /// 用户 resume：paused / blocked / usage_limited / budget_limited 可恢复
+    /// （§6.1 + B2；complete 不可恢复）。
     pub async fn resume(&self, thread_id: &str) -> Result<Goal, GoalServiceError> {
         let _guard = self.guard().await?;
         let goal = self.current(thread_id).await?;
@@ -252,6 +252,23 @@ impl GoalService {
             .await?;
         metrics::global().record_edit(thread_id);
         Ok(edited)
+    }
+
+    /// B2：预算调整（「提额继续」）；budget_limited 下提额后 resume 是核心
+    /// 流程。保留 goal_id / tokens_used；非 complete 均可调。
+    pub async fn update_budget(
+        &self,
+        thread_id: &str,
+        token_budget: i64,
+    ) -> Result<Goal, GoalServiceError> {
+        let _guard = self.guard().await?;
+        let goal = self.current(thread_id).await?;
+        let updated = self
+            .store
+            .update_budget(thread_id, &goal.goal_id, token_budget)
+            .await?;
+        metrics::global().record_edit(thread_id);
+        Ok(updated)
     }
 
     async fn current(&self, thread_id: &str) -> Result<Goal, GoalServiceError> {

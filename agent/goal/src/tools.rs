@@ -318,10 +318,17 @@ include a `completion_budget_report` (what was delivered, what was intentionally
 left out, remaining risks).\n\
 - If a verify command is configured, it will run before completion is accepted; \
 on failure you must continue working.\n\
-- Use `blocked` when progress is impossible and needs user intervention. If you \
-have found yourself blocked on this goal for roughly three consecutive attempts \
-(each time reporting blocked and re-attempting without new information), stop \
-attempting and clearly surface the blocker to the user instead of repeating.";
+- Use `blocked` only when the same blocking condition has recurred for at least \
+three consecutive goal turns (counting the original/user-triggered turn and any \
+automatic continuations), the agent is at an impasse, and no alternative approach \
+exists.\n\
+- Once the blocked threshold is satisfied, do not keep reporting that you are \
+still blocked while leaving the goal active; set `status` to `blocked`.\n\
+- After a previously blocked goal is resumed, the resumed run starts a fresh \
+blocked audit: do not immediately re-report blocked based on turns before the \
+resume.\n\
+- Do not use `blocked` merely because the work is hard, slow, uncertain, \
+incomplete, or would benefit from user clarification.";
 
 #[async_trait]
 impl Tool for UpdateGoalTool {
@@ -727,6 +734,21 @@ mod tests {
             .await
             .expect_err("must reject");
         assert!(matches!(err, ToolSourceError::InvalidInput(_)));
+    }
+
+    /// A4（gap-remediation）：blocked 护栏四段必须与 codex `spec.rs` 语义对齐。
+    /// 服务端不做计数，prompt 是唯一防线，因此文本回退必须被测试拦截。
+    #[test]
+    fn update_goal_description_carries_all_blocked_guardrails() {
+        let desc = UPDATE_DESCRIPTION;
+        for phrase in [
+            "three consecutive goal turns (counting the original/user-triggered turn and any automatic continuations)",
+            "Once the blocked threshold is satisfied, do not keep reporting that you are still blocked while leaving the goal active",
+            "fresh blocked audit: do not immediately re-report blocked based on turns before the resume",
+            "Do not use `blocked` merely because the work is hard, slow, uncertain, incomplete, or would benefit from user clarification",
+        ] {
+            assert!(desc.contains(phrase), "缺失护栏片段: {phrase}");
+        }
     }
 
     /// ShellVerifyRunner 真实执行冒烟（Windows：cmd /S /C）。

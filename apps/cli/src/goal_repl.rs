@@ -1,4 +1,4 @@
-//! REPL `/goal` six-subcommand support (goal-codex-alignment P5).
+//! REPL `/goal` subcommand support (goal-codex-alignment P5).
 //!
 //! The REPL is a single long-lived agent thread, so its goal lifecycle binds
 //! to the run's `--thread` id (falling back to the fixed id `"repl"` when
@@ -48,6 +48,16 @@ pub(crate) async fn run_goal_subcommand(subcommand: GoalSubcommand, thread_id: &
             Ok(_) => "Goal resumed.".to_string(),
             Err(e) => format!("Goal resume failed: {e}"),
         },
+        GoalSubcommand::Budget { tokens } => {
+            match service.update_budget(thread_id, tokens).await {
+                Ok(goal) if goal.status == goal::GoalStatus::BudgetLimited => {
+                    "Budget updated (tokens used kept). Goal is budget_limited — run /goal resume to continue."
+                        .to_string()
+                }
+                Ok(_) => format!("Budget updated to {tokens} tokens (tokens used kept)."),
+                Err(e) => format!("Goal budget update failed: {e}"),
+            }
+        }
         GoalSubcommand::Clear => match service.clear(thread_id).await {
             Ok(true) => "Goal cleared.".to_string(),
             Ok(false) => "No goal set.".to_string(),

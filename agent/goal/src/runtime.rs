@@ -23,13 +23,45 @@ use crate::metrics;
 use crate::service::{GoalService, GoalServiceError, GoalStateLock};
 use crate::steering;
 use crate::store::{GoalStore, GoalStoreError};
-use crate::types::{AccountingMode, GoalStatus};
+use crate::types::{AccountingMode, Goal, GoalStatus};
 
 /// 宿主提供的 turn 驱动。`start_turn_if_idle` 是**幂等二道门**（§6.6）：
 /// 仅当宿主确认该 session 当前无运行中 turn 时才真正启动；返回是否启动。
 #[async_trait]
 pub trait TurnDriver: Send + Sync {
     async fn start_turn_if_idle(&self, thread_id: &str, message: &str) -> Result<bool, String>;
+
+    /// C1（G9）：带元数据的 goal turn 启动（codex `turn_trigger:"goal"`
+    /// 等价物）。默认退化为 `start_turn_if_idle`——测试 mock 与未升级宿主
+    /// 无需感知元数据；宿主 override 时应向客户端发出
+    /// `_anureo.dev/goal/continuation` 通知后再启动。
+    async fn start_goal_turn(
+        &self,
+        thread_id: &str,
+        message: &str,
+        meta: GoalTurnMeta,
+    ) -> Result<bool, String> {
+        let _ = meta;
+        self.start_turn_if_idle(thread_id, message).await
+    }
+}
+
+/// C1：goal 驱动 turn 的元数据。
+#[derive(Debug, Clone)]
+pub struct GoalTurnMeta {
+    pub goal_id: String,
+    pub iteration: i64,
+    pub reason: GoalTurnReason,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GoalTurnReason {
+    /// 常规 idle 续跑。
+    ActiveGoal,
+    /// 预算触顶后的收尾 turn（R1 二道门）。
+    BudgetLimit,
+    /// 目标被用户 mid-turn 修改（objective_updated steering，C2）。
+    ObjectiveUpdated,
 }
 
 pub struct GoalRuntimeHandle {
@@ -39,6 +71,32 @@ pub struct GoalRuntimeHandle {
     accounting: Arc<GoalAccounting>,
     state_lock: GoalStateLock,
     driver: Arc<dyn TurnDriver>,
+    /// B1：turn→goal 绑定（codex `current_active_goal_id_for_turn` 等价物）。
+    /// `on_turn_start_for` 写入；turn 结束（finish/abort/error）消费/清除。
+    /// 替换/暂停/清除后 CAS 失败即丢弃——错误 turn 不得误伤新 goal。
+    turn_binding: tokio::sync::Mutex<Option<TurnBinding>>,
+    /// B1：系统置位（blocked/usage_limited/budget 翻转）后的即时快照通知
+    /// （codex `thread_goal_updated` 等价物）。回调内不得触碰 store（防重入），
+    /// 广播由宿主自行 spawn；未装配时退化为 turn 尾部快照（旧行为）。
+    status_notifier: std::sync::Mutex<Option<StatusNotifier>>,
+    /// B3：per-tool 结果记账（exec 三连败 → ExecutionUnavailable blocked）。
+    tool_accounting: crate::tool_accounting::ToolAccounting,
+    /// C2：本 runtime 已消费的 objective_revision（plan turn 起点同步）。
+    /// 用户 mid-turn edit → DB revision 前进 → 下一续跑边界渲染
+    /// objective_updated steering。
+    last_seen_revision: std::sync::atomic::AtomicI64,
+}
+
+/// 系统置位后的即时通知回调（B1）。
+pub type StatusNotifier = Arc<dyn Fn(Goal) + Send + Sync>;
+
+#[derive(Debug, Clone)]
+struct TurnBinding {
+    #[allow(dead_code)] // 标识性字段：用于日志与未来跨 turn 匹配
+    turn_token: String,
+    goal_id: String,
+    /// plan mode 等豁免场景为 false：不记账、不 block、不计失败连击（C3）。
+    account: bool,
 }
 
 impl GoalRuntimeHandle {
@@ -58,7 +116,30 @@ impl GoalRuntimeHandle {
             accounting,
             state_lock,
             driver,
+            turn_binding: tokio::sync::Mutex::new(None),
+            status_notifier: std::sync::Mutex::new(None),
+            tool_accounting: crate::tool_accounting::ToolAccounting::new(),
+            last_seen_revision: std::sync::atomic::AtomicI64::new(0),
         })
+    }
+
+    /// B1：装配系统置位即时通知（host 在创建 handle 后调用一次）。
+    pub fn set_status_notifier(&self, notifier: StatusNotifier) {
+        *self
+            .status_notifier
+            .lock()
+            .expect("status notifier mutex poisoned") = Some(notifier);
+    }
+
+    async fn notify_status_change(&self, goal: Goal) {
+        let cb = self
+            .status_notifier
+            .lock()
+            .expect("status notifier mutex poisoned")
+            .clone();
+        if let Some(cb) = cb {
+            cb(goal);
+        }
     }
 
     pub fn thread_id(&self) -> &str {
@@ -77,13 +158,44 @@ impl GoalRuntimeHandle {
         &self.state_lock
     }
 
-    /// on_turn_start：清 deferral（§6.6）+ 墙钟起表（仅 active）。
+    /// on_turn_start：清 deferral（§6.6）+ 墙钟起表（仅 active）+ B3 本 turn
+    /// 工具统计重置。
     pub async fn on_turn_start(&self) -> Result<(), GoalStoreError> {
         self.store
             .clear_continuation_deferral(&self.thread_id)
             .await?;
         self.accounting.start_wall_clock_if_active().await?;
+        self.tool_accounting.begin_turn();
         Ok(())
+    }
+
+    /// on_turn_start 的 B1 扩展：绑定本 turn 正在追逐的 active goal。
+    /// `turn_token` 仅为标识/日志用途（每 prompt 唯一即可）。
+    pub async fn on_turn_start_for(&self, turn_token: &str) -> Result<(), GoalStoreError> {
+        self.on_turn_start().await?;
+        if let Ok(Some(goal)) = self.store.read(&self.thread_id).await {
+            if goal.status == GoalStatus::Active {
+                self.last_seen_revision
+                    .store(goal.objective_revision, std::sync::atomic::Ordering::SeqCst);
+                *self.turn_binding.lock().await = Some(TurnBinding {
+                    turn_token: turn_token.to_string(),
+                    goal_id: goal.goal_id,
+                    account: true,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// 流事件热路径（B3）：host 在 `on_event` 闭包中转发 `ToolEnd` 结果。
+    /// 同步、零 IO，不得阻塞。
+    pub fn record_tool_outcome(&self, tool: &str, failed: bool) {
+        self.tool_accounting.record_tool_outcome(tool, failed);
+    }
+
+    /// 读取并清除本 turn 绑定（turn 结束路径共用）。
+    async fn take_turn_binding(&self) -> Option<TurnBinding> {
+        self.turn_binding.lock().await.take()
     }
 
     /// on_turn_finish（正常结束）：补账 + 预算越界时经二道门注入一次收尾 turn。
@@ -92,37 +204,112 @@ impl GoalRuntimeHandle {
         &self,
         totals: Option<TokenTotals>,
     ) -> Result<Option<String>, GoalStoreError> {
+        let bound = self.take_turn_binding().await;
+        if matches!(bound.as_ref().map(|b| b.account), Some(false)) {
+            // C3：豁免 turn——零记账、零置位、不迭代。
+            return Ok(None);
+        }
         let outcome = self.accounting.finish_turn(totals).await?;
+        // B3：exec 三连败判定（在 budget 注入之前——blocked 后续跑自然拦截；
+        // 若 finish 补账先把 goal 翻成 budget_limited，则 mark_blocked 的
+        // active CAS 失败，预算优先，与覆盖规则一致）。
+        if let Some(binding) = bound.filter(|b| b.account) {
+            if let Some(goal_id) = self
+                .tool_accounting
+                .execution_failure_goal(Some(&binding.goal_id))
+            {
+                let permit = self.state_lock.acquire().await;
+                let blocked = self
+                    .store
+                    .mark_blocked(
+                        &self.thread_id,
+                        &goal_id,
+                        "execution unavailable after 3 consecutive failed execution turns",
+                    )
+                    .await;
+                drop(permit);
+                if let Ok(goal) = blocked {
+                    metrics::global().record_blocked(&self.thread_id);
+                    self.notify_status_change(goal).await;
+                    return Ok(None);
+                }
+            }
+        } else {
+            // 无绑定/豁免 turn：不归属、不累计
+            let _ = self.tool_accounting.execution_failure_goal(None);
+        }
         self.inject_budget_steering_if_flipped(outcome).await
     }
 
-    /// on_turn_abort（用户取消）：补账，不改状态。
-    pub async fn on_turn_abort(
-        &self,
-        totals: Option<TokenTotals>,
-    ) -> Result<Option<String>, GoalStoreError> {
-        let outcome = self.accounting.stop_abnormal(totals).await?;
-        self.inject_budget_steering_if_flipped(outcome).await
+    /// on_turn_abort（用户取消）：补账，不改状态，**不注入任何新 turn**。
+    ///
+    /// A3（gap-remediation G6）：对齐 codex `on_turn_abort`（ext/goal
+    /// extension.rs）——abort 只做 `ActiveOrStopped` 补账（含 budget 越界
+    /// 翻转落库），绝不经二道门起收尾 turn：用户已显式停止，预算状态由
+    /// turn 尾部的中立快照发布，下一次自然交互时继续生效。
+    pub async fn on_turn_abort(&self, totals: Option<TokenTotals>) -> Result<(), GoalStoreError> {
+        let bound = self.take_turn_binding().await;
+        if matches!(bound.as_ref().map(|b| b.account), Some(false)) {
+            return Ok(()); // C3：豁免 turn 不补账
+        }
+        self.accounting.stop_abnormal(totals).await.map(|_| ())?;
+        Ok(())
     }
 
-    /// on_turn_error：补账 + active → `blocked`（§6.1；无 goal / 非 active 时
-    /// blocked 置位 no-op）。若补账先翻转了 budget_limited，则 blocked 不再
-    /// 覆盖（store 层 `WHERE status='active'` 保证）。
+    /// on_turn_error：补账 + active → `blocked`（§6.1）。
+    ///
+    /// B1（gap-remediation G2）：持 `goal_state_lock` 贯穿补账与置位（锁序
+    /// state_lock → progress_accounting_lock，全 runtime 单向）；只 block
+    /// **本 turn 绑定**的 goal（`on_turn_start_for` 写入；无绑定时退化为读
+    /// 当前 goal，兼容 turn 中途 create_goal 场景——codex
+    /// `mark_current_turn_goal_active` 同语义）。绑定存在但 CAS 失败（goal
+    /// 被替换/暂停/清除）时**不得回退**——这正是防误伤新 goal 的保护。
     pub async fn on_turn_error(
         &self,
         reason: &str,
         totals: Option<TokenTotals>,
     ) -> Result<Option<String>, GoalStoreError> {
+        let bound = self.take_turn_binding().await;
+        if matches!(bound.as_ref().map(|b| b.account), Some(false)) {
+            // C3：豁免 turn 报错不落任何状态（plan 轮与 goal 无关）。
+            return Ok(None);
+        }
+        let permit = self.state_lock.acquire().await;
         let outcome = self.accounting.stop_abnormal(totals).await?;
-        if let Ok(Some(goal)) = self.store.read(&self.thread_id).await {
-            if self
-                .store
-                .mark_blocked(&self.thread_id, &goal.goal_id, reason)
-                .await
-                .is_ok()
-            {
-                metrics::global().record_blocked(&self.thread_id);
+        let mut blocked_goal: Option<Goal> = None;
+        match bound {
+            Some(binding) if binding.account => {
+                if let Ok(goal) = self
+                    .store
+                    .mark_blocked(&self.thread_id, &binding.goal_id, reason)
+                    .await
+                {
+                    metrics::global().record_blocked(&self.thread_id);
+                    blocked_goal = Some(goal);
+                }
             }
+            // account=false（plan 等豁免 turn）：报错也不 block（C3 语义）。
+            Some(_) => {}
+            _ => {
+                // 无绑定：仅当当前 goal 仍为 active 时才置位（CAS 双保险），
+                // 兼容 turn 中途 create_goal 场景。
+                if let Ok(Some(goal)) = self.store.read(&self.thread_id).await {
+                    if goal.status == GoalStatus::Active {
+                        if let Ok(updated) = self
+                            .store
+                            .mark_blocked(&self.thread_id, &goal.goal_id, reason)
+                            .await
+                        {
+                            metrics::global().record_blocked(&self.thread_id);
+                            blocked_goal = Some(updated);
+                        }
+                    }
+                }
+            }
+        }
+        drop(permit);
+        if let Some(goal) = blocked_goal {
+            self.notify_status_change(goal).await;
         }
         self.inject_budget_steering_if_flipped(outcome).await
     }
@@ -141,16 +328,22 @@ impl GoalRuntimeHandle {
         reason: &str,
         totals: Option<TokenTotals>,
     ) -> Result<(), GoalStoreError> {
+        let permit = self.state_lock.acquire().await;
         let _ = self.accounting.stop_abnormal(totals).await?;
+        let mut limited: Option<Goal> = None;
         if let Ok(Some(goal)) = self.store.read(&self.thread_id).await {
-            if self
+            if let Ok(updated) = self
                 .store
                 .mark_usage_limited(&self.thread_id, &goal.goal_id, reason)
                 .await
-                .is_ok()
             {
                 metrics::global().record_usage_limited(&self.thread_id);
+                limited = Some(updated);
             }
+        }
+        drop(permit);
+        if let Some(goal) = limited {
+            self.notify_status_change(goal).await;
         }
         Ok(())
     }
@@ -197,14 +390,48 @@ impl GoalRuntimeHandle {
         }
         // 4. 渲染 continuation → 幂等二道门（文件化 goal 先还原全文）
         let goal = self.store.resolve_objective(goal).await;
-        let text = steering::continuation(&goal, None);
+        // C2：mid-turn 用户 edit（DB revision > 本 turn 已见 revision）→
+        // 渲染 objective_updated steering 显式告知模型目标已变更（死代码转正）。
+        let seen = self
+            .last_seen_revision
+            .load(std::sync::atomic::Ordering::SeqCst);
+        let objective_changed = goal.objective_revision > seen;
+        let (text, reason) = if objective_changed {
+            (
+                steering::objective_updated(&goal),
+                GoalTurnReason::ObjectiveUpdated,
+            )
+        } else {
+            (
+                steering::continuation(&goal, None),
+                GoalTurnReason::ActiveGoal,
+            )
+        };
+        // C1：goal 驱动 turn 迭代 +1（codex turn_trigger 等价物）。
+        let iteration = goal.iteration_count + 1;
         let started = self
             .driver
-            .start_turn_if_idle(&self.thread_id, &text)
+            .start_goal_turn(
+                &self.thread_id,
+                &text,
+                GoalTurnMeta {
+                    goal_id: goal.goal_id.clone(),
+                    iteration,
+                    reason,
+                },
+            )
             .await
             .unwrap_or(false);
         if started {
             metrics::global().record_continuation_started(&self.thread_id);
+            let _ = self
+                .store
+                .set_iteration(&self.thread_id, &goal.goal_id, iteration)
+                .await;
+            if objective_changed {
+                self.last_seen_revision
+                    .store(goal.objective_revision, std::sync::atomic::Ordering::SeqCst);
+            }
         }
         Ok(started)
     }
@@ -251,14 +478,35 @@ impl GoalRuntimeHandle {
         new_status: GoalStatus,
     ) -> Result<(), GoalStoreError> {
         if new_status == GoalStatus::Active {
-            self.accounting.start_wall_clock_if_active().await
+            self.accounting.start_wall_clock_if_active().await?;
         } else {
+            // 离开 active：绑定随之失效（pause 后错误 turn 不得 block）。
+            self.take_turn_binding().await;
             // 补记已计时的 active 段并清基线
             self.accounting
                 .flush_wall_clock(AccountingMode::ActiveOrStopped)
                 .await?;
-            Ok(())
         }
+        Ok(())
+    }
+
+    /// C3：豁免 turn（plan 等协作模式）——绑定 `account=false`：本 turn 零
+    /// 记账、报错不 block、不计 exec 连击、不迭代；goal 工具可见性不变
+    /// （对齐 codex `start_turn(collaboration_mode)` 的 Plan 分支）。
+    pub async fn on_turn_start_exempt(&self, turn_token: &str) -> Result<(), GoalStoreError> {
+        self.on_turn_start().await?;
+        if let Ok(Some(goal)) = self.store.read(&self.thread_id).await {
+            if goal.status == GoalStatus::Active {
+                self.last_seen_revision
+                    .store(goal.objective_revision, std::sync::atomic::Ordering::SeqCst);
+                *self.turn_binding.lock().await = Some(TurnBinding {
+                    turn_token: turn_token.to_string(),
+                    goal_id: goal.goal_id,
+                    account: false,
+                });
+            }
+        }
+        Ok(())
     }
 
     async fn inject_budget_steering_if_flipped(
@@ -273,8 +521,37 @@ impl GoalRuntimeHandle {
             return Ok(None);
         };
         metrics::global().record_budget_limited(&self.thread_id);
-        // R1 降级：不打断当前 turn（已结束），经二道门注入一次收尾 turn
-        let _ = self.driver.start_turn_if_idle(&self.thread_id, &text).await;
+        // B1：budget 翻转同样即时通知（快照字段与 DB 一致）。
+        let goal_now = self.store.read(&self.thread_id).await.ok().flatten();
+        if let Some(goal) = &goal_now {
+            self.notify_status_change(goal.clone()).await;
+        }
+        // R1 降级：不打断当前 turn（已结束），经二道门注入一次收尾 turn；
+        // C1：wrap-up 同为 goal 驱动 turn（reason=budget-limit，迭代 +1）。
+        if let Some(goal) = &goal_now {
+            let iteration = goal.iteration_count + 1;
+            let started = self
+                .driver
+                .start_goal_turn(
+                    &self.thread_id,
+                    &text,
+                    GoalTurnMeta {
+                        goal_id: goal.goal_id.clone(),
+                        iteration,
+                        reason: GoalTurnReason::BudgetLimit,
+                    },
+                )
+                .await
+                .unwrap_or(false);
+            if started {
+                let _ = self
+                    .store
+                    .set_iteration(&self.thread_id, &goal.goal_id, iteration)
+                    .await;
+            }
+        } else {
+            let _ = self.driver.start_turn_if_idle(&self.thread_id, &text).await;
+        }
         Ok(Some(text))
     }
 }
@@ -531,6 +808,45 @@ mod tests {
         assert!(started[0].contains("budget_limited"));
     }
 
+    /// A3（gap-remediation G6）：abort 跨预算——只补账落库 budget_limited，
+    /// **不注入** wrap-up turn（对齐 codex on_turn_abort）。
+    #[tokio::test]
+    async fn abort_crossing_budget_limits_but_starts_no_turn() {
+        let (_d, handle, driver, store) = setup(Some(100)).await;
+
+        handle.on_turn_start().await.expect("start");
+        handle
+            .on_turn_abort(Some(TokenTotals {
+                input_tokens: 150,
+                output_tokens: 0,
+                cached_tokens: 0,
+            }))
+            .await
+            .expect("abort");
+
+        let g = store.read("t1").await.expect("read").expect("exists");
+        assert_eq!(g.status, GoalStatus::BudgetLimited, "越界仍须落库");
+        assert_eq!(g.tokens_used, 150);
+        assert!(
+            driver.started.lock().await.is_empty(),
+            "abort 后不得自动起任何 turn"
+        );
+        // 预算去重标记不得被 abort 消费：resume（B2 后 budget_limited 亦可）
+        // 后首次越界仍能正常注入一次。
+        let s = handle
+            .on_turn_finish(Some(TokenTotals {
+                input_tokens: 160,
+                output_tokens: 0,
+                cached_tokens: 0,
+            }))
+            .await
+            .expect("finish");
+        assert!(
+            s.is_some(),
+            "后续 finish 的首次越界仍须注入一次收尾 steering"
+        );
+    }
+
     /// §6.5：quota 耗尽 → usage_limited（系统置位）。
     #[tokio::test]
     async fn quota_exhausted_marks_usage_limited() {
@@ -544,6 +860,256 @@ mod tests {
         assert_eq!(g.status_reason.as_deref(), Some("provider 429"));
         // usage_limited 可由用户恢复
         assert!(handle.service().resume("t1").await.is_ok());
+    }
+
+    /// B2（G3）：budget_limited → usage_limited 可覆盖；budget_limited 可
+    /// resume；update_budget 保 goal_id/tokens_used 且 complete 拒绝。
+    #[tokio::test]
+    async fn b2_budget_limited_coverage_resume_and_update_budget() {
+        let (_d, handle, _driver, store) = setup(Some(100)).await;
+        let goal_id = store.read("t1").await.unwrap().unwrap().goal_id;
+
+        // 1) 预算触顶 → budget_limited，随后 quota → usage_limited（覆盖）
+        handle
+            .on_turn_finish(Some(TokenTotals {
+                input_tokens: 150,
+                output_tokens: 0,
+                cached_tokens: 0,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.read("t1").await.unwrap().unwrap().status,
+            GoalStatus::BudgetLimited
+        );
+        handle
+            .on_provider_quota_exhausted_with_usage("quota exhausted", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            store.read("t1").await.unwrap().unwrap().status,
+            GoalStatus::UsageLimited
+        );
+
+        // 2) usage_limited → resume（B2：原有语义回归）
+        handle.service().resume("t1").await.unwrap();
+        // 基线停在 150：本次 totals=200 → delta=50 → 累计 200 ≥ 100 → 再翻转
+        handle
+            .on_turn_finish(Some(TokenTotals {
+                input_tokens: 200,
+                output_tokens: 0,
+                cached_tokens: 0,
+            }))
+            .await
+            .unwrap();
+        let g = store.read("t1").await.unwrap().unwrap();
+        assert_eq!(g.status, GoalStatus::BudgetLimited);
+
+        // update_budget：budget_limited 下可提额，保 goal_id/tokens_used
+        let updated = handle.service().update_budget("t1", 10_000).await.unwrap();
+        assert_eq!(updated.goal_id, goal_id, "goal_id 不得变化");
+        assert_eq!(updated.status, GoalStatus::BudgetLimited, "提额不改状态");
+        assert_eq!(updated.tokens_used, 200);
+        assert_eq!(updated.token_budget, Some(10_000));
+
+        handle.service().resume("t1").await.unwrap();
+        assert_eq!(
+            store.read("t1").await.unwrap().unwrap().status,
+            GoalStatus::Active
+        );
+
+        // complete 拒绝提额；非法预算拒绝
+        store.mark_complete("t1", &goal_id).await.unwrap();
+        assert!(handle.service().update_budget("t1", 999).await.is_err());
+        assert!(handle.service().update_budget("t1", 0).await.is_err());
+    }
+
+    /// C1（G9）：goal 驱动 turn 迭代计数（每次续跑 +1）。
+    #[tokio::test]
+    async fn c1_continuation_increments_iteration_count() {
+        let (_d, handle, driver, store) = setup(None).await;
+        handle.on_turn_start_for("tt-c1").await.expect("start");
+        handle.on_turn_finish(None).await.expect("finish");
+        handle.continue_if_idle().await.expect("continue");
+        let g = store.read("t1").await.expect("read").expect("exists");
+        assert_eq!(g.iteration_count, 1);
+        assert!(driver.started.lock().await[0].contains("Continue working"));
+    }
+
+    /// C2（G8）：mid-turn edit → 下一续跑渲染 objective_updated steering
+    /// （死代码转正）；revision 消费后回到常规 continuation。
+    #[tokio::test]
+    async fn c2_midturn_edit_renders_objective_updated_steering() {
+        let (_d, handle, driver, store) = setup(None).await;
+        handle.on_turn_start_for("tt-c2").await.expect("start");
+        // 用户在 turn 运行中改写目标
+        handle
+            .service()
+            .edit("t1", "revised objective")
+            .await
+            .expect("edit");
+        handle.on_turn_finish(None).await.expect("finish");
+        handle.continue_if_idle().await.expect("continue");
+        let g = store.read("t1").await.expect("read").expect("exists");
+        assert_eq!(g.objective_revision, 1);
+        assert_eq!(g.iteration_count, 1);
+        let msg = driver.started.lock().await[0].clone();
+        assert!(msg.contains("revised objective"), "应渲染新目标: {msg}");
+        assert!(
+            !msg.contains("Continue working toward"),
+            "不应是常规 continuation: {msg}"
+        );
+        // revision 已消费：重置二道门后再续跑 → 回到常规 continuation
+        *driver.running.lock().await = false;
+        handle.continue_if_idle().await.expect("continue2");
+        let msg2 = driver.started.lock().await[1].clone();
+        assert!(msg2.contains("Continue working toward"));
+        assert_eq!(store.read("t1").await.unwrap().unwrap().iteration_count, 2);
+    }
+
+    /// C3（G10）：豁免 turn（plan）报错不 block goal、用量不落账。
+    #[tokio::test]
+    async fn c3_exempt_turn_errors_do_not_block_goal() {
+        let (_d, handle, _driver, store) = setup(None).await;
+        handle.on_turn_start_exempt("tt-c3").await.expect("start");
+        handle.on_turn_error("boom", None).await.expect("error");
+        let g = store.read("t1").await.expect("read").expect("exists");
+        assert_eq!(
+            g.status,
+            GoalStatus::Active,
+            "plan turn 报错不得 block goal"
+        );
+        assert_eq!(g.tokens_used, 0, "豁免 turn 用量不落账");
+    }
+
+    /// B1（G2）：turn 绑定存在但 goal 已被替换——错误 turn 不得误伤新 goal。
+    #[tokio::test]
+    async fn turn_error_does_not_block_replacement_goal() {
+        let (_d, handle, _driver, store) = setup(None).await;
+
+        handle.on_turn_start_for("tt-1").await.expect("start");
+        // turn 运行中用户替换 goal（新 goal_id）
+        let replaced = handle
+            .service()
+            .set("t1", "replaced objective", None)
+            .await
+            .expect("replace set");
+        handle
+            .on_goal_replaced(Some(&replaced.goal_id), TokenTotals::default())
+            .await;
+
+        handle
+            .on_turn_error("boom", None)
+            .await
+            .expect("error hook");
+        let g = store.read("t1").await.expect("read").expect("exists");
+        assert_eq!(g.goal_id, replaced.goal_id);
+        assert_eq!(
+            g.status,
+            GoalStatus::Active,
+            "新 goal 不得被旧 turn 的错误 block"
+        );
+        assert_eq!(g.objective, "replaced objective");
+    }
+
+    /// B1：turn 绑定后用户 pause——错误 turn 不得把 paused 改成 blocked。
+    #[tokio::test]
+    async fn turn_error_does_not_override_paused_status() {
+        let (_d, handle, _driver, store) = setup(None).await;
+
+        handle.on_turn_start_for("tt-2").await.expect("start");
+        handle.service().pause("t1").await.expect("pause");
+        // pause 走 on_goal_status_changed 已清绑定；此处显式走 error 路径
+        handle
+            .on_turn_error("boom", None)
+            .await
+            .expect("error hook");
+        let g = store.read("t1").await.expect("read").expect("exists");
+        assert_eq!(g.status, GoalStatus::Paused);
+    }
+
+    /// B1：系统置位 blocked 后即时触发 status_notifier（快照不再等 turn 尾）。
+    #[tokio::test]
+    async fn status_notifier_fires_on_system_blocked() {
+        let (_d, handle, _driver, store) = setup(None).await;
+        let notified: std::sync::Arc<std::sync::Mutex<Vec<Goal>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = notified.clone();
+        handle.set_status_notifier(std::sync::Arc::new(move |goal| {
+            sink.lock().expect("sink").push(goal);
+        }));
+
+        handle.on_turn_start_for("tt-3").await.expect("start");
+        handle
+            .on_turn_error("boom", None)
+            .await
+            .expect("error hook");
+
+        let count_and_status = {
+            let got = notified.lock().expect("sink");
+            (got.len(), got.first().map(|g| g.status))
+        };
+        assert_eq!(count_and_status, (1, Some(GoalStatus::Blocked)));
+        let g = store.read("t1").await.expect("read").expect("exists");
+        assert_eq!(g.status, GoalStatus::Blocked);
+    }
+
+    /// B3（G7）：连续 3 个「失败 exec 且无成功工具」的 goal turn →
+    /// on_turn_finish 置 ExecutionUnavailable blocked。
+    #[tokio::test]
+    async fn three_consecutive_failed_exec_turns_block_goal() {
+        let (_d, handle, _driver, store) = setup(None).await;
+        for i in 0..3 {
+            handle
+                .on_turn_start_for(&format!("tt-{i}"))
+                .await
+                .expect("start");
+            handle.record_tool_outcome("bash", true);
+            handle.on_turn_finish(None).await.expect("finish");
+            let g = store.read("t1").await.expect("read").expect("exists");
+            let expected = if i < 2 {
+                GoalStatus::Active
+            } else {
+                GoalStatus::Blocked
+            };
+            assert_eq!(g.status, expected, "turn {i}");
+        }
+        let g = store.read("t1").await.expect("read").expect("exists");
+        assert!(g
+            .status_reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("execution"));
+    }
+
+    /// B3：任一成功工具清零连击——混合成功不误伤。
+    #[tokio::test]
+    async fn successful_tool_resets_execution_failure_streak() {
+        let (_d, handle, _driver, store) = setup(None).await;
+        for i in 0..2 {
+            handle
+                .on_turn_start_for(&format!("tt-a{i}"))
+                .await
+                .expect("start");
+            handle.record_tool_outcome("bash", true);
+            handle.on_turn_finish(None).await.expect("finish");
+        }
+        // 成功 turn：read 成功 + bash 失败 → 豁免且清零
+        handle.on_turn_start_for("tt-b").await.expect("start");
+        handle.record_tool_outcome("read", false);
+        handle.record_tool_outcome("bash", true);
+        handle.on_turn_finish(None).await.expect("finish");
+        // 重新计 2 个仍不触发
+        for i in 0..2 {
+            handle
+                .on_turn_start_for(&format!("tt-c{i}"))
+                .await
+                .expect("start");
+            handle.record_tool_outcome("bash", true);
+            handle.on_turn_finish(None).await.expect("finish");
+            let g = store.read("t1").await.expect("read").expect("exists");
+            assert_eq!(g.status, GoalStatus::Active);
+        }
     }
 
     /// P1 create 的前置终态检查路径（模型/系统 create 不能覆盖 unfinished）。

@@ -4,6 +4,7 @@
 > 创建：2026-09-06
 > 依据：alignment 方案 §5–§11 展开为可勾选任务清单；语义基线以其 §6 为准
 > 用法：按 Phase 顺序推进，**前一 Phase 的 DoD 未达成不开下一 Phase**；完成后勾选并在「进度记录」追加一行；实现中如需偏离语义基线，先回 alignment 文档评审，不在代码处私自变更
+> 后续：2026-09-12 全量对拍发现 blocked 语义 6 处偏差 + 9 项未实现/偏差，分级方案见 [goal-codex-gap-remediation-plan.md](./goal-codex-gap-remediation-plan.md)（P10–P12 由该方案追加）
 
 ## 依赖与预估
 
@@ -323,6 +324,9 @@
 
 | 日期 | Phase | 记录 |
 |---|---|---|
+| 2026-09-13 | P12（gap-remediation 阶段 C） | **C1** `iteration_count` 列（迁移 20260912000000）+ `GoalTurnMeta/GoalTurnReason` + `TurnDriver::start_goal_turn`（默认退化，宿主 override 记日志；`_meta.goal` 快照新增 `iterationCount`/`objectiveRevision`，FE 可据此区分 goal turn；`goal/continuation` 实时通知待 registry 注入 driver 后随 FE 集成）；**C2** `objective_revision` 列 + edit +1/replace 归 0 + `last_seen_revision` 比对 → 续跑边界渲染 `objective_updated` steering（死代码转正；消费后回常规 continuation）；**C3** `on_turn_start_exempt`（plan turn 绑定 account=false：零记账/报错不 block/不计连击/不迭代），prompt 钩子按 config `mode=plan` 分流；顺带 `_session/goal` 新 action `edit`（objective 编辑）。**环境坑**：cargo 不追踪迁移目录新增文件（task-core 需 touch/clean 强制重编）；e2e 6 例 30s 超时为既有重型测试并发环境问题（stash 基线复现同样挂，非本阶段回归）。goal 66/66、goal 扩展 39/39、clippy 零警告。D1–D3 决策项待产品评审 |
+| 2026-09-12 | P11（gap-remediation 阶段 B） | **B1** `stop_active_goal_for_turn` 化：`on_turn_start_for(turn_token)` 写入 turn→goal 绑定（替换/暂停/清除后 CAS 失败即丢弃，错误 turn 不误伤新 goal）；`on_turn_error` 持 `goal_state_lock` 贯穿补账+置位（锁序 state→progress 显式化）；新增 `StatusNotifier` 回调——系统置位（blocked/usage_limited/budget 翻转）即时发布中立快照（codex `thread_goal_updated` 等价物），host 在 `goal_runtime_for` 装配。**B3** 新增 `tool_accounting.rs`：host 事件闭包转发主 turn（React）`ToolEnd` 结果，同一 goal 连续 3 个「失败 exec 且无成功工具」turn → ExecutionUnavailable blocked（resume 后 fresh audit；goal 更换重置；成功工具清零）。**B2** `transition_status` 泛化为多起源态：`mark_usage_limited` 允许 active+**budget_limited**（对齐 codex `can_stop`）；`user_resumable` 加入 budget_limited（提额后 resume）；新增 `store/service.update_budget`（保 goal_id/tokens_used，complete 拒绝）；`/goal budget <n>` 子命令 + `_session/goal` 新 action `editBudget`（能力广播 6 actions 同步）。**修复 sqlx `?N` 与位置 `?` 混用导致的绑定错位**（transition_status WHERE 永不命中的隐藏 bug）。goal 63/63、anureo-acp+agent 全量无 FAIL、clippy 零警告。剩余：C 阶段（revision/iteration 元数据、plan 豁免）待下轮 |
+| 2026-09-12 | P10（gap-remediation 阶段 A） | A1 turn 错误类型化分类（`goal::TurnErrorClass` + `classify_run_error`/`classify_error_kind`，删除 quota/429 字符串猜测；RateLimited 重试耗尽归 blocked）；A4 update_goal blocked 描述对齐 codex spec 四段护栏 + 文本断言测试；A2 `/goal set|resume` 命令路径补 `kick_idle_continuation`（fresh set kick、replace 保持 deferral；RecordingDriver 集成测试 ×3）；A3 `on_turn_abort` 收紧为只补账不注入（返回 `Result<()>`，新增跨预算 abort 不起 turn 测试，预算去重标记不被 abort 消费）。goal+anureo-acp 799/799 绿、clippy -D warnings 零警告。方案与修订清单见 [goal-codex-gap-remediation-plan.md](./goal-codex-gap-remediation-plan.md) §3/§9 |
 | 2026-09-11 | P8 修复/验收 | 修复 ACP 跨 prompt token 基线少算、模型终态/配额错误漏记最后用量、预算状态原因缺失、pause/resume/edit 与续跑竞态、长 objective 工具显示、`tokenBudget` 静默降级、重连快照缺失；新增真实 ACP 自主续跑/跨 turn 记账/预算停止 e2e 与进程重启恢复断言，并补充推荐快速上手文档 |
 | 2026-09-06 | — | TODO 文档创建，待评审开工 |
 | 2026-09-06 | — | 完整性复查：双向追溯 + 代码触点盘点，补 8 处遗漏，新增触点处置表与追加发现项机制 |

@@ -48,9 +48,14 @@ impl GoalStatus {
         matches!(self, Self::BudgetLimited | Self::Complete)
     }
 
-    /// 用户可恢复（resume/set → active）：blocked / usage_limited / paused。
+    /// 用户可恢复（resume/set → active）：paused / blocked / usage_limited /
+    /// budget_limited（B2：软终态可提额后 resume，对齐 codex 外部
+    /// `set(status=Active)`；complete 仍不可恢复）。
     pub const fn user_resumable(self) -> bool {
-        matches!(self, Self::Paused | Self::Blocked | Self::UsageLimited)
+        matches!(
+            self,
+            Self::Paused | Self::Blocked | Self::UsageLimited | Self::BudgetLimited
+        )
     }
 
     pub const ALL: [GoalStatus; 6] = [
@@ -61,6 +66,21 @@ impl GoalStatus {
         Self::BudgetLimited,
         Self::Complete,
     ];
+}
+
+/// 终止性 turn 错误的 goal 语义分类（gap-remediation A1）。
+///
+/// Codex 用类型化 `CodexErrorInfo::UsageLimitExceeded` 区分（ext/goal
+/// extension.rs `on_turn_error`）：配额/额度耗尽 → usage_limited（用户可
+/// 操作、可恢复），其余不可恢复错误 → blocked（阻止续跑循环烧 token）。
+/// 本枚举由 host 侧从 `RunError` 归一（goal crate 不依赖 agent-core /
+/// model-spec-core，保持依赖方向约束）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnErrorClass {
+    /// 配额/额度耗尽：active → usage_limited（系统置位）。
+    UsageLimited,
+    /// 其余不可恢复错误：active → blocked。
+    TurnError,
 }
 
 /// 记账允许冲账的状态集（alignment §6.3 AccountingMode）。
@@ -118,6 +138,12 @@ pub struct Goal {
     pub status_reason: Option<String>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
+    /// C2（gap-remediation G8）：用户 edit 目标 +1；create/set/replace 归 0。
+    /// runtime 以「DB revision > last_seen」判定 mid-turn 目标变更。
+    pub objective_revision: i64,
+    /// C1（gap-remediation G9）：goal turn 迭代计数（goal 驱动 turn +1；
+    /// create/set/replace 归 0），对应 codex turn_trigger 元数据面。
+    pub iteration_count: i64,
     /// P7 objective 文件化：DB `objective` 列存 `@file:<name>` 标记，
     /// 文本在 `<goals_dir>/<name>`（非持久标志，由 goal_from_row 按前缀派生；
     /// serde skip——投影/序列化面用 [`crate::objective_file] 判定）。文本消费方
@@ -335,6 +361,8 @@ mod tests {
             status_reason: None,
             created_at_ms: 0,
             updated_at_ms: 0,
+            objective_revision: 0,
+            iteration_count: 0,
             objective_file: false,
         }
     }

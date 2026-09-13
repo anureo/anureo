@@ -69,6 +69,10 @@ pub enum GoalSubcommand {
     Clear,
     /// `/goal edit <description>` — replace the objective on an unfinished goal.
     Edit { description: String },
+    /// `/goal budget <n>` — raise/lower the token budget in place (B2:
+    /// `update_budget` keeps goal_id and tokens_used; pair with `/goal resume`
+    /// to continue a budget_limited goal).
+    Budget { tokens: i64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

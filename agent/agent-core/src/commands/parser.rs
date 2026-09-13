@@ -80,6 +80,13 @@ pub fn parse(text: &str) -> Option<Command> {
                     "resume" => Some(Command::Goal {
                         subcommand: GoalSubcommand::Resume,
                     }),
+                    "budget" => {
+                        // `/goal budget <n>`：B2 提额；非整数 → None（不落入
+                        // 兜底 Set，避免把 "budget abc" 当成新目标）。
+                        tail.parse::<i64>().ok().map(|tokens| Command::Goal {
+                            subcommand: GoalSubcommand::Budget { tokens },
+                        })
+                    }
                     "clear" => Some(Command::Goal {
                         subcommand: GoalSubcommand::Clear,
                     }),

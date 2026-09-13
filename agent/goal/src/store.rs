@@ -18,7 +18,8 @@ use crate::types::{AccountingMode, AccountingOutcome, CreateGoalRequest, Goal, G
 
 pub const SELECT_GOAL_COLUMNS: &str = concat!(
     "thread_id, goal_id, objective, status, token_budget, tokens_used, ",
-    "time_used_seconds, verify_command, status_reason, created_at_ms, updated_at_ms"
+    "time_used_seconds, verify_command, status_reason, created_at_ms, updated_at_ms, ",
+    "objective_revision, iteration_count"
 );
 
 #[derive(Debug, thiserror::Error)]
@@ -61,6 +62,8 @@ fn goal_from_row(row: &sqlx::sqlite::SqliteRow) -> sqlx::Result<Goal> {
         status_reason: row.try_get("status_reason")?,
         created_at_ms: row.try_get("created_at_ms")?,
         updated_at_ms: row.try_get("updated_at_ms")?,
+        objective_revision: row.try_get("objective_revision")?,
+        iteration_count: row.try_get("iteration_count")?,
     })
 }
 
@@ -298,15 +301,16 @@ impl GoalStore {
         self.transition_status(
             thread_id,
             expected_goal_id,
-            GoalStatus::Active,
+            &[GoalStatus::Active],
             GoalStatus::Paused,
             None,
         )
         .await
     }
 
-    /// paused / blocked / usage_limited → active（§6.1「用户 resume/set」；
-    /// 终态 budget_limited / complete 不可恢复）。
+    /// paused / blocked / usage_limited / budget_limited → active（§6.1
+    /// 「用户 resume/set」；B2：budget_limited 软终态可提额后 resume，
+    /// 对齐 codex 外部 `set(status=Active)`；complete 仍不可恢复）。
     pub async fn resume(
         &self,
         thread_id: &str,
@@ -315,7 +319,7 @@ impl GoalStore {
         let sql = format!(
             "UPDATE thread_goals SET status = 'active', status_reason = NULL, updated_at_ms = ?3 \
              WHERE thread_id = ?1 AND goal_id = ?2 \
-               AND status IN ('paused','blocked','usage_limited') \
+               AND status IN ('paused','blocked','usage_limited','budget_limited') \
              RETURNING {SELECT_GOAL_COLUMNS}"
         );
         let row = sqlx::query(&sql)
@@ -359,7 +363,8 @@ impl GoalStore {
             ));
         }
         let sql = format!(
-            "UPDATE thread_goals SET objective = ?3, updated_at_ms = ?4 \
+            "UPDATE thread_goals SET objective = ?3, objective_revision = objective_revision + 1, \
+             updated_at_ms = ?4 \
              WHERE thread_id = ?1 AND goal_id = ?2 \
                AND status NOT IN ('budget_limited','complete') \
              RETURNING {SELECT_GOAL_COLUMNS}"
@@ -376,10 +381,74 @@ impl GoalStore {
             .ok_or_else(|| GoalStoreError::NotFoundOrDisallowed(thread_id.to_string()))
     }
 
+    /// B2：预算调整（「提额继续」）。仅 complete 拒绝；budget_limited 下
+    /// 提额是核心流程（update_budget → resume）。保留 goal_id 与
+    /// tokens_used（对齐 codex `GoalSetRequest.token_budget` 组合面，
+    /// 不重置计量）。
+    pub async fn update_budget(
+        &self,
+        thread_id: &str,
+        expected_goal_id: &str,
+        token_budget: i64,
+    ) -> Result<Goal, GoalStoreError> {
+        if token_budget <= 0 {
+            return Err(GoalStoreError::Validation(
+                crate::types::GoalValidationError::BudgetMustBePositive,
+            ));
+        }
+        let cap = crate::types::max_goal_token_budget();
+        if token_budget > cap {
+            return Err(GoalStoreError::Validation(
+                crate::types::GoalValidationError::BudgetAboveCap(cap),
+            ));
+        }
+        let sql = format!(
+            "UPDATE thread_goals SET token_budget = ?3, updated_at_ms = ?4 \
+             WHERE thread_id = ?1 AND goal_id = ?2 AND status != 'complete' \
+             RETURNING {SELECT_GOAL_COLUMNS}"
+        );
+        let row = sqlx::query(&sql)
+            .bind(thread_id)
+            .bind(expected_goal_id)
+            .bind(token_budget)
+            .bind(now_ms())
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(|r| goal_from_row(&r))
+            .transpose()?
+            .ok_or_else(|| GoalStoreError::NotFoundOrDisallowed(thread_id.to_string()))
+    }
+
+    /// C1：goal turn 迭代计数落库（仅创建方 runtime 在 `start_goal_turn`
+    /// 成功后调用；create/set/replace 经新行默认 0 归零）。
+    pub async fn set_iteration(
+        &self,
+        thread_id: &str,
+        expected_goal_id: &str,
+        iteration: i64,
+    ) -> Result<Goal, GoalStoreError> {
+        let sql = format!(
+            "UPDATE thread_goals SET iteration_count = ?, updated_at_ms = ? \
+             WHERE thread_id = ? AND goal_id = ? \
+             RETURNING {SELECT_GOAL_COLUMNS}"
+        );
+        let row = sqlx::query(&sql)
+            .bind(iteration)
+            .bind(now_ms())
+            .bind(thread_id)
+            .bind(expected_goal_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(|r| goal_from_row(&r))
+            .transpose()?
+            .ok_or_else(|| GoalStoreError::NotFoundOrDisallowed(thread_id.to_string()))
+    }
+
     // ── 系统置位（usage_limited / blocked / 模型 complete/blocked 落账）──
 
-    /// active → usage_limited（§6.1 provider 用量，系统置位；信号源见
-    /// alignment 附录 B.5 QuotaExhausted）。
+    /// active/budget_limited → usage_limited（§6.1 provider 用量，系统置位；
+    /// B2：对齐 codex `can_stop` 的 BudgetLimited→UsageLimited 覆盖——用量
+    /// 耗尽比预算触顶更严重且用户可操作）。
     pub async fn mark_usage_limited(
         &self,
         thread_id: &str,
@@ -389,14 +458,15 @@ impl GoalStore {
         self.transition_status(
             thread_id,
             expected_goal_id,
-            GoalStatus::Active,
+            &[GoalStatus::Active, GoalStatus::BudgetLimited],
             GoalStatus::UsageLimited,
             Some(reason),
         )
         .await
     }
 
-    /// active → blocked（不可恢复 turn error，§6.1）。
+    /// active → blocked（不可恢复 turn error，§6.1；blocked 不得覆盖
+    /// budget_limited——预算优先，与 codex can_stop 一致）。
     pub async fn mark_blocked(
         &self,
         thread_id: &str,
@@ -406,7 +476,7 @@ impl GoalStore {
         self.transition_status(
             thread_id,
             expected_goal_id,
-            GoalStatus::Active,
+            &[GoalStatus::Active],
             GoalStatus::Blocked,
             Some(reason),
         )
@@ -423,7 +493,7 @@ impl GoalStore {
         self.transition_status(
             thread_id,
             expected_goal_id,
-            GoalStatus::Active,
+            &[GoalStatus::Active],
             GoalStatus::Complete,
             None,
         )
@@ -434,24 +504,27 @@ impl GoalStore {
         &self,
         thread_id: &str,
         expected_goal_id: &str,
-        from: GoalStatus,
+        from_any: &[GoalStatus],
         to: GoalStatus,
         reason: Option<&str>,
     ) -> Result<Goal, GoalStoreError> {
+        let placeholders = from_any.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        // 注意：纯位置参数（sqlx 混用 ?N 与 ? 会错位绑定，导致 WHERE 永不命中）
         let sql = format!(
-            "UPDATE thread_goals SET status = ?3, status_reason = ?4, updated_at_ms = ?5 \
-             WHERE thread_id = ?1 AND goal_id = ?2 AND status = ?6 \
+            "UPDATE thread_goals SET status = ?, status_reason = ?, updated_at_ms = ? \
+             WHERE thread_id = ? AND goal_id = ? AND status IN ({placeholders}) \
              RETURNING {SELECT_GOAL_COLUMNS}"
         );
-        let row = sqlx::query(&sql)
-            .bind(thread_id)
-            .bind(expected_goal_id)
+        let mut query = sqlx::query(&sql)
             .bind(to.as_str())
             .bind(reason)
             .bind(now_ms())
-            .bind(from.as_str())
-            .fetch_optional(&self.pool)
-            .await?;
+            .bind(thread_id)
+            .bind(expected_goal_id);
+        for status in from_any {
+            query = query.bind(status.as_str());
+        }
+        let row = query.fetch_optional(&self.pool).await?;
         row.map(|r| goal_from_row(&r))
             .transpose()?
             .ok_or_else(|| GoalStoreError::NotFoundOrDisallowed(thread_id.to_string()))

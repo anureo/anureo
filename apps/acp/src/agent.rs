@@ -34,8 +34,10 @@ use checkpoint_sqlite_store::SqliteSaver;
 use tool_basic::bash::LocalCommandExecutor;
 
 use agent::run::TypedAnyStreamEvent;
+
 use agent::run::{build_react_config, run_agent_from_config, RunCmd, RunError, RunParams};
 use agent::run::{RunCompletion, RunOptions};
+use agent::RunnerError;
 use anureo_llm::message::{Message, UserContent};
 use config::load_full_config;
 use std::path::PathBuf;
@@ -363,8 +365,28 @@ impl AnureoAcpAgent {
             }
         };
         let store = goal::GoalStore::from_task_db(&db);
-        let driver = Arc::new(crate::goal_runtime::AcpTurnDriver { agent: agent_weak });
+        let driver = Arc::new(crate::goal_runtime::AcpTurnDriver {
+            agent: agent_weak.clone(),
+        });
         let handle = goal::GoalRuntimeHandle::new(store, thread_id, driver);
+        // B1：系统置位（turn error → blocked / quota → usage_limited / 预算
+        // 翻转）后即时发布中立快照（codex `thread_goal_updated` 等价物），
+        // 不再等 prompt 尾部统一快照。
+        if let Some(agent) = agent_weak.upgrade() {
+            let agent_for_notify = agent.clone();
+            let notify_thread = thread_id.to_string();
+            handle.set_status_notifier(Arc::new(move |goal| {
+                let agent = agent_for_notify.clone();
+                let thread = notify_thread.clone();
+                tokio::spawn(async move {
+                    if let Some(our_sid) = agent.sessions().find_session_id_by_thread(&thread) {
+                        // store 占位 SessionId → ACP 协议 SessionId（经字符串）
+                        let sid = SessionId::new(our_sid.to_string());
+                        agent.publish_goal_snapshot(&sid, Some(&goal));
+                    }
+                });
+            }));
+        }
         runtimes.insert(thread_id.to_string(), handle.clone());
         Some(handle)
     }
@@ -1276,7 +1298,22 @@ impl AnureoAcpAgent {
         // goal hooks/tools (embedded tests) or degrade explicitly (`/goal`).
         let goal_runtime = self.goal_runtime_for(&entry.thread_id).await;
         if let Some(goal_rt) = &goal_runtime {
-            if let Err(e) = goal_rt.on_turn_start().await {
+            // B1：每 prompt 唯一 turn 令牌（绑定标识/日志用途）。
+            let turn_token = uuid::Uuid::new_v4().to_string();
+            // C3：plan 等协作模式 turn 不计入 goal（记账/block/连击/迭代豁免，
+            // 对齐 codex `start_turn(collaboration_mode)` 的 Plan 分支）。
+            let is_plan = self
+                .config_store
+                .get(&key, "mode")
+                .ok()
+                .flatten()
+                .is_some_and(|m| m.eq_ignore_ascii_case("plan"));
+            let started = if is_plan {
+                goal_rt.on_turn_start_exempt(&turn_token).await
+            } else {
+                goal_rt.on_turn_start_for(&turn_token).await
+            };
+            if let Err(e) = started {
                 tracing::warn!(
                     thread_id = %entry.thread_id,
                     error = %e,
@@ -1562,8 +1599,22 @@ impl AnureoAcpAgent {
 
                     let title_repository = self.session_repository.clone();
                     let title_session_id = session_id.to_string();
+                    // B3：主 turn（React）工具结果 → goal exec 三连败记账。
+                    // 子代理（Dup/Tot/Got）不计入，随 D2 一并处理。
+                    let goal_rt_for_events = goal_runtime.clone();
                     let closure = move |ev: TypedAnyStreamEvent| {
                         capture_turn_usage(&ev, &acc);
+                        if let (
+                            Some(grt),
+                            TypedAnyStreamEvent::React(stream_event::StreamEvent::ToolEnd {
+                                name,
+                                is_error,
+                                ..
+                            }),
+                        ) = (&goal_rt_for_events, &ev)
+                        {
+                            grt.record_tool_outcome(name.as_str(), *is_error);
+                        }
 
                         // Spawn background task for async title persistence
                         let repo = title_repository.clone();
@@ -1644,24 +1695,34 @@ impl AnureoAcpAgent {
                 }
                 Err(e) => {
                     let msg = e.to_string();
-                    let lower = msg.to_lowercase();
-                    if lower.contains("quota") || msg.contains("429") {
-                        if let Err(err) = goal_rt
-                            .on_provider_quota_exhausted_with_usage(&msg, Some(totals))
-                            .await
-                        {
+                    // A1：类型化分类（ErrorKind），不再做 quota/429 字符串猜测。
+                    match classify_run_error(e) {
+                        goal::TurnErrorClass::UsageLimited => {
                             tracing::warn!(
                                 thread_id = %goal_rt.thread_id(),
-                                error = %err,
-                                "goal on_provider_quota_exhausted failed"
+                                error_kind = ?classify_error_kind(e),
+                                "turn failed with quota/usage limit → goal usage_limited"
                             );
+                            if let Err(err) = goal_rt
+                                .on_provider_quota_exhausted_with_usage(&msg, Some(totals))
+                                .await
+                            {
+                                tracing::warn!(
+                                    thread_id = %goal_rt.thread_id(),
+                                    error = %err,
+                                    "goal on_provider_quota_exhausted failed"
+                                );
+                            }
                         }
-                    } else if let Err(err) = goal_rt.on_turn_error(&msg, Some(totals)).await {
-                        tracing::warn!(
-                            thread_id = %goal_rt.thread_id(),
-                            error = %err,
-                            "goal on_turn_error failed"
-                        );
+                        goal::TurnErrorClass::TurnError => {
+                            if let Err(err) = goal_rt.on_turn_error(&msg, Some(totals)).await {
+                                tracing::warn!(
+                                    thread_id = %goal_rt.thread_id(),
+                                    error = %err,
+                                    "goal on_turn_error failed"
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -2665,6 +2726,40 @@ fn map_run_error(e: RunError) -> agent_client_protocol::Error {
     agent_client_protocol::Error::internal_error().data(e.to_string())
 }
 
+/// Gap-remediation A1：turn 错误类型化分类（替代 quota/429 字符串猜测）。
+///
+/// Codex `on_turn_error` 以 `CodexErrorInfo::UsageLimitExceeded` 类型化判别：
+/// 配额/额度耗尽 → usage_limited，其余 → blocked。这里把 foundation 已有的
+/// `ErrorKind` 稳定语义映射到 [`goal::TurnErrorClass`]：
+/// - `QuotaExhausted` / `Billing`：重试无效且用户可操作（充值/等待重置）→
+///   usage_limited（可 resume）；
+/// - `RateLimited`：可退避重试，react runner 重试耗尽后才浮出到 turn 级 →
+///   归 TurnError（blocked，阻止续跑循环），与 codex「retries exhausted →
+///   block」一致。
+fn classify_run_error(e: &RunError) -> goal::TurnErrorClass {
+    if let RunError::Run(RunnerError::Llm(pe)) = e {
+        if matches!(
+            pe.kind,
+            model_spec_core::error::ErrorKind::QuotaExhausted
+                | model_spec_core::error::ErrorKind::Billing
+        ) {
+            goal::TurnErrorClass::UsageLimited
+        } else {
+            goal::TurnErrorClass::TurnError
+        }
+    } else {
+        goal::TurnErrorClass::TurnError
+    }
+}
+
+/// 观测用：提取 `ErrorKind` 供日志/tracing 附带（非 `Llm` 错误返回 `None`）。
+fn classify_error_kind(e: &RunError) -> Option<model_spec_core::error::ErrorKind> {
+    match e {
+        RunError::Run(RunnerError::Llm(pe)) => Some(pe.kind),
+        _ => None,
+    }
+}
+
 #[derive(Default, Clone, Debug)]
 pub(crate) struct TurnUsage {
     pub(crate) input_tokens: u64,
@@ -3065,6 +3160,68 @@ mod tests {
             Some(50)
         );
         assert!(seed_title_text(&long).unwrap().ends_with("..."));
+    }
+
+    /// A1：QuotaExhausted / Billing → usage_limited；RateLimited（重试耗尽）
+    /// 与其余 LLM 错误 → blocked；非 LLM 错误一律 blocked。
+    #[test]
+    fn classify_run_error_maps_error_kinds_to_goal_classes() {
+        use model_spec_core::error::{ErrorKind, ProviderError, RetryPolicy, UserAction};
+
+        fn llm_error(kind: ErrorKind) -> RunError {
+            RunError::Run(RunnerError::Llm(ProviderError {
+                provider_id: "openai".to_string(),
+                kind,
+                status: 429,
+                code: None,
+                message: "upstream refused".to_string(),
+                user_message: "upstream refused".to_string(),
+                retry_policy: RetryPolicy::NoRetry {
+                    action: UserAction::None,
+                },
+                request_id: None,
+                partial_tokens: false,
+            }))
+        }
+
+        assert_eq!(
+            classify_run_error(&llm_error(ErrorKind::QuotaExhausted)),
+            goal::TurnErrorClass::UsageLimited
+        );
+        assert_eq!(
+            classify_run_error(&llm_error(ErrorKind::Billing)),
+            goal::TurnErrorClass::UsageLimited
+        );
+        // 429/rate limit 本身可退避重试，重试耗尽后归 blocked（codex「retries
+        // exhausted → block」等价），不得因消息含字面量误标 usage_limited。
+        assert_eq!(
+            classify_run_error(&llm_error(ErrorKind::RateLimited)),
+            goal::TurnErrorClass::TurnError
+        );
+        assert_eq!(
+            classify_run_error(&llm_error(ErrorKind::Server)),
+            goal::TurnErrorClass::TurnError
+        );
+        assert_eq!(
+            classify_run_error(&llm_error(ErrorKind::AuthFailed)),
+            goal::TurnErrorClass::TurnError
+        );
+    }
+
+    #[test]
+    fn classify_run_error_non_llm_errors_are_turn_errors() {
+        assert_eq!(
+            classify_run_error(&RunError::Remote("connection reset".to_string())),
+            goal::TurnErrorClass::TurnError
+        );
+        assert_eq!(
+            classify_run_error(&RunError::ConfigError("bad config".to_string())),
+            goal::TurnErrorClass::TurnError
+        );
+        assert_eq!(
+            classify_run_error(&RunError::ToolNotFound("x".to_string())),
+            goal::TurnErrorClass::TurnError
+        );
     }
 
     #[test]
@@ -3551,10 +3708,10 @@ mod tests {
         let assert_goal_shape = |goal: &serde_json::Value| {
             assert_eq!(goal["version"], 1, "version 必须为 1：{goal}");
             assert_eq!(goal["controlMethod"], "_session/goal", "{goal}");
+            // B2/C2：控制面扩展至 set/pause/resume/clear/edit/editBudget。
             assert_eq!(
                 goal["actions"],
-                serde_json::json!(["set", "pause", "resume", "clear"]),
-                "actions 为实际支持子集：{goal}"
+                serde_json::json!(["set", "pause", "resume", "clear", "edit", "editBudget"])
             );
         };
         let top_meta = resp.meta.as_ref().expect("response top-level _meta");
