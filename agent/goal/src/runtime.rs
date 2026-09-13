@@ -25,6 +25,10 @@ use crate::steering;
 use crate::store::{GoalStore, GoalStoreError};
 use crate::types::{AccountingMode, Goal, GoalStatus};
 
+const GOAL_TOOLS_UNKNOWN: u8 = 0;
+const GOAL_TOOLS_VISIBLE: u8 = 1;
+const GOAL_TOOLS_MISSING: u8 = 2;
+
 /// 宿主提供的 turn 驱动。`start_turn_if_idle` 是**幂等二道门**（§6.6）：
 /// 仅当宿主确认该 session 当前无运行中 turn 时才真正启动；返回是否启动。
 #[async_trait]
@@ -75,9 +79,9 @@ pub struct GoalRuntimeHandle {
     /// `on_turn_start_for` 写入；turn 结束（finish/abort/error）消费/清除。
     /// 替换/暂停/清除后 CAS 失败即丢弃——错误 turn 不得误伤新 goal。
     turn_binding: tokio::sync::Mutex<Option<TurnBinding>>,
-    /// B1：系统置位（blocked/usage_limited/budget 翻转）后的即时快照通知
-    /// （codex `thread_goal_updated` 等价物）。回调内不得触碰 store（防重入），
-    /// 广播由宿主自行 spawn；未装配时退化为 turn 尾部快照（旧行为）。
+    /// Runtime-owned 状态变化（blocked/limited/continuation iteration）后的
+    /// 即时快照通知（codex `thread_goal_updated` 等价物）。回调内不得触碰
+    /// store（防重入），广播由宿主自行 spawn；未装配时退化为 turn 尾部快照。
     status_notifier: std::sync::Mutex<Option<StatusNotifier>>,
     /// B3：per-tool 结果记账（exec 三连败 → ExecutionUnavailable blocked）。
     tool_accounting: crate::tool_accounting::ToolAccounting,
@@ -85,6 +89,13 @@ pub struct GoalRuntimeHandle {
     /// 用户 mid-turn edit → DB revision 前进 → 下一续跑边界渲染
     /// objective_updated steering。
     last_seen_revision: std::sync::atomic::AtomicI64,
+    /// 主 session 的最终 React 配置是否仍包含三个 model-facing goal tools。
+    ///
+    /// 初始为 unknown，允许首次 continuation 作为能力探测；一旦宿主确认工具
+    /// 缺失，idle continuation fail-closed，避免 active goal 在无法调用
+    /// `update_goal` 的情况下无限续跑。后续用户 turn 重新构建出完整工具集后
+    /// 可恢复为 visible。
+    goal_tools_visibility: std::sync::atomic::AtomicU8,
 }
 
 /// 系统置位后的即时通知回调（B1）。
@@ -120,7 +131,31 @@ impl GoalRuntimeHandle {
             status_notifier: std::sync::Mutex::new(None),
             tool_accounting: crate::tool_accounting::ToolAccounting::new(),
             last_seen_revision: std::sync::atomic::AtomicI64::new(0),
+            goal_tools_visibility: std::sync::atomic::AtomicU8::new(GOAL_TOOLS_UNKNOWN),
         })
+    }
+
+    /// 由宿主在最终 React 配置构建后回报 Goal tools 是否完整可见。
+    pub fn record_goal_tools_visibility(&self, visible: bool) {
+        self.goal_tools_visibility.store(
+            if visible {
+                GOAL_TOOLS_VISIBLE
+            } else {
+                GOAL_TOOLS_MISSING
+            },
+            std::sync::atomic::Ordering::SeqCst,
+        );
+    }
+
+    pub fn goal_tools_visible(&self) -> Option<bool> {
+        match self
+            .goal_tools_visibility
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            GOAL_TOOLS_VISIBLE => Some(true),
+            GOAL_TOOLS_MISSING => Some(false),
+            _ => None,
+        }
     }
 
     /// B1：装配系统置位即时通知（host 在创建 handle 后调用一次）。
@@ -368,6 +403,16 @@ impl GoalRuntimeHandle {
     /// on_session_idle → `continue_if_idle` 全流程（§6.6）。
     /// 返回是否启动了续跑 turn。
     pub async fn continue_if_idle(&self) -> Result<bool, GoalStoreError> {
+        // 与 Codex `tools_visible()` 的 fail-closed 语义对齐：若本 session
+        // 最近一次最终配置已确认缺少 Goal tools，模型无法终止 active goal，
+        // 因此绝不能继续自动启动新 turn。unknown 仅允许首次探测 turn。
+        if self.goal_tools_visible() == Some(false) {
+            tracing::error!(
+                thread_id = %self.thread_id,
+                "skipping goal continuation because model-facing goal tools are unavailable"
+            );
+            return Ok(false);
+        }
         // 1. goal_state_lock（与用户 set/clear 窗口互斥）
         let Some(_permit) = self.state_lock.acquire().await else {
             return Ok(false);
@@ -424,10 +469,16 @@ impl GoalRuntimeHandle {
             .unwrap_or(false);
         if started {
             metrics::global().record_continuation_started(&self.thread_id);
-            let _ = self
+            if let Ok(mut updated) = self
                 .store
                 .set_iteration(&self.thread_id, &goal.goal_id, iteration)
-                .await;
+                .await
+            {
+                // `goal` 已还原过文件化 objective；保留全文，避免即时快照
+                // 暴露内部 @file 标记。
+                updated.objective = goal.objective.clone();
+                self.notify_status_change(updated).await;
+            }
             if objective_changed {
                 self.last_seen_revision
                     .store(goal.objective_revision, std::sync::atomic::Ordering::SeqCst);
@@ -652,6 +703,41 @@ mod tests {
         let started = driver.started.lock().await;
         assert_eq!(started.len(), 1);
         assert!(started[0].starts_with("t1|Continue working"));
+    }
+
+    #[tokio::test]
+    async fn idle_continuation_fails_closed_when_goal_tools_are_missing() {
+        let (_d, handle, driver, _store) = setup(None).await;
+
+        handle.record_goal_tools_visibility(false);
+        assert!(!handle.continue_if_idle().await.expect("missing tools"));
+        assert!(driver.started.lock().await.is_empty());
+
+        handle.record_goal_tools_visibility(true);
+        assert!(handle.continue_if_idle().await.expect("tools restored"));
+        assert_eq!(driver.started.lock().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn continuation_publishes_incremented_iteration_snapshot() {
+        let (_d, handle, _driver, _store) = setup(None).await;
+        let iterations = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed = iterations.clone();
+        handle.set_status_notifier(Arc::new(move |goal| {
+            observed
+                .lock()
+                .expect("iteration observer poisoned")
+                .push(goal.iteration_count);
+        }));
+
+        assert!(handle.continue_if_idle().await.expect("continue"));
+        assert_eq!(
+            iterations
+                .lock()
+                .expect("iteration observer poisoned")
+                .as_slice(),
+            &[1]
+        );
     }
 
     /// §6.6：paused / 无 goal / 有 deferral → 不续跑。

@@ -140,23 +140,42 @@ impl GoalStore {
 
     // ── create / replace ────────────────────────────────────────────────
 
-    /// 模型/系统 create（§6.8）：不能覆盖 unfinished goal；旧 goal 为终态时
-    /// 替换之（替换会经 FK CASCADE 清掉该 thread 的 deferral，§6.6「快照替换」
-    /// 的 deferral 写入由 runtime 在调用后补）。
+    /// 模型/系统 create（§6.8）：只能在无 goal 或旧 goal 已 complete 时创建。
+    /// blocked / limited 都仍需用户处理，模型不得借 create 绕过控制面。
     pub async fn create(
         &self,
         req: &CreateGoalRequest,
         goal_id: &str,
     ) -> Result<Goal, GoalStoreError> {
         req.validate()?;
-        if let Some(existing) = self.read(&req.thread_id).await? {
-            if !existing.status.is_terminal() {
-                return Err(GoalStoreError::ExistingUnfinishedGoal(
-                    req.thread_id.clone(),
-                ));
-            }
-        }
-        self.insert_new(req, goal_id).await
+        let ts = now_ms();
+        let sql = format!(
+            "INSERT INTO thread_goals \
+                 (thread_id, goal_id, objective, status, token_budget, tokens_used, \
+                  time_used_seconds, verify_command, status_reason, created_at_ms, updated_at_ms) \
+             VALUES (?1, ?2, ?3, 'active', ?4, 0, 0, ?5, NULL, ?6, ?6) \
+             ON CONFLICT(thread_id) DO UPDATE SET \
+                 goal_id = excluded.goal_id, objective = excluded.objective, \
+                 status = excluded.status, token_budget = excluded.token_budget, \
+                 tokens_used = 0, time_used_seconds = 0, \
+                 verify_command = excluded.verify_command, status_reason = NULL, \
+                 created_at_ms = excluded.created_at_ms, updated_at_ms = excluded.updated_at_ms, \
+                 objective_revision = 0, iteration_count = 0 \
+             WHERE thread_goals.status = 'complete' \
+             RETURNING {SELECT_GOAL_COLUMNS}"
+        );
+        let row = sqlx::query(&sql)
+            .bind(&req.thread_id)
+            .bind(goal_id)
+            .bind(req.trimmed_objective())
+            .bind(req.token_budget)
+            .bind(req.verify_command.clone())
+            .bind(ts)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(|row| goal_from_row(&row))
+            .transpose()?
+            .ok_or_else(|| GoalStoreError::ExistingUnfinishedGoal(req.thread_id.clone()))
     }
 
     /// 用户 set 替换入口（盲审 A3）：无「旧 goal 须终态」前置检查，允许对
@@ -172,17 +191,6 @@ impl GoalStore {
             .bind(&req.thread_id)
             .execute(&mut *tx)
             .await?;
-        let goal = insert_new_tx(&mut tx, req, goal_id).await?;
-        tx.commit().await?;
-        Ok(goal)
-    }
-
-    async fn insert_new(
-        &self,
-        req: &CreateGoalRequest,
-        goal_id: &str,
-    ) -> Result<Goal, GoalStoreError> {
-        let mut tx = self.pool.begin().await?;
         let goal = insert_new_tx(&mut tx, req, goal_id).await?;
         tx.commit().await?;
         Ok(goal)
@@ -700,11 +708,11 @@ mod tests {
         assert_eq!(store.read("missing").await.expect("read"), None);
     }
 
-    /// §6.8：模型/系统 create 不能覆盖 unfinished goal；终态可以替换。
+    /// §6.8：模型/系统 create 只能替换 complete；用户 replace 不受限。
     #[tokio::test]
-    async fn create_rejects_unfinished_but_allows_terminal() {
+    async fn create_only_replaces_complete_goal() {
         let (_d, store) = test_store().await;
-        make_active(&store, "t1", None).await;
+        let active = make_active(&store, "t1", None).await;
 
         let err = store
             .create(&req("t1", "second", None), "g2")
@@ -712,12 +720,33 @@ mod tests {
             .expect_err("create over active must fail");
         assert!(matches!(err, GoalStoreError::ExistingUnfinishedGoal(_)));
 
+        store
+            .mark_complete("t1", &active.goal_id)
+            .await
+            .expect("complete");
+        let completed_replacement = store
+            .create(&req("t1", "second", None), "g2")
+            .await
+            .expect("create over complete");
+        assert_eq!(completed_replacement.goal_id, "g2");
+
+        let limited = make_active(&store, "limited", Some(1)).await;
+        store
+            .account_thread_goal_usage("limited", &limited.goal_id, Mode::ActiveStatusOnly, 1, 0)
+            .await
+            .expect("limit goal");
+        let err = store
+            .create(&req("limited", "replacement", None), "g-limited-2")
+            .await
+            .expect_err("create over budget_limited must fail");
+        assert!(matches!(err, GoalStoreError::ExistingUnfinishedGoal(_)));
+
         // 用户替换入口不受限（盲审 A3）
         let g = store
-            .replace(&req("t1", "second", None), "g2")
+            .replace(&req("t1", "third", None), "g3")
             .await
             .expect("replace");
-        assert_eq!(g.goal_id, "g2");
+        assert_eq!(g.goal_id, "g3");
     }
 
     /// §6.2：陈旧 goal_id 写入返回 Unchanged 且不落账（CAS）。

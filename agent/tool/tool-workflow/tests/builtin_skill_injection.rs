@@ -9,10 +9,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use agent::build_react_run_context;
 use agent::run::build_react_config;
 use agent::run::RunOptions;
 use anureo_llm::message::UserContent;
-use tool_core::Tool;
+use tool_core::{MockTool, Tool};
 use tool_workflow::default_workflow_tool_provider;
 
 fn make_run_options(
@@ -111,4 +112,68 @@ fn build_react_config_provider_pushes_six_workflow_tools_into_config() {
             names
         );
     }
+}
+
+#[test]
+fn build_react_config_preserves_caller_tools_when_appending_defaults() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut opts = make_run_options(
+        dir.path().to_path_buf(),
+        Some(default_workflow_tool_provider()),
+    );
+    opts.extra_tools = Some(Arc::new(vec![Arc::new(*MockTool::new(
+        "update_goal",
+        "goal lifecycle control",
+        String::new(),
+    )) as Arc<dyn Tool>]));
+
+    let (config, _resolved, _registry) = build_react_config(&opts);
+
+    let extra = config
+        .extra_tools
+        .as_ref()
+        .expect("config.extra_tools should preserve caller tools and defaults");
+    let names: Vec<&str> = extra.iter().map(|tool| tool.name()).collect();
+    assert!(
+        names.contains(&"update_goal"),
+        "caller-provided ACP tools must survive config construction, got: {:?}",
+        names
+    );
+    assert!(
+        names.contains(&"workflow_start"),
+        "default tools should still be appended, got: {:?}",
+        names
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn caller_tools_reach_the_final_model_tool_source() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut opts = make_run_options(dir.path().to_path_buf(), None);
+    opts.extra_tools = Some(Arc::new(vec![Arc::new(*MockTool::new(
+        "update_goal",
+        "goal lifecycle control",
+        String::new(),
+    )) as Arc<dyn Tool>]));
+
+    let (mut config, _resolved, _registry) = build_react_config(&opts);
+    // The final registration path does not require filesystem-backed tools;
+    // keeping them disabled avoids leaving their background watchers alive in
+    // this focused integration test.
+    config.working_folder = None;
+    let ctx = build_react_run_context(&config)
+        .await
+        .expect("build final React run context");
+    let names: Vec<String> = ctx
+        .tool_source
+        .list_tools()
+        .await
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect();
+
+    assert!(
+        names.iter().any(|name| name == "update_goal"),
+        "caller-provided tool must reach the final model tool source, got: {names:?}"
+    );
 }

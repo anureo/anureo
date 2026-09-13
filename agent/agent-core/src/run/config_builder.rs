@@ -75,6 +75,11 @@ pub fn build_react_config(
 
     let mut base = ReactBuildConfig::from_env();
     base.goal_mode = effective_opts.goal_mode;
+    // Preserve caller-provided tools (ACP bridges, including get/create/update_goal)
+    // before appending process-wide defaults below.  Dropping this field leaves
+    // the tools constructed by the ACP host registered in logs but invisible to
+    // both the final registry and the model.
+    base.extra_tools = effective_opts.extra_tools.clone();
     base.acp_mcp_sources = effective_opts.acp_mcp_sources.clone();
     base.dry_run = effective_opts.dry_run;
     {

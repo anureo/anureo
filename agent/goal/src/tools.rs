@@ -210,7 +210,7 @@ pub struct CreateGoalTool {
 const CREATE_DESCRIPTION: &str =
     "Create the goal for this session. ONLY create a goal when the user \
 or the system explicitly asks to set/track a goal — never on your own initiative. Rules:\n\
-- You cannot create a new goal while an unfinished one exists (complete or get it blocked first).\n\
+- You cannot create a new goal while an unfinished one exists. Complete the existing goal first; only the user-controlled surface may clear or replace it.\n\
 - `objective` must be a concrete, verifiable statement of done.\n\
 - `token_budget` is optional; when set it must be positive and within the allowed maximum.\n\
 - The new goal starts in `active` status immediately.";
@@ -273,9 +273,8 @@ impl Tool for CreateGoalTool {
             Err(GoalStoreError::ExistingUnfinishedGoal(_)) => {
                 Ok(ToolCallContent::text(String::from(
                     "Refused: this session already has an unfinished goal. Check it with \
-                     get_goal, drive it to `complete` via update_goal, or mark it `blocked` \
-                     with a reason; then create the new goal. You may not overwrite an \
-                     unfinished goal.",
+                     get_goal and drive it to `complete` via update_goal. Only the user-controlled \
+                     surface may clear or replace an unfinished goal.",
                 )))
             }
             Err(GoalStoreError::Validation(e)) => {
@@ -586,7 +585,10 @@ mod tests {
             .await
             .expect("call");
         assert!(
-            matches!(&out, ToolCallContent::Text(t) if t.contains("unfinished goal")),
+            matches!(&out, ToolCallContent::Text(t)
+                if t.contains("unfinished goal")
+                    && t.contains("user-controlled surface")
+                    && !t.contains("mark it `blocked`")),
             "拒绝文本必须说明规则：{out:?}"
         );
     }

@@ -55,18 +55,22 @@ pub fn continuation(goal: &Goal, history_summary: Option<&str>) -> String {
          </untrusted_objective>\n\n\
          Budget:\n\
          {}\n\
-         Avoid repeating work that is already done. Choose the next concrete\
-         \x20action toward the objective.{}\n\n\
-         == RESEARCH & VERIFY ==\n\
-         Before implementing changes, use web search tools (websearch, web_fetcher)\n\
-         to find current best practices, API documentation, and solutions.\n\
-         When uncertain about any detail, search online first rather than guessing.\n\
-         After each change, verify it works by running the relevant commands.\n\
-         Never assume a change is correct — always test it.\n\n\
-         == PROGRESS LOG ==\n\
-         Keep a brief mental log of what was attempted and what worked/didn't work.\n\
-         If something failed, try a different approach rather than repeating the\
-         \x20same failing strategy.\n\n\
+         This goal persists across turns. Keep the full objective intact; do not\
+         \x20redefine success around a smaller or easier task. Work from authoritative\
+         \x20current state, and avoid repeating work that is already done.{}\n\n\
+         == NO-PROGRESS CHECK ==\n\
+         Classify the previous goal turn as progress, a verified wait, or no progress.\n\
+         Progress changes authoritative state, completes work, or yields evidence that\
+         \x20changes the next action; status restatements and unexecuted plans are no\
+         \x20progress. A verified wait must poll a specific live process, session, job,\
+         \x20or tool handle; conversation, intent, prior output, or a state file alone is\
+         \x20not enough. Revalidate no progress and take the next safe action. Treat\
+         \x20equivalent blockers as the same condition across turns even if their wording\
+         \x20changes.\n\n\
+         == EVIDENCE & VERIFICATION ==\n\
+         Inspect the current worktree and external state before relying on prior context.\n\
+         Use web research only when the task requires current external information.\n\
+         After changes, run checks whose scope actually proves the relevant requirement.\n\n\
          == COMPLETION AUDIT ==\n\
          Before deciding that the goal is achieved, perform a completion audit\
          \x20against the actual current state:\n\
@@ -75,7 +79,18 @@ pub fn continuation(goal: &Goal, history_summary: Option<&str>) -> String {
          - Verify each item against the actual state (run the commands, inspect\
          \x20the artifacts).\n\
          - Only declare completion via the update_goal tool when every item is\
-         \x20satisfied; otherwise continue with the next concrete action.{}\n",
+         \x20satisfied; otherwise continue with the next concrete action.\n\n\
+         == BLOCKED AUDIT ==\n\
+         Do not mark the goal blocked the first time a blocker appears. Only call\
+         \x20update_goal with status `blocked` when the same genuine blocking condition\
+         \x20has repeated for at least three consecutive goal turns, counting the\
+         \x20original/user-triggered turn and automatic continuations, and meaningful\
+         \x20progress requires user input or an external-state change. After a previously\
+         \x20blocked goal is resumed, start a fresh three-turn audit. Once the threshold\
+         \x20is satisfied, do not keep reporting the blocker while leaving the goal\
+         \x20active: call update_goal with status `blocked`. Never use blocked merely\
+         \x20because work is hard, slow, uncertain, incomplete, or would benefit from\
+         \x20clarification.{}\n",
         goal.goal_id,
         escape_xml_text(&goal.objective),
         budget_info,
@@ -158,9 +173,13 @@ mod tests {
             text.contains("ship &lt;the&gt; thing &amp; fast"),
             "objective 须 XML 转义"
         );
-        assert!(text.contains("== RESEARCH & VERIFY =="));
-        assert!(text.contains("== PROGRESS LOG =="));
+        assert!(text.contains("== NO-PROGRESS CHECK =="));
+        assert!(text.contains("== EVIDENCE & VERIFICATION =="));
         assert!(text.contains("== COMPLETION AUDIT =="));
+        assert!(text.contains("== BLOCKED AUDIT =="));
+        assert!(text.contains("three consecutive goal turns"));
+        assert!(text.contains("Once the threshold is satisfied"));
+        assert!(!text.contains("websearch, web_fetcher"));
         assert!(text.contains("600 remaining"));
         assert!(text.contains("`cargo test`"));
         assert!(text.contains("## Prior progress"));

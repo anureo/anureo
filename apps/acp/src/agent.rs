@@ -201,6 +201,9 @@ pub struct AnureoAcpAgent {
     /// back-reference into this agent.
     pub(crate) goal_runtimes:
         tokio::sync::Mutex<std::collections::HashMap<String, Arc<goal::GoalRuntimeHandle>>>,
+    /// 最近一次被 transport 接受的 prompt 所携带的 ACP 能力与动态 bridge。
+    /// 自动 goal continuation 复用它，避免退化到 default capabilities / NoOp bridge。
+    goal_prompt_contexts: tokio::sync::RwLock<std::collections::HashMap<String, GoalPromptContext>>,
     /// Lazily opened shared TaskDb pool backing the goal runtimes
     /// (`<anureo_home>/tasks/tasks.db`). One pool per process: opening a
     /// second pool against the same SQLite file would defeat write
@@ -210,6 +213,12 @@ pub struct AnureoAcpAgent {
     /// set via [`Self::register_goal_self`] right after the agent is wrapped
     /// in `Arc`. Unset in embedded tests ⇒ goal wiring is inert there.
     pub(crate) goal_self: std::sync::OnceLock<std::sync::Weak<AnureoAcpAgent>>,
+}
+
+#[derive(Clone)]
+struct GoalPromptContext {
+    capabilities: ClientCapabilitiesInfo,
+    bridge: Arc<dyn ClientBridgeTrait>,
 }
 
 impl std::fmt::Debug for AnureoAcpAgent {
@@ -295,6 +304,7 @@ impl AnureoAcpAgent {
             model_provider: Arc::new(RealModelProvider),
             extension_registry,
             goal_runtimes: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+            goal_prompt_contexts: tokio::sync::RwLock::new(std::collections::HashMap::new()),
             goal_db: tokio::sync::OnceCell::new(),
             goal_self: std::sync::OnceLock::new(),
         };
@@ -1266,6 +1276,31 @@ impl AnureoAcpAgent {
         .await
     }
 
+    /// Start an automatic goal turn with the capabilities and bridge from the
+    /// most recent accepted transport prompt for this thread.
+    pub(crate) async fn prompt_goal_continuation(
+        &self,
+        thread_id: &str,
+        args: PromptRequest,
+    ) -> agent_client_protocol::Result<PromptResponse> {
+        let context = self
+            .goal_prompt_contexts
+            .read()
+            .await
+            .get(thread_id)
+            .cloned();
+        if let Some(context) = context {
+            self.prompt_with_capabilities(args, context.capabilities, context.bridge)
+                .await
+        } else {
+            tracing::warn!(
+                thread_id,
+                "goal continuation has no prior ACP prompt context; using default capabilities"
+            );
+            self.prompt(args).await
+        }
+    }
+
     /// Execute a prompt using capabilities from the caller's transport.
     pub async fn prompt_with_capabilities(
         &self,
@@ -1291,6 +1326,14 @@ impl AnureoAcpAgent {
         // dropped (e.g., WS disconnect cancels the task mid-prompt).
         let _prompt_guard =
             crate::session::PromptGuard::new(&self.sessions, &key, cancellation.generation());
+
+        self.goal_prompt_contexts.write().await.insert(
+            entry.thread_id.clone(),
+            GoalPromptContext {
+                capabilities: client_capabilities.clone(),
+                bridge: client_bridge.clone(),
+            },
+        );
 
         // Goal wiring (goal-codex-alignment P5): resolve the thread's goal
         // runtime once per turn, while the busy gate is held. `None` means
@@ -1566,73 +1609,84 @@ impl AnureoAcpAgent {
 
         let session_id = args.session_id.clone();
         let tx = self.session_update_tx.clone();
+        let notifier = tx.as_ref().map(|sender| {
+            Arc::new(
+                SessionNotifier::new(sender.clone(), session_id.clone())
+                    .with_context_window_size(context_window_size)
+                    .with_usage_acc(usage_acc.clone()),
+            )
+        });
+        if let Some(notifier) = &notifier {
+            // Enable high-frequency tracking with estimated base usage.
+            let estimated_base_tokens = match &opts.message {
+                UserContent::Text(text) => text.len() / 4,
+                UserContent::Multimodal(parts) => parts
+                    .iter()
+                    .map(|part| match part {
+                        anureo_llm::message::ContentPart::Text { text } => text.len() / 4,
+                        _ => 0,
+                    })
+                    .sum::<usize>(),
+            };
+            notifier.enable_high_freq_tracking(estimated_base_tokens as u64, context_window_size);
+        }
+
+        // Usage accounting and the failed-exec circuit breaker are runtime
+        // correctness hooks, so install them even when there is no UI update
+        // sender. Notification delivery remains optional inside the closure.
         let on_event: Option<Box<dyn FnMut(TypedAnyStreamEvent) + Send>> = {
             let acc = usage_acc.clone();
-            match tx {
-                Some(ref sender) => {
-                    let notifier = SessionNotifier::new(sender.clone(), session_id.clone())
-                        .with_context_window_size(context_window_size)
-                        .with_usage_acc(acc.clone());
-
-                    // Enable high-frequency tracking with estimated base usage
-                    // Base usage estimated from prompt message (rough approximation)
-                    let estimated_base_tokens = match &opts.message {
-                        UserContent::Text(text) => text.len() / 4, // Approx 4 chars per token
-                        UserContent::Multimodal(parts) => {
-                            parts
-                                .iter()
-                                .map(|p| {
-                                    match p {
-                                        anureo_llm::message::ContentPart::Text { text } => {
-                                            text.len() / 4
-                                        }
-                                        _ => 0, // Non-text parts estimated as 0 tokens
-                                    }
-                                })
-                                .sum::<usize>()
-                        }
-                    };
-                    notifier.enable_high_freq_tracking(
-                        estimated_base_tokens as u64,
-                        context_window_size,
-                    );
-
-                    let title_repository = self.session_repository.clone();
-                    let title_session_id = session_id.to_string();
-                    // B3：主 turn（React）工具结果 → goal exec 三连败记账。
-                    // 子代理（Dup/Tot/Got）不计入，随 D2 一并处理。
-                    let goal_rt_for_events = goal_runtime.clone();
-                    let closure = move |ev: TypedAnyStreamEvent| {
-                        capture_turn_usage(&ev, &acc);
-                        if let (
-                            Some(grt),
-                            TypedAnyStreamEvent::React(stream_event::StreamEvent::ToolEnd {
-                                name,
-                                is_error,
-                                ..
-                            }),
-                        ) = (&goal_rt_for_events, &ev)
-                        {
-                            grt.record_tool_outcome(name.as_str(), *is_error);
-                        }
-
-                        // Spawn background task for async title persistence
-                        let repo = title_repository.clone();
-                        let session = title_session_id.clone();
-                        let event = ev.clone();
-                        tokio::spawn(async move {
-                            persist_session_title(&repo, &session, &event).await;
-                        });
-
-                        notifier.try_send_event(&ev);
-                    };
-                    Some(Box::new(closure) as Box<dyn FnMut(TypedAnyStreamEvent) + Send>)
+            let notifier = notifier.clone();
+            let title_repository = self.session_repository.clone();
+            let title_session_id = session_id.to_string();
+            let goal_rt_for_events = goal_runtime.clone();
+            let closure = move |ev: TypedAnyStreamEvent| {
+                capture_turn_usage(&ev, &acc);
+                if let (
+                    Some(grt),
+                    TypedAnyStreamEvent::React(stream_event::StreamEvent::ToolEnd {
+                        name,
+                        is_error,
+                        ..
+                    }),
+                ) = (&goal_rt_for_events, &ev)
+                {
+                    grt.record_tool_outcome(name.as_str(), *is_error);
                 }
-                None => None,
-            }
+
+                let repo = title_repository.clone();
+                let session = title_session_id.clone();
+                let event = ev.clone();
+                tokio::spawn(async move {
+                    persist_session_title(&repo, &session, &event).await;
+                });
+
+                if let Some(notifier) = &notifier {
+                    notifier.try_send_event(&ev);
+                }
+            };
+            Some(Box::new(closure) as Box<dyn FnMut(TypedAnyStreamEvent) + Send>)
         };
 
         let (config, _, _) = build_react_config(&opts);
+        if let Some(goal_rt) = &goal_runtime {
+            let has_all_goal_tools =
+                ["get_goal", "create_goal", "update_goal"]
+                    .into_iter()
+                    .all(|required| {
+                        config
+                            .extra_tools
+                            .as_deref()
+                            .is_some_and(|tools| tools.iter().any(|tool| tool.name() == required))
+                    });
+            goal_rt.record_goal_tools_visibility(has_all_goal_tools);
+            if !has_all_goal_tools {
+                tracing::error!(
+                    thread_id = %goal_rt.thread_id(),
+                    "final React config is missing model-facing goal tools; automatic continuation will stop"
+                );
+            }
+        }
         let result = run_agent_from_config(
             &config,
             &RunCmd::React,
@@ -1649,8 +1703,7 @@ impl AnureoAcpAgent {
         .await;
 
         // Disable high-frequency tracking after agent execution
-        if let Some(ref tx) = tx {
-            let notifier = SessionNotifier::new(tx.clone(), session_id.clone());
+        if let Some(notifier) = notifier {
             tokio::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 notifier.disable_high_freq_tracking().await;

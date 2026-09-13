@@ -48,13 +48,14 @@ impl goal::TurnDriver for AcpTurnDriver {
             vec![ContentBlock::Text(TextContent::new(message.to_string()))],
         );
         let session_log = session_id.to_string();
+        let thread_id = thread_id.to_string();
         let agent = agent.clone();
         // Detach: `start_turn_if_idle` must not block the goal state lock on a
         // full LLM turn. `begin_prompt` inside `prompt` is the authoritative
         // idempotency gate — if another prompt wins the race, it errors out
         // here and we just log.
         tokio::spawn(async move {
-            if let Err(e) = agent.prompt(request).await {
+            if let Err(e) = agent.prompt_goal_continuation(&thread_id, request).await {
                 tracing::warn!(
                     session_id = %session_log,
                     error = ?e,
