@@ -1,7 +1,12 @@
 #![allow(dead_code)]
 
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+};
+
 use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 pub struct MockLlmServer {
     pub server: MockServer,
@@ -68,6 +73,53 @@ impl MockLlmServer {
             .respond_with(tpl)
             .up_to_n_times(up_to_n_times)
             .with_priority(4)
+            .mount(&self.server)
+            .await;
+    }
+
+    /// 为同一条 streaming endpoint 按请求顺序提供响应。
+    ///
+    /// 不要用多个 `up_to_n_times(1)` mock 模拟序列：wiremock 会为一次请求
+    /// 评估所有匹配 mock，导致后续 mock 的匹配额度也可能被消耗。本 responder
+    /// 把队列放在一个 mock 中，确保每次请求只弹出一个响应。后台 review 的
+    /// streaming 请求始终使用默认响应，避免插入主 agent 的调用序列。
+    pub async fn expect_chat_completion_sse_sequence(&self, sse_bodies: Vec<String>) {
+        let responses = sse_bodies
+            .iter()
+            .map(|body| Self::sse_response(body))
+            .collect();
+        self.mount_chat_completion_sse_sequence(responses).await;
+    }
+
+    /// 与 [`Self::expect_chat_completion_sse_sequence`] 相同，但允许为每个
+    /// 主 agent 响应设置独立延迟；用于控制面与 in-flight turn 的竞态测试。
+    pub async fn expect_chat_completion_sse_sequence_with_delays(
+        &self,
+        sse_bodies: Vec<(String, Option<std::time::Duration>)>,
+    ) {
+        let responses = sse_bodies
+            .into_iter()
+            .map(|(body, delay)| {
+                let mut response = Self::sse_response(&body);
+                if let Some(delay) = delay {
+                    response = response.set_delay(delay);
+                }
+                response
+            })
+            .collect();
+        self.mount_chat_completion_sse_sequence(responses).await;
+    }
+
+    async fn mount_chat_completion_sse_sequence(&self, responses: VecDeque<ResponseTemplate>) {
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(move |req: &Request| {
+                let body = std::str::from_utf8(&req.body).unwrap_or("");
+                body.contains(r#""stream":true"#)
+                    && !body.contains("Here is the conversation to review:")
+            })
+            .respond_with(SequentialSseResponder::new(responses))
+            .with_priority(1)
             .mount(&self.server)
             .await;
     }
@@ -225,5 +277,31 @@ impl MockLlmServer {
         out.push('\n');
         writeln!(out, "data: [DONE]").ok();
         out
+    }
+}
+
+struct SequentialSseResponder {
+    responses: Arc<Mutex<VecDeque<ResponseTemplate>>>,
+}
+
+impl SequentialSseResponder {
+    fn new(responses: VecDeque<ResponseTemplate>) -> Self {
+        Self {
+            responses: Arc::new(Mutex::new(responses)),
+        }
+    }
+}
+
+impl Respond for SequentialSseResponder {
+    fn respond(&self, _request: &Request) -> ResponseTemplate {
+        self.responses
+            .lock()
+            .expect("sequential mock response queue poisoned")
+            .pop_front()
+            .unwrap_or_else(|| {
+                ResponseTemplate::new(500).set_body_string(
+                    "unexpected extra streaming chat-completion request after scripted sequence",
+                )
+            })
     }
 }
