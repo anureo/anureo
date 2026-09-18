@@ -11,6 +11,8 @@ use parking_lot::RwLock;
 use serde_json::{json, Value};
 use tokio::task::AbortHandle;
 
+use super::identity::SubagentIdentity;
+
 /// Statistics from a completed/failed agent execution.
 #[derive(Debug, Clone, Default)]
 pub struct AgentCompletionStats {
@@ -82,18 +84,25 @@ pub struct AgentEntry {
     pub thread_id: String,
     pub status: AgentStatus,
 
+    /// The identity graph of this invocation (contract §3.1); `None` for
+    /// legacy `register()` callers. Consumed by the lifecycle sink (Phase 2)
+    /// and metadata projection (Phase 3).
+    pub identity: Option<Arc<SubagentIdentity>>,
+
     /// AbortHandle to cancel the spawned tokio task.
     pub abort_handle: Option<AbortHandle>,
 }
 
 impl AgentEntry {
     /// Return a copy with internal handles stripped (for public API responses).
+    /// The identity is metadata — it is kept, not stripped.
     fn strip_handles(&self) -> Self {
         Self {
             agent_id: self.agent_id.clone(),
             agent_name: self.agent_name.clone(),
             thread_id: self.thread_id.clone(),
             status: self.status.clone(),
+            identity: self.identity.clone(),
             abort_handle: None,
         }
     }
@@ -171,12 +180,82 @@ pub struct AsyncAgentRegistry {
     inner: Arc<RwLock<HashMap<String, AgentEntry>>>,
 }
 
+/// RAII reservation returned by [`AsyncAgentRegistry::reserve`].
+///
+/// The entry is inserted as `Running` at reserve time; [`AgentReservation::commit`]
+/// attaches the abort handle once the task is spawned. Dropping without commit
+/// removes the entry — half-failed spawns leak nothing (codex SpawnReservation
+/// pattern, evolution A1).
+#[derive(Debug)]
+pub struct AgentReservation {
+    registry: AsyncAgentRegistry,
+    agent_id: String,
+    committed: bool,
+}
+
+impl AgentReservation {
+    /// The invocation id this reservation holds.
+    pub fn agent_id(&self) -> &str {
+        &self.agent_id
+    }
+
+    /// Commit the reservation, attaching the spawned task's abort handle.
+    pub fn commit(mut self, abort_handle: Option<AbortHandle>) {
+        if let Some(entry) = self.registry.inner.write().get_mut(&self.agent_id) {
+            entry.abort_handle = abort_handle;
+        }
+        self.committed = true;
+    }
+}
+
+impl Drop for AgentReservation {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.registry.inner.write().remove(&self.agent_id);
+            tracing::debug!(
+                agent_id = %self.agent_id,
+                "Spawn reservation dropped without commit — entry removed"
+            );
+        }
+    }
+}
+
 impl AsyncAgentRegistry {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Register a new agent as `Running`.
+    /// Reserve an entry as `Running` **before** spawning the task (evolution A1).
+    ///
+    /// Returns an RAII [`AgentReservation`]: `commit()` attaches the abort
+    /// handle after spawn succeeds; dropping without commit removes the entry,
+    /// so a failed spawn path leaves no permanently-Running ghosts.
+    pub fn reserve(
+        &self,
+        identity: Arc<SubagentIdentity>,
+        thread_id: String,
+    ) -> AgentReservation {
+        let agent_id = identity.invocation_id.clone();
+        let entry = AgentEntry {
+            agent_id: agent_id.clone(),
+            agent_name: identity.agent_name.clone(),
+            thread_id,
+            identity: Some(identity),
+            status: AgentStatus::Running {
+                started_at: iso8601_now(),
+            },
+            abort_handle: None,
+        };
+        tracing::debug!(agent_id = %agent_id, "Reserved async agent entry");
+        self.inner.write().insert(agent_id.clone(), entry);
+        AgentReservation {
+            registry: self.clone(),
+            agent_id,
+            committed: false,
+        }
+    }
+
+    /// Register a new agent as `Running` (legacy path — no invocation context).
     pub fn register(
         &self,
         agent_id: String,
@@ -184,17 +263,8 @@ impl AsyncAgentRegistry {
         thread_id: String,
         abort_handle: Option<AbortHandle>,
     ) {
-        let entry = AgentEntry {
-            agent_id: agent_id.clone(),
-            agent_name,
-            thread_id,
-            status: AgentStatus::Running {
-                started_at: iso8601_now(),
-            },
-            abort_handle,
-        };
-        tracing::debug!(agent_id = %agent_id, "Registered async agent");
-        self.inner.write().insert(agent_id, entry);
+        let identity = Arc::new(SubagentIdentity::synthetic(&agent_id, &agent_name));
+        self.reserve(identity, thread_id).commit(abort_handle);
     }
 
     /// Mark a running agent as background (sync timeout occurred).
@@ -521,5 +591,41 @@ mod tests {
         assert!(all.len() <= MAX_TERMINAL_ENTRIES + 2);
         assert!(reg.get("r1").is_some());
         assert!(reg.get("r2").is_some());
+    }
+
+    /// A1: dropping a reservation without commit must remove the entry —
+    /// the spawn/register race leaves no Running ghosts.
+    #[test]
+    fn reservation_drop_removes_entry() {
+        let reg = AsyncAgentRegistry::new();
+        let identity = Arc::new(SubagentIdentity::generate(None, "dev"));
+        let res = reg.reserve(identity, "t1".into());
+        let agent_id = res.agent_id().to_string();
+        assert!(reg.get(&agent_id).is_some(), "entry visible while reserved");
+        drop(res);
+        assert!(reg.get(&agent_id).is_none(), "entry removed on un-committed drop");
+    }
+
+    /// A1: commit persists the entry and attaches the abort handle.
+    #[test]
+    fn reservation_commit_persists_entry() {
+        let reg = AsyncAgentRegistry::new();
+        let identity = Arc::new(SubagentIdentity::generate(None, "dev"));
+        let res = reg.reserve(Arc::clone(&identity), "t1".into());
+        res.commit(None);
+        let entry = reg.get(&identity.invocation_id).unwrap();
+        assert!(matches!(entry.status, AgentStatus::Running { .. }));
+        assert_eq!(entry.identity.as_ref().map(|i| i.invocation_id.clone()), Some(identity.invocation_id.clone()));
+    }
+
+    /// Identity must survive strip_handles (it is metadata, not a handle).
+    #[test]
+    fn legacy_register_carries_synthetic_identity() {
+        let reg = AsyncAgentRegistry::new();
+        reg.register("a1".into(), "dev".into(), "t1".into(), None);
+        let entry = reg.get("a1").unwrap();
+        let identity = entry.identity.as_ref().expect("synthetic identity present");
+        assert_eq!(identity.invocation_id, "a1");
+        assert_eq!(identity.agent_name, "dev");
     }
 }

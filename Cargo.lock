@@ -57,6 +57,7 @@ dependencies = [
  "tool-experimental",
  "tool-extensions",
  "tracing",
+ "uuid",
  "vector-store",
  "worktree",
 ]

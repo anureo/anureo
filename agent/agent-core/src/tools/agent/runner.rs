@@ -9,6 +9,7 @@ use crate::agent::react::tier_apply::resolve_tier_and_build_config;
 use crate::agent::ReactBuildConfig;
 use crate::profile::AgentProfile;
 use crate::tools::agent::build_config::build_config_from_profile;
+use crate::tools::agent::identity::SubagentIdentity;
 use tool_core::{ToolCallContent, ToolCallContext, ToolSourceError};
 
 /// Build sub-agent config, resolve model tier, construct ReactRunner, and execute.
@@ -23,11 +24,13 @@ pub(super) async fn build_and_run_sub_agent(
     args: &Value,
     working_folder_override: Option<&std::path::Path>,
     ctx: Option<&ToolCallContext>,
+    identity: &SubagentIdentity,
 ) -> Result<(ToolCallContent, super::registry::AgentCompletionStats), ToolSourceError> {
     tracing::info!(
         agent = %profile.name,
         task_length = task.len(),
-        depth = ctx.map(|c| c.depth).unwrap_or(0),
+        depth = identity.depth,
+        invocation_id = %identity.invocation_id,
         "Starting execution of agent task"
     );
     // Note: depth check is performed by the caller (mod.rs).
@@ -107,20 +110,14 @@ pub(super) async fn build_and_run_sub_agent(
     }
 
     // --- thread isolation ---
-    tracing::debug!(
-        agent = %agent_name,
-        final_tier_before_resolution = ?sub_config.model_tier,
-        final_model_before_resolution = ?sub_config.model,
-        final_provider_before_resolution = ?sub_config.llm_provider,
-        "Final model configuration before tier resolution"
-    );
-
-    let depth = ctx.map_or(0, |c| c.depth);
-    let parent_thread_id = base_config.thread_id.as_deref().unwrap_or("root");
-    let sub_thread_id = format!("sub-{}-{}-{}", parent_thread_id, agent_name, depth);
+    // Child thread id comes from the invocation identity (contract §3.1):
+    // includes a seq suffix so concurrent/repeated same-name invocations at
+    // the same depth never collide (GAP-02).
+    let sub_thread_id = identity.child_thread_id.clone();
     sub_config.thread_id = Some(sub_thread_id.clone());
     sub_config.trace_thread_id = base_config.trace_thread_id.clone();
 
+    let depth = identity.depth;
     tracing::debug!(
         agent = %agent_name,
         thread_id = %sub_thread_id,

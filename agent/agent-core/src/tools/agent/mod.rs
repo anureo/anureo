@@ -11,11 +11,11 @@
 //! Use the `agent_get` tool to retrieve results from background agents.
 
 pub mod build_config;
+pub mod identity;
 pub mod registry;
 mod runner;
 mod worktree;
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -28,11 +28,9 @@ use crate::tool_output_normalizer::{ToolOutputHint, ToolOutputStrategy};
 use tool_core::{Tool, ToolCallContent, ToolCallContext, ToolSourceError, ToolSpec};
 
 pub use tool_core::tool_name::TOOL_AGENT;
+pub use identity::SubagentIdentity;
 
 pub(super) const DEFAULT_MAX_DEPTH: u32 = 3;
-
-/// Global counter for unique agent_id generation.
-static ASYNC_SEQ: AtomicU64 = AtomicU64::new(0);
 
 pub struct AgentTool {
     pub(super) base_config: Arc<ReactBuildConfig>,
@@ -66,68 +64,68 @@ impl AgentTool {
         lines.join("\n")
     }
 
-    /// Generate a unique agent_id and extract common fields from args/ctx.
-    fn prepare_agent_id(&self, agent_name: &str, depth: u32) -> String {
-        let parent_thread_id = self.base_config.thread_id.as_deref().unwrap_or("root");
-        let seq = ASYNC_SEQ.fetch_add(1, Ordering::Relaxed);
-        format!("sub-{}-{}-{}-{}", parent_thread_id, agent_name, depth, seq)
-    }
-
-    fn thread_id(&self) -> String {
-        self.base_config
-            .thread_id
-            .clone()
-            .unwrap_or_else(|| "root".to_string())
-    }
-
-    /// Spawn the agent execution as a tokio task and register it.
-    /// Returns the JoinHandle and agent_id.
+    /// Spawn the agent execution as a tokio task.
+    ///
+    /// The registry entry is reserved **before** spawn via an RAII reservation
+    /// (evolution A1): if the spawn path fails, the reservation's Drop removes
+    /// the entry — no permanently-Running ghosts. Commit attaches the abort
+    /// handle for cancellation.
     fn spawn_agent_task(
         &self,
-        agent_name: &str,
+        identity: Arc<SubagentIdentity>,
         args: Value,
         ctx: Option<&ToolCallContext>,
-        agent_id: String,
     ) -> JoinHandle<Result<(ToolCallContent, registry::AgentCompletionStats), ToolSourceError>>
     {
         let base_config = self.base_config.clone();
         let ctx_clone = ctx.cloned();
         let registry = self.registry.clone();
-        let agent_id_for_task = agent_id.clone();
-        let agent_name_owned = agent_name.to_string();
-        let agent_name_for_register = agent_name_owned.clone();
+        let agent_id = identity.invocation_id.clone();
+        let identity_for_task = Arc::clone(&identity);
+
+        // Reserve BEFORE spawn (A1). Drop without commit removes the entry.
+        let thread_id = self
+            .base_config
+            .thread_id
+            .clone()
+            .unwrap_or_else(|| "root".to_string());
+        let reservation = self.registry.reserve(Arc::clone(&identity), thread_id);
+        debug_assert_eq!(reservation.agent_id(), &agent_id);
 
         let handle = tokio::spawn(async move {
             tracing::info!(
-                agent = %agent_name_owned,
-                agent_id = %agent_id_for_task,
+                agent = %identity_for_task.agent_name,
+                agent_id = %identity_for_task.invocation_id,
+                child_session_id = %identity_for_task.child_session_id,
+                child_thread_id = %identity_for_task.child_thread_id,
+                depth = identity_for_task.depth,
                 "Starting agent execution"
             );
-            let result =
-                worktree::invoke_single_agent(&base_config, args, ctx_clone.as_ref()).await;
+            let result = worktree::invoke_single_agent(
+                &base_config,
+                args,
+                ctx_clone.as_ref(),
+                &identity_for_task,
+            )
+            .await;
 
             // Update registry with result.
             match &result {
                 Ok((content, stats)) => {
                     let text = content.as_text().unwrap_or("").to_string();
-                    registry.complete(&agent_id_for_task, text, stats.clone());
+                    registry.complete(&agent_id, text, stats.clone());
                 }
                 Err(e) => {
                     let stats = registry::AgentCompletionStats::default();
-                    registry.fail(&agent_id_for_task, e.to_string(), stats);
+                    registry.fail(&agent_id, e.to_string(), stats);
                 }
             }
             result
         });
 
-        // Register with the AbortHandle for real cancellation.
+        // Commit the reservation with the AbortHandle for real cancellation.
         let abort_handle = handle.abort_handle();
-        self.registry.register(
-            agent_id.clone(),
-            agent_name_for_register,
-            self.thread_id(),
-            Some(abort_handle),
-        );
+        reservation.commit(Some(abort_handle));
 
         handle
     }
@@ -247,21 +245,21 @@ impl Tool for AgentTool {
             )));
         }
 
-        let agent_id = self.prepare_agent_id(&agent_name, current_depth);
+        let identity = Arc::new(SubagentIdentity::generate(ctx, &agent_name));
+        let agent_id = identity.invocation_id.clone();
 
         if background {
-            // Spawn and return immediately.
-            let agent_id_clone = agent_id.clone();
-            self.spawn_agent_task(&agent_name, args, ctx, agent_id);
+            // Reserve → spawn → commit (RAII reservation in spawn_agent_task).
+            self.spawn_agent_task(Arc::clone(&identity), args, ctx);
             let response = serde_json::json!({
-                "agent_id": agent_id_clone,
+                "agent_id": agent_id,
                 "status": "running"
             });
             Ok(ToolCallContent::text(response.to_string()))
         } else {
-            // Spawn + wait with timeout.
+            // Reserve → spawn → wait with timeout.
             let timeout_sec = args.get("timeout").and_then(|v| v.as_u64()).unwrap_or(600);
-            let handle = self.spawn_agent_task(&agent_name, args, ctx, agent_id.clone());
+            let handle = self.spawn_agent_task(identity, args, ctx);
 
             match tokio::time::timeout(std::time::Duration::from_secs(timeout_sec), handle).await {
                 Ok(Ok(Ok((content, _)))) => Ok(content),

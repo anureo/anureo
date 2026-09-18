@@ -5,7 +5,8 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use crate::agent::ReactBuildConfig;
-use crate::profile::resolve_profile;
+use crate::profile::{list_available_profiles, resolve_profile};
+use crate::tools::agent::identity::SubagentIdentity;
 use tool_core::{ToolCallContent, ToolCallContext, ToolSourceError};
 
 use super::runner::build_and_run_sub_agent;
@@ -18,6 +19,7 @@ pub(super) async fn invoke_single_agent(
     base_config: &Arc<ReactBuildConfig>,
     args: Value,
     ctx: Option<&ToolCallContext>,
+    identity: &SubagentIdentity,
 ) -> Result<(ToolCallContent, super::registry::AgentCompletionStats), ToolSourceError> {
     let agent_name = args
         .get("agent")
@@ -44,12 +46,13 @@ pub(super) async fn invoke_single_agent(
         })
         .unwrap_or_default();
 
-    let current_depth = ctx.map(|c| c.depth).unwrap_or(0);
+    let current_depth = identity.depth;
 
     tracing::info!(
         agent = %agent_name,
         task_length = task.len(),
         depth = current_depth,
+        invocation_id = %identity.invocation_id,
         isolation = ?isolation_arg,
         estimated_paths_count = estimated_paths.len(),
         "Starting single agent invocation"
@@ -58,8 +61,21 @@ pub(super) async fn invoke_single_agent(
     // --- resolve profile (needed for worktree config) ---
     tracing::debug!(agent = %agent_name, "Resolving agent profile");
     let profile = resolve_profile(agent_name).map_err(|e| {
+        let available = list_available_profiles();
+        let names = if available.is_empty() {
+            "(no profiles discovered)".to_string()
+        } else {
+            available
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
         tracing::error!(agent = %agent_name, error = %e, "Failed to resolve agent profile");
-        ToolSourceError::InvalidInput(format!("failed to resolve agent '{}': {}", agent_name, e))
+        ToolSourceError::InvalidInput(format!(
+            "failed to resolve agent '{}': {}. Available agents: {}",
+            agent_name, e, names
+        ))
     })?;
 
     // --- worktree isolation ---
@@ -133,6 +149,7 @@ pub(super) async fn invoke_single_agent(
         &args,
         effective_working_folder.as_deref(),
         ctx,
+        identity,
     )
     .await?;
 

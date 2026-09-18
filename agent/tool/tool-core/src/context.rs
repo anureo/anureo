@@ -12,6 +12,10 @@ pub struct ToolCallContext {
     pub acp_session_id: Option<String>,
     pub depth: u32,
     pub run_cancellation: Option<RunCancellation>,
+    /// The tool call that triggered this invocation (contract §3.1
+    /// `parent_tool_call_id`). Filled by the act executor from the current
+    /// `ToolCall` — upstream and reliable, unlike stream-side backfills.
+    pub tool_call_id: Option<String>,
 }
 
 impl ToolCallContext {

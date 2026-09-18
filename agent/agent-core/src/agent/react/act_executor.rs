@@ -203,7 +203,7 @@ impl ToolCallExecutor {
         tc: &ToolCall,
         args: &serde_json::Value,
     ) -> Result<Result<ToolCallContent, ToolSourceError>, GraphError> {
-        let tool_ctx = self.build_tool_ctx();
+        let tool_ctx = self.build_tool_ctx(tc);
         self.emit_start(tc);
 
         debug!(tool = %tc.name, args = ?args, "Calling tool");
@@ -231,7 +231,7 @@ impl ToolCallExecutor {
         Ok(result)
     }
 
-    fn build_tool_ctx(&self) -> ToolCallContext {
+    fn build_tool_ctx(&self, tc: &ToolCall) -> ToolCallContext {
         let any_stream_event_sender = self
             .any_stream_event_sender
             .as_ref()
@@ -245,6 +245,7 @@ impl ToolCallExecutor {
             run_cancellation: self.run_cancellation.clone(),
             any_stream_event_sender,
             acp_session_id: self.acp_session_id.clone(),
+            tool_call_id: tc.id.clone(),
         }
     }
 
