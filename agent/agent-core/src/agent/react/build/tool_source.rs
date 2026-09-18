@@ -350,8 +350,16 @@ pub(crate) async fn build_tool_source(
         }
     }
 
-    // Create shared registry for async agents
-    let registry = crate::tools::AsyncAgentRegistry::new();
+    // Create shared registry for async agents.
+    // A2/Phase-2 seam: an injected shared registry (server-level) wins;
+    // otherwise each runner gets a fresh one (legacy behavior).
+    let mut registry = config
+        .async_agent_registry
+        .clone()
+        .unwrap_or_default();
+    if let Some(max) = config.max_concurrent_subagents {
+        registry = registry.with_max_concurrent(max as usize);
+    }
 
     aggregate
         .register_async(Box::new(AgentTool::new(

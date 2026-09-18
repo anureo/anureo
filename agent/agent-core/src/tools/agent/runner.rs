@@ -182,7 +182,8 @@ pub(super) async fn build_and_run_sub_agent(
                     child_depth,
                     start,
                 ) {
-                    eprintln!("{}", formatted);
+                    // repo convention: tracing, not eprintln (Commit 4).
+                    tracing::info!(target: "subagent_display", "{}", formatted);
                 }
             }
             _ => {}

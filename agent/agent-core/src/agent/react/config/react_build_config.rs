@@ -70,6 +70,13 @@ pub struct ReactBuildConfig {
     /// guard reads. Previously this was hardcoded `None` in the checkpointer,
     /// leaving the guard dead (GAP-06).
     pub depth: Option<u32>,
+    /// Shared sub-agent registry (A2/Phase-2 seam). `None` = each runner
+    /// build creates its own (legacy behavior). ACP injects a server-level
+    /// instance so sub-agents are addressable across sessions.
+    pub async_agent_registry: Option<crate::tools::AsyncAgentRegistry>,
+    /// Max concurrently *executing* sub-agents (codex AgentExecutionLimiter
+    /// analog, evolution A2). `None` = env `MAX_CONCURRENT_SUBAGENTS` or 4.
+    pub max_concurrent_subagents: Option<u32>,
     /// Curator-LLM-pass recursion limit (Hermes parity, `agent/curator.py`
     /// #15). When `Some(n)`, the curator's ObserveNode is constructed
     /// with `with_loop_max_turns(n)` so a runaway loop can never run
@@ -162,6 +169,8 @@ impl Default for ReactBuildConfig {
             skill_registry: None,
             max_sub_agent_depth: None,
             depth: None,
+            async_agent_registry: None,
+            max_concurrent_subagents: None,
             curator_max_iterations: Some(9999),
             dry_run: false,
             builtin_tool_filter: None,
@@ -255,6 +264,10 @@ impl ReactBuildConfig {
                 .ok()
                 .and_then(|s| s.parse().ok()),
             depth: None,
+            async_agent_registry: None,
+            max_concurrent_subagents: std::env::var("MAX_CONCURRENT_SUBAGENTS")
+                .ok()
+                .and_then(|s| s.parse().ok()),
             curator_max_iterations: std::env::var("ANUREO_CURATOR_MAX_ITERATIONS")
                 .ok()
                 .and_then(|s| s.parse().ok()),

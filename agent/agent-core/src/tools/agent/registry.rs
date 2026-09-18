@@ -5,6 +5,7 @@
 //! `agent_id` immediately. Later, `agent_get` with the `agent_id` retrieves the result.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use parking_lot::RwLock;
@@ -76,6 +77,11 @@ impl AgentStatus {
 /// Maximum number of terminal (completed/failed) entries to retain.
 /// Older entries beyond this cap are auto-evicted.
 const MAX_TERMINAL_ENTRIES: usize = 50;
+
+/// Default cap on concurrently *executing* sub-agents (codex
+/// AgentExecutionLimiter analog, evolution A2). Overridable via
+/// `ReactBuildConfig.max_concurrent_subagents` / env `MAX_CONCURRENT_SUBAGENTS`.
+pub const DEFAULT_MAX_CONCURRENT_SUBAGENTS: usize = 4;
 
 /// A tracked entry in the registry.
 #[derive(Debug, Clone)]
@@ -181,6 +187,10 @@ pub struct AsyncAgentRegistry {
     inner: Arc<RwLock<HashMap<String, AgentEntry>>>,
     /// Optional lifecycle bridge (contract §4). `None` = no-op (CLI/tests).
     sink: Option<Arc<dyn SubagentLifecycleSink>>,
+    /// A2: concurrently executing sub-agents.
+    active_executions: Arc<AtomicUsize>,
+    /// A2: cap for `active_executions` (0 until configured; then >= 1).
+    max_concurrent: Arc<AtomicUsize>,
 }
 
 impl std::fmt::Debug for AsyncAgentRegistry {
@@ -188,6 +198,11 @@ impl std::fmt::Debug for AsyncAgentRegistry {
         f.debug_struct("AsyncAgentRegistry")
             .field("entries", &self.inner.read().len())
             .field("has_sink", &self.sink.is_some())
+            .field(
+                "active_executions",
+                &self.active_executions.load(Ordering::Relaxed),
+            )
+            .field("max_concurrent", &self.max_concurrent.load(Ordering::Relaxed))
             .finish()
     }
 }
@@ -232,6 +247,20 @@ impl Drop for AgentReservation {
     }
 }
 
+/// RAII guard for one concurrently-executing sub-agent slot (A2).
+/// Released on Drop — including on panic unwind and on the sync→background
+/// timeout transition (the task is still running, the slot stays held).
+#[derive(Debug)]
+pub struct ExecutionGuard {
+    registry: AsyncAgentRegistry,
+}
+
+impl Drop for ExecutionGuard {
+    fn drop(&mut self) {
+        self.registry.active_executions.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 impl AsyncAgentRegistry {
     pub fn new() -> Self {
         Self::default()
@@ -241,6 +270,58 @@ impl AsyncAgentRegistry {
     pub fn with_sink(mut self, sink: Arc<dyn SubagentLifecycleSink>) -> Self {
         self.sink = Some(sink);
         self
+    }
+
+    /// A2: set the concurrent-execution cap (minimum 1). Clones share the
+    /// atomics, so this applies to the logical registry (all clones).
+    pub fn with_max_concurrent(self, max: usize) -> Self {
+        self.max_concurrent.store(max.max(1), Ordering::Relaxed);
+        self
+    }
+
+    /// A2: current cap on concurrently executing sub-agents.
+    pub fn max_concurrent(&self) -> usize {
+        let max = self.max_concurrent.load(Ordering::Relaxed);
+        if max == 0 {
+            DEFAULT_MAX_CONCURRENT_SUBAGENTS
+        } else {
+            max
+        }
+    }
+
+    /// A2: number of sub-agent executions currently in flight.
+    pub fn active_executions(&self) -> usize {
+        self.active_executions.load(Ordering::Relaxed)
+    }
+
+    /// A2: cheap availability probe (for fast-failing tool responses).
+    pub fn execution_available(&self) -> bool {
+        self.active_executions() < self.max_concurrent()
+    }
+
+    /// A2: acquire one execution slot; `None` when the cap is exhausted.
+    /// The returned guard releases the slot on Drop.
+    pub fn try_begin_execution(&self) -> Option<ExecutionGuard> {
+        let max = self.max_concurrent();
+        let mut current = self.active_executions.load(Ordering::Relaxed);
+        loop {
+            if current >= max {
+                return None;
+            }
+            match self.active_executions.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    return Some(ExecutionGuard {
+                        registry: self.clone(),
+                    })
+                }
+                Err(v) => current = v,
+            }
+        }
     }
 
     /// Emit `created` **before** the task spawns; an error aborts the
@@ -870,5 +951,31 @@ mod tests {
         let identity = SubagentIdentity::generate(None, "dev");
         let err = reg.emit_created(&identity).await.unwrap_err();
         assert!(err.contains("rejected"));
+    }
+
+    /// A2: execution cap enforces the concurrent limit; Drop releases slots.
+    #[test]
+    fn execution_limiter_caps_and_releases() {
+        let reg = AsyncAgentRegistry::new().with_max_concurrent(2);
+        let g1 = reg.try_begin_execution();
+        let g2 = reg.try_begin_execution();
+        assert!(g1.is_some() && g2.is_some(), "two slots available");
+        assert_eq!(reg.active_executions(), 2);
+        assert!(!reg.execution_available());
+        assert!(reg.try_begin_execution().is_none(), "cap exhausted");
+        drop(g1);
+        assert_eq!(reg.active_executions(), 1);
+        assert!(reg.try_begin_execution().is_some(), "slot released on drop");
+    }
+
+    /// A2: default cap is 4; a shared-registry clone sees the same slot state.
+    #[test]
+    fn execution_limiter_default_and_shared_state() {
+        let reg = AsyncAgentRegistry::new();
+        assert_eq!(reg.max_concurrent(), DEFAULT_MAX_CONCURRENT_SUBAGENTS);
+        let clone = reg.clone();
+        let _g = reg.try_begin_execution().unwrap();
+        assert_eq!(clone.active_executions(), 1);
+        assert!(clone.execution_available());
     }
 }

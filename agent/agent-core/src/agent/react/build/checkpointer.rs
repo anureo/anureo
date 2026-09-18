@@ -73,10 +73,12 @@ mod tests {
     /// RunnableConfig seam — the `agent` tool's max-depth guard reads it.
     #[test]
     fn build_runnable_config_propagates_depth_and_session() {
-        let mut config = ReactBuildConfig::default();
-        config.thread_id = Some("t1".into());
-        config.depth = Some(2);
-        config.acp_session_id = Some("sess-9".into());
+        let config = ReactBuildConfig {
+            thread_id: Some("t1".into()),
+            depth: Some(2),
+            acp_session_id: Some("sess-9".into()),
+            ..Default::default()
+        };
 
         let rc = build_runnable_config(&config).expect("thread_id present");
         assert_eq!(rc.depth, Some(2));
@@ -85,8 +87,10 @@ mod tests {
 
     #[test]
     fn build_runnable_config_defaults_stay_none() {
-        let mut config = ReactBuildConfig::default();
-        config.thread_id = Some("t1".into());
+        let config = ReactBuildConfig {
+            thread_id: Some("t1".into()),
+            ..Default::default()
+        };
 
         let rc = build_runnable_config(&config).expect("thread_id present");
         assert_eq!(rc.depth, None);

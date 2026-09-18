@@ -105,6 +105,18 @@ impl AgentTool {
         }
 
         let handle = tokio::spawn(async move {
+            // A2: hold an execution guard for the task's real lifetime. On
+            // failure the invocation errors out (the un-committed reservation
+            // removes the entry).
+            let Some(_execution_guard) = registry.try_begin_execution() else {
+                return Err(ToolSourceError::InvalidInput(format!(
+                    "concurrent sub-agent execution limit reached ({}/{} running); \
+                     wait for agents to finish (agent_get) or cancel one (agent_cancel)",
+                    registry.active_executions(),
+                    registry.max_concurrent()
+                )));
+            };
+
             tracing::info!(
                 agent = %identity_for_task.agent_name,
                 agent_id = %identity_for_task.invocation_id,
@@ -265,6 +277,18 @@ impl Tool for AgentTool {
             return Err(ToolSourceError::InvalidInput(format!(
                 "max sub-agent depth ({}) reached; solve the task yourself instead of delegating further",
                 self.max_depth,
+            )));
+        }
+
+        // A2: fail fast when the concurrent-execution budget is exhausted.
+        // The real guard is acquired inside the spawned task (held across the
+        // sync→background transition; released on true terminal).
+        if !self.registry.execution_available() {
+            return Err(ToolSourceError::InvalidInput(format!(
+                "concurrent sub-agent execution limit reached ({}/{} running); \
+                 wait for agents to finish (agent_get) or cancel one (agent_cancel) before spawning more",
+                self.registry.active_executions(),
+                self.registry.max_concurrent(),
             )));
         }
 
