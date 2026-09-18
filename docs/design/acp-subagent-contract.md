@@ -1,7 +1,7 @@
 # anureo ACP 子代理契约设计
 
 > **状态**：Draft（2026-08-22 可执行开发版，待前后端评审）
-> **进度**：2026-09-18 Phase 1（agent-core 身份/上下文/lifecycle 接缝）已实现——`SubagentIdentity`、`SubagentLifecycleSink`、registry RAII 预留与执行限制、depth/tool_call_id 传播，commits 6036840d/4c817f16/cc046b63/7b82a19c/d5ee7286，见[实现详细方案](./subagent-impl-plan.md)与[差距审计](./subagent-interaction-gap.md) §5。
+> **进度**：2026-09-18 Phase 1（agent-core 身份/上下文/lifecycle 接缝）已实现——`SubagentIdentity`、`SubagentLifecycleSink`、registry RAII 预留与执行限制、depth/tool_call_id 传播，commits 6036840d/4c817f16/cc046b63/7b82a19c/d5ee7286；同日 Phase 2/3/4 后端已实现（`4938b03f`）——ACP durable child session（SessionIndex parent 链 + finish_subagent 单事务收敛）、版本化 metadata 投影（_meta["anureo.dev"].subagent）、session/cancel 的 invocation 级路由与级联取消。见[实现详细方案](./subagent-impl-plan.md)与[差距审计](./subagent-interaction-gap.md) §5。剩余：Desk 侧适配（Phase 3 跨仓，commit 7）。
 > **范围**：把 anureo `agent` tool invocation 暴露为可观测、可加载、可取消的 ACP child session，并与 anureo Desk 建立稳定绑定
 > **相关代码**：`agent/agent-core/src/tools/agent/`、`agent/tool/tool-core/src/context.rs`、`apps/acp/src/stream_bridge.rs`、`apps/acp/src/session.rs`、`apps/acp/src/session_repository.rs`、`apps/acp/src/agent.rs`
 > **交叉参考**：[子代理交互差距审计](./subagent-interaction-gap.md)、[Session List 重设计](./session-list-redesign.md)、[Session List 规范](../acp-spec/extensions/37-session-list.md)、[Session 生命周期](../acp-spec/02-session-lifecycle.md)、[Session Update](../acp-spec/05-session-update.md)

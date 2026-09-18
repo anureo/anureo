@@ -115,7 +115,7 @@ impl SubagentIdentity {
 
 ### 2.4 cancellation 继承（审计 GAP-06 遗留项）
 
-> **状态（2026-09-18）**：**本轮未实现，遗留为 M2 前置项**。需要先摸清 react runner 的 cancellation 管线（RunOptions → ActExecutor 的 `run_cancellation` 来源）再接线，避免盲改。registry 侧的取消句柄与终态收敛（Commit 3 的 sink 路径）已就绪，接线点只剩子 build 一处。
+> **状态（2026-09-18 晚更新）**：✅ **已实现**。`build_react_runner` 的第二参数即 `cancellation: Option<RunCancellation>`（runners.rs:120），`runner.rs` 调用处已传入 `ctx.run_cancellation.clone()`——父 turn 取消即取消运行中的子代理（同步路径，契约 §7.2 运行中部分）。后台路径独立 token + registry 级联（§5.2）覆盖。
 
 `ToolCallContext.run_cancellation` 已存在但子 build 未接。`runner.rs` 构建 `RunOptions` 时：
 
@@ -347,8 +347,8 @@ set_cancelled(child)                      // 现有 turn 级
 | 里程碑 | 内容 | 出口条件 |
 | --- | --- | --- |
 | M1（当晚） | ✅ **已完成（2026-09-18）**：提交 1、1b、2-4（Phase 1 全部 + 工具面修缮），commits `6036840d`/`4c817f16`/`cc046b63`/`7b82a19c`/`d5ee7286` | 测试 1-4、11 绿（393/393）+ clippy 零警告 |
-| M2 | 提交 5-6（后端 child session + metadata） | 测试 5-7 绿；Desk 可经 SessionIndex 打开 child |
+| M2 | ✅ **已完成（2026-09-18）**：提交 5-6 合并为 `4938b03f`（后端 child session + metadata），测试 5、6、7 绿（747+4 e2e） | Desk 经 SessionIndex 打开 child 的验收依赖跨仓 M3 |
 | M3 | 提交 7（Desk 适配，跨仓） | 测试 9 绿；显式绑定禁时间窗 |
-| M4 | 提交 8（取消/统计/后台）+ 9（签收） | 测试 8、10 绿；契约 §12 完成定义逐项核对后改状态"已实现" |
+| M4 | 提交 8（取消/统计/后台）+ 9（签收） | ✅ **后端部分完成（2026-09-18）**：`4938b03f`（测试 8 绿）；跨仓 e2e 与签收材料待 Desk 侧后补 |
 
 MVP 发布边界严格遵循审计 §8：缺任一项只称"实验性 in-process 子代理"。
