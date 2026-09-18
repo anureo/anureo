@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use tokio::task::AbortHandle;
 
 use super::identity::SubagentIdentity;
+use super::lifecycle::{SubagentLifecycleSink, SubagentOutcome};
 
 /// Statistics from a completed/failed agent execution.
 #[derive(Debug, Clone, Default)]
@@ -175,9 +176,20 @@ impl AgentEntry {
 }
 
 /// Thread-safe registry for async agent invocations.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct AsyncAgentRegistry {
     inner: Arc<RwLock<HashMap<String, AgentEntry>>>,
+    /// Optional lifecycle bridge (contract §4). `None` = no-op (CLI/tests).
+    sink: Option<Arc<dyn SubagentLifecycleSink>>,
+}
+
+impl std::fmt::Debug for AsyncAgentRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AsyncAgentRegistry")
+            .field("entries", &self.inner.read().len())
+            .field("has_sink", &self.sink.is_some())
+            .finish()
+    }
 }
 
 /// RAII reservation returned by [`AsyncAgentRegistry::reserve`].
@@ -223,6 +235,71 @@ impl Drop for AgentReservation {
 impl AsyncAgentRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Attach a lifecycle bridge (contract §4). Returns `self` for chaining.
+    pub fn with_sink(mut self, sink: Arc<dyn SubagentLifecycleSink>) -> Self {
+        self.sink = Some(sink);
+        self
+    }
+
+    /// Emit `created` **before** the task spawns; an error aborts the
+    /// invocation (contract §4 — no task, no durable ghost).
+    pub(crate) async fn emit_created(&self, identity: &SubagentIdentity) -> Result<(), String> {
+        match &self.sink {
+            Some(sink) => sink.created(identity).await,
+            None => Ok(()),
+        }
+    }
+
+    /// Emit `running` after the task has been spawned and committed.
+    pub(crate) async fn emit_running(&self, identity: &SubagentIdentity) {
+        if let Some(sink) = &self.sink {
+            if let Err(e) = sink.running(identity).await {
+                tracing::warn!(
+                    agent_id = %identity.invocation_id,
+                    error = %e,
+                    "lifecycle `running` emission failed"
+                );
+            }
+        }
+    }
+
+    /// Fire-and-forget terminal emission. Exactly-once converges on the
+    /// terminal-guard in `complete`/`fail`/`cancel` — each calls this at
+    /// most once per invocation.
+    fn emit_terminal_spawned(
+        &self,
+        agent_id: &str,
+        identity: Option<Arc<SubagentIdentity>>,
+        outcome: SubagentOutcome,
+    ) {
+        let Some(sink) = self.sink.clone() else {
+            return;
+        };
+        let Some(identity) = identity else {
+            tracing::debug!(
+                agent_id = %agent_id,
+                "terminal transition without identity; sink not notified"
+            );
+            return;
+        };
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            tracing::warn!(
+                agent_id = %identity.invocation_id,
+                "terminal emission outside tokio runtime; dropped"
+            );
+            return;
+        };
+        handle.spawn(async move {
+            if let Err(e) = sink.terminal(&identity, &outcome).await {
+                tracing::warn!(
+                    agent_id = %identity.invocation_id,
+                    error = %e,
+                    "lifecycle `terminal` emission failed"
+                );
+            }
+        });
     }
 
     /// Reserve an entry as `Running` **before** spawning the task (evolution A1).
@@ -298,6 +375,7 @@ impl AsyncAgentRegistry {
             tracing::info!(agent_id = %agent_id, "Agent task aborted via agent_cancel tool");
         }
 
+        let mut identity = None;
         if let Some(entry) = self.inner.write().get_mut(agent_id) {
             let Some(started_at) = entry.status.started_at_if_active() else {
                 return Ok(()); // Race: went terminal between take and mark.
@@ -313,14 +391,20 @@ impl AsyncAgentRegistry {
                 failed_at,
                 duration_ms,
             };
+            identity = entry.identity.clone();
         }
+        self.emit_terminal_spawned(agent_id, identity, SubagentOutcome::Cancelled);
         self.evict_if_needed();
         Ok(())
     }
 
     /// Update an agent's status to completed.
     pub fn complete(&self, agent_id: &str, result: String, stats: AgentCompletionStats) {
-        if let Some(entry) = self.inner.write().get_mut(agent_id) {
+        let identity = {
+            let mut inner = self.inner.write();
+            let Some(entry) = inner.get_mut(agent_id) else {
+                return;
+            };
             let Some(started_at) = entry.status.started_at_if_active() else {
                 return; // Already terminal — don't overwrite.
             };
@@ -335,14 +419,25 @@ impl AsyncAgentRegistry {
                 completed_at,
                 duration_ms,
             };
-            tracing::debug!(agent_id = %agent_id, "Async agent completed");
-        }
+            entry.identity.clone()
+        };
+        tracing::debug!(agent_id = %agent_id, "Async agent completed");
+        self.emit_terminal_spawned(
+            agent_id,
+            identity,
+            SubagentOutcome::Completed { stats },
+        );
         self.evict_if_needed();
     }
 
     /// Update an agent's status to failed.
     pub fn fail(&self, agent_id: &str, error: String, stats: AgentCompletionStats) {
-        if let Some(entry) = self.inner.write().get_mut(agent_id) {
+        let outcome_error = error.clone();
+        let identity = {
+            let mut inner = self.inner.write();
+            let Some(entry) = inner.get_mut(agent_id) else {
+                return;
+            };
             let Some(started_at) = entry.status.started_at_if_active() else {
                 return;
             };
@@ -357,8 +452,16 @@ impl AsyncAgentRegistry {
                 failed_at,
                 duration_ms,
             };
-            tracing::debug!(agent_id = %agent_id, "Async agent failed");
-        }
+            entry.identity.clone()
+        };
+        tracing::debug!(agent_id = %agent_id, "Async agent failed");
+        self.emit_terminal_spawned(
+            agent_id,
+            identity,
+            SubagentOutcome::Failed {
+                error: outcome_error,
+            },
+        );
         self.evict_if_needed();
     }
 
@@ -627,5 +730,145 @@ mod tests {
         let identity = entry.identity.as_ref().expect("synthetic identity present");
         assert_eq!(identity.invocation_id, "a1");
         assert_eq!(identity.agent_name, "dev");
+    }
+
+    // --- lifecycle sink (contract §4) ---
+
+    struct RecordingSink {
+        events: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl RecordingSink {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                events: std::sync::Mutex::new(Vec::new()),
+            })
+        }
+
+        fn snapshot(&self) -> Vec<String> {
+            self.events.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SubagentLifecycleSink for RecordingSink {
+        async fn created(&self, id: &SubagentIdentity) -> Result<(), String> {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("created:{}", id.invocation_id));
+            Ok(())
+        }
+
+        async fn running(&self, id: &SubagentIdentity) -> Result<(), String> {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("running:{}", id.invocation_id));
+            Ok(())
+        }
+
+        async fn terminal(
+            &self,
+            id: &SubagentIdentity,
+            outcome: &SubagentOutcome,
+        ) -> Result<(), String> {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("terminal:{}:{}", outcome.kind(), id.invocation_id));
+            Ok(())
+        }
+    }
+
+    async fn wait_for_events(sink: &RecordingSink, n: usize) {
+        for _ in 0..200 {
+            if sink.snapshot().len() >= n {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        panic!("sink events did not reach {n}: {:?}", sink.snapshot());
+    }
+
+    /// Contract §4: created → running → terminal, in order; the terminal
+    /// guard guarantees exactly one terminal emission even across repeated
+    /// terminal transitions.
+    #[tokio::test]
+    async fn lifecycle_ordering_and_exactly_once_terminal() {
+        let sink = RecordingSink::new();
+        let reg =
+            AsyncAgentRegistry::new().with_sink(Arc::clone(&sink) as Arc<dyn SubagentLifecycleSink>);
+        let identity = Arc::new(SubagentIdentity::generate(None, "dev"));
+
+        let res = reg.reserve(Arc::clone(&identity), "t1".into());
+        reg.emit_created(&identity).await.unwrap();
+        res.commit(None);
+        reg.emit_running(&identity).await;
+
+        reg.complete(&identity.invocation_id, "done".into(), AgentCompletionStats::default());
+        // Second attempt must not emit a second terminal.
+        reg.complete(&identity.invocation_id, "done2".into(), AgentCompletionStats::default());
+
+        wait_for_events(&sink, 3).await;
+        assert_eq!(
+            sink.snapshot(),
+            vec![
+                format!("created:{}", identity.invocation_id),
+                format!("running:{}", identity.invocation_id),
+                format!("terminal:completed:{}", identity.invocation_id),
+            ]
+        );
+        // Room for a (wrong) second emission to surface.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert_eq!(sink.snapshot().len(), 3, "exactly one terminal");
+    }
+
+    /// Cancel path produces a Cancelled terminal via the same guard.
+    #[tokio::test]
+    async fn cancel_emits_cancelled_terminal() {
+        let sink = RecordingSink::new();
+        let reg =
+            AsyncAgentRegistry::new().with_sink(Arc::clone(&sink) as Arc<dyn SubagentLifecycleSink>);
+        let identity = Arc::new(SubagentIdentity::generate(None, "dev"));
+
+        reg.reserve(Arc::clone(&identity), "t1".into()).commit(None);
+        reg.emit_created(&identity).await.unwrap();
+        reg.emit_running(&identity).await;
+        reg.cancel(&identity.invocation_id).unwrap();
+
+        wait_for_events(&sink, 3).await;
+        let events = sink.snapshot();
+        assert!(
+            events.last().unwrap().contains("terminal:cancelled"),
+            "last event should be cancelled terminal, got {events:?}"
+        );
+    }
+
+    /// created rejection (Phase 2: durable child-session failure) surfaces
+    /// to the caller so the invocation aborts — no task, no ghost.
+    #[tokio::test]
+    async fn created_rejection_surfaces_to_caller() {
+        struct RejectingSink;
+        #[async_trait::async_trait]
+        impl SubagentLifecycleSink for RejectingSink {
+            async fn created(&self, _id: &SubagentIdentity) -> Result<(), String> {
+                Err("child session rejected".into())
+            }
+            async fn running(&self, _id: &SubagentIdentity) -> Result<(), String> {
+                Ok(())
+            }
+            async fn terminal(
+                &self,
+                _id: &SubagentIdentity,
+                _outcome: &SubagentOutcome,
+            ) -> Result<(), String> {
+                Ok(())
+            }
+        }
+        let reg = AsyncAgentRegistry::new().with_sink(Arc::new(RejectingSink));
+        let identity = SubagentIdentity::generate(None, "dev");
+        let err = reg.emit_created(&identity).await.unwrap_err();
+        assert!(err.contains("rejected"));
     }
 }

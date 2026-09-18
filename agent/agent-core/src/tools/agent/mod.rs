@@ -12,6 +12,7 @@
 
 pub mod build_config;
 pub mod identity;
+pub mod lifecycle;
 pub mod registry;
 mod runner;
 mod worktree;
@@ -66,17 +67,19 @@ impl AgentTool {
 
     /// Spawn the agent execution as a tokio task.
     ///
-    /// The registry entry is reserved **before** spawn via an RAII reservation
-    /// (evolution A1): if the spawn path fails, the reservation's Drop removes
-    /// the entry — no permanently-Running ghosts. Commit attaches the abort
-    /// handle for cancellation.
-    fn spawn_agent_task(
+    /// Lifecycle order (contract §4): `created` before spawn (failure aborts
+    /// the invocation — the RAII reservation Drop removes the entry),
+    /// `running` after commit, `terminal` exactly once from the registry's
+    /// terminal guard.
+    async fn spawn_agent_task(
         &self,
         identity: Arc<SubagentIdentity>,
         args: Value,
         ctx: Option<&ToolCallContext>,
-    ) -> JoinHandle<Result<(ToolCallContent, registry::AgentCompletionStats), ToolSourceError>>
-    {
+    ) -> Result<
+        JoinHandle<Result<(ToolCallContent, registry::AgentCompletionStats), ToolSourceError>>,
+        ToolSourceError,
+    > {
         let base_config = self.base_config.clone();
         let ctx_clone = ctx.cloned();
         let registry = self.registry.clone();
@@ -91,6 +94,15 @@ impl AgentTool {
             .unwrap_or_else(|| "root".to_string());
         let reservation = self.registry.reserve(Arc::clone(&identity), thread_id);
         debug_assert_eq!(reservation.agent_id(), &agent_id);
+
+        // Lifecycle: created before spawn. Failure aborts the invocation;
+        // the un-committed reservation removes the entry.
+        if let Err(e) = self.registry.emit_created(&identity).await {
+            return Err(ToolSourceError::Transport(format!(
+                "sub-agent lifecycle 'created' rejected: {}",
+                e
+            )));
+        }
 
         let handle = tokio::spawn(async move {
             tracing::info!(
@@ -127,7 +139,10 @@ impl AgentTool {
         let abort_handle = handle.abort_handle();
         reservation.commit(Some(abort_handle));
 
-        handle
+        // Lifecycle: running once the task is live and committed.
+        self.registry.emit_running(&identity).await;
+
+        Ok(handle)
     }
 }
 
@@ -257,17 +272,18 @@ impl Tool for AgentTool {
         let agent_id = identity.invocation_id.clone();
 
         if background {
-            // Reserve → spawn → commit (RAII reservation in spawn_agent_task).
-            self.spawn_agent_task(Arc::clone(&identity), args, ctx);
+            // Reserve → created → spawn → commit (RAII reservation).
+            self.spawn_agent_task(Arc::clone(&identity), args, ctx)
+                .await?;
             let response = serde_json::json!({
                 "agent_id": agent_id,
                 "status": "running"
             });
             Ok(ToolCallContent::text(response.to_string()))
         } else {
-            // Reserve → spawn → wait with timeout.
+            // Reserve → created → spawn → wait with timeout.
             let timeout_sec = args.get("timeout").and_then(|v| v.as_u64()).unwrap_or(600);
-            let handle = self.spawn_agent_task(identity, args, ctx);
+            let handle = self.spawn_agent_task(identity, args, ctx).await?;
 
             match tokio::time::timeout(std::time::Duration::from_secs(timeout_sec), handle).await {
                 Ok(Ok(Ok((content, stats)))) => {
