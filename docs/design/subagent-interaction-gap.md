@@ -141,6 +141,8 @@ parent ACP session
 
 ### Phase 1：修复 agent-core 身份与上下文
 
+> **✅ 已实现（2026-09-18）**：commits `6036840d`（SubagentIdentity 统一 + tool_call_id 传播 + RAII 预留修 spawn/register 竞态）、`4c817f16`（工具面修缮 T1-T7/T10，含 contract §7.2 幂等取消前移）、`cc046b63`（depth/acp_session_id 透传，max-depth 守卫复活）、`7b82a19c`（SubagentLifecycleSink 恰一次 terminal）、`d5ee7286`（registry 注入接缝 + eprintln→tracing + A2 并发执行限制）。393/393 nextest 通过、clippy 零警告。本节以下原始内容保留为排期存档。
+
 改动：
 
 - 新增 `SubagentIdentity`，在一次 invocation 的入口生成全部 ID。
