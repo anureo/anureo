@@ -63,6 +63,13 @@ pub struct ReactBuildConfig {
     pub acp_mcp_sources: Option<Vec<(String, Arc<tool_basic::McpToolSource>)>>,
     pub skill_registry: Option<Arc<SkillRegistry>>,
     pub max_sub_agent_depth: Option<u32>,
+    /// Invocation depth of the session built from this config (0 = top
+    /// level). Cloned into sub configs and threaded through
+    /// `build_runnable_config` into `RunnableConfig::depth` →
+    /// `ToolCallContext::depth`, which is what the `agent` tool's max-depth
+    /// guard reads. Previously this was hardcoded `None` in the checkpointer,
+    /// leaving the guard dead (GAP-06).
+    pub depth: Option<u32>,
     /// Curator-LLM-pass recursion limit (Hermes parity, `agent/curator.py`
     /// #15). When `Some(n)`, the curator's ObserveNode is constructed
     /// with `with_loop_max_turns(n)` so a runaway loop can never run
@@ -154,6 +161,7 @@ impl Default for ReactBuildConfig {
             acp_mcp_sources: None,
             skill_registry: None,
             max_sub_agent_depth: None,
+            depth: None,
             curator_max_iterations: Some(9999),
             dry_run: false,
             builtin_tool_filter: None,
@@ -246,6 +254,7 @@ impl ReactBuildConfig {
             max_sub_agent_depth: std::env::var("MAX_SUB_AGENT_DEPTH")
                 .ok()
                 .and_then(|s| s.parse().ok()),
+            depth: None,
             curator_max_iterations: std::env::var("ANUREO_CURATOR_MAX_ITERATIONS")
                 .ok()
                 .and_then(|s| s.parse().ok()),

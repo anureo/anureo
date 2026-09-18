@@ -118,6 +118,10 @@ pub(super) async fn build_and_run_sub_agent(
     sub_config.trace_thread_id = base_config.trace_thread_id.clone();
 
     let depth = identity.depth;
+    // GAP-06 fix: land the child depth in the config so `build_runnable_config`
+    // threads it into RunnableConfig → ToolCallContext — nested invocations
+    // see monotonically increasing depth and the max-depth guard is live.
+    sub_config.depth = Some(depth);
     tracing::debug!(
         agent = %agent_name,
         thread_id = %sub_thread_id,

@@ -53,10 +53,43 @@ pub(super) fn build_runnable_config(config: &ReactBuildConfig) -> Option<Runnabl
         checkpoint_ns: String::new(),
         user_id: config.user_id.clone(),
         resume_from_node_id: None,
-        depth: None,
-        acp_session_id: None,
+        // GAP-06 fix: stop dropping depth / acp_session_id at this seam.
+        // The act executor reads `depth` into ToolCallContext, which is what
+        // the `agent` tool's max-depth guard checks — hardcoding None here
+        // kept the guard dead for every real session.
+        depth: config.depth,
+        acp_session_id: config.acp_session_id.clone(),
         resume_value: None,
         resume_values_by_namespace: Default::default(),
         resume_values_by_interrupt_id: Default::default(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// GAP-06: depth/acp_session_id must survive the ReactBuildConfig →
+    /// RunnableConfig seam — the `agent` tool's max-depth guard reads it.
+    #[test]
+    fn build_runnable_config_propagates_depth_and_session() {
+        let mut config = ReactBuildConfig::default();
+        config.thread_id = Some("t1".into());
+        config.depth = Some(2);
+        config.acp_session_id = Some("sess-9".into());
+
+        let rc = build_runnable_config(&config).expect("thread_id present");
+        assert_eq!(rc.depth, Some(2));
+        assert_eq!(rc.acp_session_id.as_deref(), Some("sess-9"));
+    }
+
+    #[test]
+    fn build_runnable_config_defaults_stay_none() {
+        let mut config = ReactBuildConfig::default();
+        config.thread_id = Some("t1".into());
+
+        let rc = build_runnable_config(&config).expect("thread_id present");
+        assert_eq!(rc.depth, None);
+        assert_eq!(rc.acp_session_id, None);
+    }
 }
