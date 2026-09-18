@@ -115,6 +115,8 @@ impl SubagentIdentity {
 
 ### 2.4 cancellation 继承（审计 GAP-06 遗留项）
 
+> **状态（2026-09-18）**：**本轮未实现，遗留为 M2 前置项**。需要先摸清 react runner 的 cancellation 管线（RunOptions → ActExecutor 的 `run_cancellation` 来源）再接线，避免盲改。registry 侧的取消句柄与终态收敛（Commit 3 的 sink 路径）已就绪，接线点只剩子 build 一处。
+
 `ToolCallContext.run_cancellation` 已存在但子 build 未接。`runner.rs` 构建 `RunOptions` 时：
 
 - 同步路径：直接传 `ctx.run_cancellation.clone()`（父取消 → 子随动，满足契约 §7.2 级联的运行中部分）。
