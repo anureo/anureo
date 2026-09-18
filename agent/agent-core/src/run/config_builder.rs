@@ -75,6 +75,10 @@ pub fn build_react_config(
 
     let mut base = ReactBuildConfig::from_env();
     base.goal_mode = effective_opts.goal_mode;
+    // Phase 2 seams: shared sub-agent registry + lifecycle bridge pass
+    // straight through so the tool build path attaches them (contract §4).
+    base.async_agent_registry = effective_opts.async_agent_registry.clone();
+    base.subagent_sink = effective_opts.subagent_sink.clone();
     // Preserve caller-provided tools (ACP bridges, including get/create/update_goal)
     // before appending process-wide defaults below.  Dropping this field leaves
     // the tools constructed by the ACP host registered in logs but invisible to

@@ -186,10 +186,15 @@ async fn fetch_available_models() -> Vec<ModelOption> {
 /// If [`session_update_tx`](Self::session_update_tx) is set, prompt execution sends
 /// session/update notifications through this channel.
 pub struct AnureoAcpAgent {
-    pub(crate) sessions: SessionStore,
+    pub(crate) sessions: Arc<SessionStore>,
     pub(crate) agent_registry: AgentRegistry,
     pub(crate) config_store: SessionConfigStore,
     pub(crate) session_repository: SessionRepository,
+
+    /// Shared sub-agent registry (Phase 2): one per agent instance so child
+    /// invocations are addressable across sessions (`session/cancel` on a
+    /// child session routes to its invocation via the identity index).
+    pub(crate) async_agent_registry: agent::tools::AsyncAgentRegistry,
     /// SQLite path used by both session metadata and checkpoint history.
     /// Keeping it on the agent lets embedded hosts and tests isolate agents
     /// without mutating the process-wide `ANUREO_HOME` environment variable.
@@ -294,12 +299,14 @@ impl AnureoAcpAgent {
             .map_err(|e| format!("session config store init failed: {e}"))?;
         let session_repository = SessionRepository::new(&db_path)
             .map_err(|e| format!("session repository init failed: {e}"))?;
+        let async_agent_registry = agent::tools::AsyncAgentRegistry::new();
 
         let agent = Self {
-            sessions: SessionStore::new(),
+            sessions: Arc::new(SessionStore::new()),
             agent_registry: AgentRegistry::new(),
             config_store,
             session_repository,
+            async_agent_registry,
             checkpoint_db_path: db_path,
             session_update_tx,
             model_provider: Arc::new(RealModelProvider),
@@ -986,7 +993,46 @@ impl AnureoAcpAgent {
         tracing::debug!(session_id = %args.session_id, "cancel called");
         let key = OurSessionId::new(args.session_id.to_string());
         self.sessions.cancel_current_generation(&key);
+        self.cancel_subagent_invocations(args.session_id.to_string());
         Ok(())
+    }
+
+    /// Phase 4 (contract §7.2): cancellation is subagent-aware.
+    ///
+    /// - If `session_id` identifies a running sub-agent invocation, its
+    ///   registry entry is cancelled (graceful terminal).
+    /// - The cancelled session's own sub-agents are cascaded with a visited
+    ///   set so each nested invocation reaches a normal terminal closure.
+    fn cancel_subagent_invocations(&self, session_id: String) {
+        let registry = &self.async_agent_registry;
+        let mut queue = vec![session_id];
+        let mut visited = std::collections::HashSet::new();
+        while let Some(current) = queue.pop() {
+            if !visited.insert(current.clone()) {
+                continue;
+            }
+            // Case 1: the session IS a running invocation.
+            if let Some(entry) = registry.get_by_child_session(&current) {
+                if let Err(e) = registry.cancel(&entry.agent_id) {
+                    tracing::debug!(
+                        agent_id = %entry.agent_id,
+                        error = %e,
+                        "cascade cancel: invocation already terminal"
+                    );
+                }
+            }
+            // Case 2: the session owns sub-agent invocations (its own children
+            // reached terminal long ago stay in the map with parent index —
+            // cancel() is a no-op success for terminal entries).
+            for child in registry.list_by_parent_session(&current) {
+                queue.push(
+                    child
+                        .identity
+                        .map(|i| i.child_session_id.clone())
+                        .unwrap_or_default(),
+                );
+            }
+        }
     }
 
     pub fn cancel_all(&self) {
@@ -1560,6 +1606,12 @@ impl AnureoAcpAgent {
             provider_type: resolved.provider_type,
             any_stream_event_sender: None,
             acp_session_id: Some(args.session_id.to_string()),
+            // Phase 2/3 seams: shared registry + durable lifecycle bridge.
+            async_agent_registry: Some(self.async_agent_registry.clone()),
+            subagent_sink: Some(crate::subagent_runtime::acp_subagent_runtime(
+                Arc::clone(&self.sessions),
+                self.session_repository.clone(),
+            )),
             bash_executor: {
                 if client_capabilities.supports_terminal() {
                     tracing::info!("Using ACP client terminal executor");

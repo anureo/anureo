@@ -70,6 +70,15 @@ pub struct RunOptions {
     /// entry points set this once; `build_react_config` consumes it.
     pub default_extra_tools_provider: Option<ExtraToolsProvider>,
     pub acp_session_id: Option<String>,
+    /// Shared sub-agent registry (Phase 2 seam). `None` = per-runner default.
+    /// ACP injects a server-level instance so sub-agents are addressable
+    /// across sessions.
+    pub async_agent_registry: Option<crate::tools::AsyncAgentRegistry>,
+    /// Lifecycle bridge for sub-agent invocations (contract §4). Attached to
+    /// the registry built from this config; the ACP implementation registers
+    /// durable child sessions.
+    pub subagent_sink:
+        Option<Arc<dyn crate::tools::agent::lifecycle::SubagentLifecycleSink>>,
     pub force_compact: bool,
     pub chat_id: Option<i64>,
     pub worktree: bool,
@@ -124,6 +133,8 @@ impl Clone for RunOptions {
             extra_tools: self.extra_tools.clone(),
             default_extra_tools_provider: self.default_extra_tools_provider.clone(),
             acp_session_id: self.acp_session_id.clone(),
+            async_agent_registry: self.async_agent_registry.clone(),
+            subagent_sink: self.subagent_sink.clone(),
             force_compact: self.force_compact,
             chat_id: self.chat_id,
             worktree: self.worktree,

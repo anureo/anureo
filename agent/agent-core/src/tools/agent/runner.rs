@@ -162,9 +162,11 @@ pub(super) async fn build_and_run_sub_agent(
     let runner = build_react_runner(&sub_config, None, false, None, runner_sender)
         .await
         .map_err(|e| {
-            tracing::error!(agent = %agent_name, error = %e, "Failed to build sub-agent runner");
-            ToolSourceError::Transport(format!("failed to build sub-agent '{}': {}", agent_name, e))
+            ToolSourceError::InvalidInput(format!("failed to build sub-agent runner: {}", e))
         })?;
+    // §2.4: inherit the parent's run cancellation so cancelling the parent
+    // turn also cancels the running sub-agent (contract §7.2).
+    let runner = runner.with_cancellation(ctx.and_then(|c| c.run_cancellation.clone()));
 
     tracing::debug!(agent = %agent_name, "Starting sub-agent execution");
     let agent_name_for_event = agent_name.to_string();

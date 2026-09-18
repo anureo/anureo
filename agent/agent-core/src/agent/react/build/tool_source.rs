@@ -357,6 +357,9 @@ pub(crate) async fn build_tool_source(
         .async_agent_registry
         .clone()
         .unwrap_or_default();
+    if let Some(sink) = config.subagent_sink.clone() {
+        registry = registry.with_sink(sink);
+    }
     if let Some(max) = config.max_concurrent_subagents {
         registry = registry.with_max_concurrent(max as usize);
     }

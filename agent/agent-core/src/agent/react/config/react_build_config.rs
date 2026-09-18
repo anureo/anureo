@@ -74,6 +74,11 @@ pub struct ReactBuildConfig {
     /// build creates its own (legacy behavior). ACP injects a server-level
     /// instance so sub-agents are addressable across sessions.
     pub async_agent_registry: Option<crate::tools::AsyncAgentRegistry>,
+    /// Lifecycle bridge (contract §4) attached to the registry built from
+    /// this config. ACP provides the runtime that registers durable child
+    /// sessions.
+    pub subagent_sink:
+        Option<Arc<dyn crate::tools::agent::lifecycle::SubagentLifecycleSink>>,
     /// Max concurrently *executing* sub-agents (codex AgentExecutionLimiter
     /// analog, evolution A2). `None` = env `MAX_CONCURRENT_SUBAGENTS` or 4.
     pub max_concurrent_subagents: Option<u32>,
@@ -170,6 +175,7 @@ impl Default for ReactBuildConfig {
             max_sub_agent_depth: None,
             depth: None,
             async_agent_registry: None,
+            subagent_sink: None,
             max_concurrent_subagents: None,
             curator_max_iterations: Some(9999),
             dry_run: false,
@@ -265,6 +271,7 @@ impl ReactBuildConfig {
                 .and_then(|s| s.parse().ok()),
             depth: None,
             async_agent_registry: None,
+            subagent_sink: None,
             max_concurrent_subagents: std::env::var("MAX_CONCURRENT_SUBAGENTS")
                 .ok()
                 .and_then(|s| s.parse().ok()),

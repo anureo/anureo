@@ -39,6 +39,47 @@ pub struct AgentTool {
     pub(super) registry: registry::AsyncAgentRegistry,
 }
 
+const SUBAGENT_STARTED_KEY: &str = "anureoSubagentStarted";
+const SUBAGENT_ENDED_KEY: &str = "anureoSubagentEnded";
+
+/// Build the versioned subagent metadata envelope (contract §6.1/§6.2).
+fn subagent_meta_envelope(
+    identity: &SubagentIdentity,
+    status: &str,
+    stats: Option<&registry::AgentCompletionStats>,
+    error: Option<&str>,
+) -> Value {
+    let stats_json = stats.map(|s| {
+        serde_json::json!({
+            "turnCount": s.turn_count,
+            "totalTokens": s.total_tokens,
+            "toolCallsCount": s.tool_calls_count,
+        })
+    });
+    serde_json::json!({
+        "version": 1,
+        "invocationId": identity.invocation_id,
+        "sessionId": identity.child_session_id,
+        "parentSessionId": identity.parent_session_id,
+        "parentToolCallId": identity.parent_tool_call_id,
+        "agent": identity.agent_name,
+        "model": Value::Null,
+        "depth": identity.depth,
+        "status": status,
+        "stats": stats_json,
+        "error": error,
+    })
+}
+
+/// Emit a subagent lifecycle frame through the stream channel. The Value
+/// channel is strictly deserialized into TypedAnyStreamEvent, so the payload
+/// must be shaped `{"React":{"Custom":{...}}}` (StreamEvent::Custom).
+fn emit_subagent_frame(ctx: Option<&ToolCallContext>, kind: &str, envelope: Value) {
+    if let Some(sender) = ctx.and_then(|c| c.any_stream_event_sender.as_ref()) {
+        sender(serde_json::json!({ "React": { "Custom": { kind: envelope } } }));
+    }
+}
+
 impl AgentTool {
     pub fn new(
         base_config: Arc<ReactBuildConfig>,
@@ -95,14 +136,21 @@ impl AgentTool {
         let reservation = self.registry.reserve(Arc::clone(&identity), thread_id);
         debug_assert_eq!(reservation.agent_id(), &agent_id);
 
-        // Lifecycle: created before spawn. Failure aborts the invocation;
-        // the un-committed reservation removes the entry.
-        if let Err(e) = self.registry.emit_created(&identity).await {
-            return Err(ToolSourceError::Transport(format!(
-                "sub-agent lifecycle 'created' rejected: {}",
-                e
-            )));
-        }
+            // Lifecycle: created before spawn. Failure aborts the invocation;
+            // the un-committed reservation removes the entry.
+            if let Err(e) = self.registry.emit_created(&identity).await {
+                return Err(ToolSourceError::Transport(format!(
+                    "sub-agent lifecycle 'created' rejected: {}",
+                    e
+                )));
+            }
+
+            // Phase 3: versioned metadata frame (running) for the parent UI.
+            emit_subagent_frame(
+                ctx,
+                SUBAGENT_STARTED_KEY,
+                subagent_meta_envelope(&identity, "running", None, None),
+            );
 
         let handle = tokio::spawn(async move {
             // A2: hold an execution guard for the task's real lifetime. On
@@ -138,10 +186,21 @@ impl AgentTool {
                 Ok((content, stats)) => {
                     let text = content.as_text().unwrap_or("").to_string();
                     registry.complete(&agent_id, text, stats.clone());
+                    // Phase 3/4: terminal metadata frame with stats.
+                    emit_subagent_frame(
+                        ctx_clone.as_ref(),
+                        SUBAGENT_ENDED_KEY,
+                        subagent_meta_envelope(&identity_for_task, "completed", Some(stats), None),
+                    );
                 }
                 Err(e) => {
                     let stats = registry::AgentCompletionStats::default();
-                    registry.fail(&agent_id, e.to_string(), stats);
+                    registry.fail(&agent_id, e.to_string(), stats.clone());
+                    emit_subagent_frame(
+                        ctx_clone.as_ref(),
+                        SUBAGENT_ENDED_KEY,
+                        subagent_meta_envelope(&identity_for_task, "failed", Some(&stats), Some(&e.to_string())),
+                    );
                 }
             }
             result

@@ -404,6 +404,8 @@ async fn run_goal_for_task(
             None,
         );
         let opts = RunOptions {
+            async_agent_registry: None,
+            subagent_sink: None,
             message: anureo_llm::message::UserContent::Text(prompt),
             working_folder: Some(working_dir.clone()),
             session_id: Some(format!("goal-{}", &task.id[..task.id.floor_char_boundary(8)])),

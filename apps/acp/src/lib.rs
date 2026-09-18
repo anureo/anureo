@@ -225,6 +225,7 @@ pub mod session_repository;
 pub mod session_update_log;
 pub mod stdio_loop;
 pub mod stream_bridge;
+pub mod subagent_runtime;
 pub mod terminal;
 pub mod tools;
 pub mod ws_bridge;

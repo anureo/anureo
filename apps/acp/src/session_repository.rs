@@ -1390,6 +1390,109 @@ impl SessionRepository {
         transaction.commit()
     }
 
+    /// Sub-agent terminal convergence (contract §5.4): write the subagent
+    /// metadata envelope AND converge lifecycle to `closed` (with closed_at)
+    /// in ONE SQLite transaction, so no reader can observe metadata and
+    /// lifecycle from divergent mutations. Idempotent: re-invocation with
+    /// identical metadata on an already-closed session is a no-op.
+    /// Returns the canonical projection when the session row exists.
+    pub fn finish_subagent(
+        &self,
+        session_id: &str,
+        metadata_json: &str,
+    ) -> rusqlite::Result<Option<SessionIndexRecord>> {
+        retry_sqlite_busy(|| self.finish_subagent_once(session_id, metadata_json))
+    }
+
+    fn finish_subagent_once(
+        &self,
+        session_id: &str,
+        metadata_json: &str,
+    ) -> rusqlite::Result<Option<SessionIndexRecord>> {
+        type FinishRow = (
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        );
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        let current: Option<FinishRow> = transaction
+            .query_row(
+                r#"SELECT s.owner_principal,
+                          s.lifecycle,
+                          s.state_changed_at,
+                          s.metadata_updated_at,
+                          (SELECT metadata_json FROM acp_session_data d WHERE d.session_id = s.session_id)
+                   FROM acp_sessions s WHERE s.session_id = ?1"#,
+                [session_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((
+            owner_principal,
+            current_lifecycle,
+            previous_state_changed_at,
+            previous_metadata_updated_at,
+            current_metadata,
+        )) = current
+        else {
+            transaction.commit()?;
+            return Ok(None);
+        };
+        let lifecycle_changed = current_lifecycle != "closed";
+        let metadata_changed = current_metadata.as_deref() != Some(metadata_json);
+        if !lifecycle_changed && !metadata_changed {
+            transaction.commit()?;
+        } else {
+            let now = next_monotonic_timestamp(
+                previous_state_changed_at
+                    .as_deref()
+                    .or(previous_metadata_updated_at.as_deref()),
+                &utc_now_microseconds(),
+            );
+            let version = allocate_owner_version(&transaction, &owner_principal)?;
+            let closed_at = lifecycle_changed.then_some(now.clone());
+            transaction.execute(
+                r#"
+                UPDATE acp_sessions
+                SET lifecycle = ?2, updated_at = ?3, closed_at = ?4,
+                    state_changed_at = ?5, metadata_updated_at = ?6,
+                    revision = revision + 1, index_version = ?7
+                WHERE session_id = ?1
+                "#,
+                params![
+                    session_id,
+                    "closed",
+                    now,
+                    closed_at,
+                    if lifecycle_changed {
+                        Some(now.clone())
+                    } else {
+                        previous_state_changed_at.clone()
+                    },
+                    now,
+                    version
+                ],
+            )?;
+            transaction.execute(
+                "INSERT INTO acp_session_data (session_id, metadata_json) VALUES (?1, ?2) ON CONFLICT(session_id) DO UPDATE SET metadata_json = excluded.metadata_json",
+                params![session_id, metadata_json],
+            )?;
+            transaction.commit()?;
+        }
+        self.get_index_record(&owner_principal, session_id)
+    }
+
     /// Delete ACP metadata and all session-owned rows in one SQLite
     /// transaction. Optional tables are skipped when their feature has never
     /// initialized its schema. The compatibility wrapper discards the

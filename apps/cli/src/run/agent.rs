@@ -1523,6 +1523,8 @@ mod tests {
             extra_tools: None,
             default_extra_tools_provider: None,
             acp_session_id: None,
+            async_agent_registry: None,
+            subagent_sink: None,
             force_compact: false,
             chat_id: None,
             worktree: false,

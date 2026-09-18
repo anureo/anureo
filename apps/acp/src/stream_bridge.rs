@@ -156,12 +156,13 @@ pub enum StreamUpdate {
     /// Status/result update for an existing tool call (ACP `tool_call_update`).
     ToolCallUpdated {
         tool_call_id: String,
-        /// e.g. "running" | "success" | "failure"; maps to ToolCallStatus in ACP.
         status: String,
-        /// Result or error message (possibly normalized/truncated).
         output: Option<String>,
-        /// Full un-normalized result. When set, used for ACP `raw_output` instead of `output`.
         raw_output: Option<String>,
+        /// Versioned subagent metadata (contract §6): the full
+        /// `_meta["anureo.dev"].subagent` envelope for `agent` tool frames.
+        /// `None` for ordinary tool frames.
+        meta: Option<Value>,
     },
 
     /// File diff update (ACP `tool_call_update` with diff content).
@@ -264,6 +265,51 @@ fn resolve_tool_call_id(call_id: &Option<String>) -> String {
         .unwrap_or_else(|| format!("tool-{}", Uuid::new_v4()))
 }
 
+/// Subagent lifecycle frames (contract §6): the `agent` tool emits
+/// `StreamEvent::Custom` payloads keyed `anureoSubagentStarted` /
+/// `anureoSubagentEnded`; convert them into versioned
+/// `tool_call_update` meta on the parent tool call.
+fn subagent_custom_updates(value: &Value) -> Vec<StreamUpdate> {
+    const STARTED: &str = "anureoSubagentStarted";
+    const ENDED: &str = "anureoSubagentEnded";
+    let (key, status) = if value.get(STARTED).is_some() {
+        (STARTED, "running")
+    } else if value.get(ENDED).is_some() {
+        (ENDED, "running")
+    } else {
+        return vec![];
+    };
+    let payload = value
+        .get(key)
+        .cloned()
+        .unwrap_or_else(|| Value::Null);
+    // Address the frame by the parent tool call recorded in the identity.
+    let call_id = payload
+        .get("parentToolCallId")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if call_id.is_empty() {
+        return vec![];
+    }
+    let status = if key == ENDED {
+        payload
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or(status)
+            .to_string()
+    } else {
+        status.to_string()
+    };
+    vec![StreamUpdate::ToolCallUpdated {
+        tool_call_id: call_id,
+        status,
+        output: None,
+        raw_output: None,
+        meta: Some(payload),
+    }]
+}
+
 /// Uniform mapping for any `StreamEvent<S>` (uses only S-independent fields).
 fn stream_event_to_updates_inner<S>(ev: &StreamEvent<S>) -> Vec<StreamUpdate>
 where
@@ -303,6 +349,7 @@ where
                 status: "running".to_string(),
                 output: None,
                 raw_output: None,
+                meta: None,
             }]
         }
         StreamEvent::ToolOutput {
@@ -331,6 +378,7 @@ where
                 status: "running".to_string(),
                 output: Some(content.clone()),
                 raw_output: None,
+                meta: None,
             }]
         }
         StreamEvent::ToolEnd {
@@ -373,13 +421,10 @@ where
 
                 updates.push(StreamUpdate::ToolCallUpdated {
                     tool_call_id: id,
-                    status: if *is_error {
-                        "failure".to_string()
-                    } else {
-                        "success".to_string()
-                    },
+                    status: "running".to_string(),
                     output: None,
                     raw_output: None,
+                    meta: None,
                 });
                 updates
             } else {
@@ -392,6 +437,7 @@ where
                     },
                     output: Some(result.clone()),
                     raw_output: raw_result.clone(),
+                    meta: None,
                 }]
             };
 
@@ -403,6 +449,11 @@ where
 
             updates
         }
+        // Phase 3: subagent lifecycle frames ride StreamEvent::Custom
+        // (emitted by the `agent` tool after identity generation) and become
+        // versioned tool_call_update meta (contract §6).
+        StreamEvent::Custom(ref value) => subagent_custom_updates(value),
+
         _ => vec![],
     }
 }
@@ -452,6 +503,7 @@ pub fn stream_update_to_session_notification(
             status,
             output,
             raw_output,
+            meta,
         } => {
             if tool_call_id.is_empty() {
                 return None;
@@ -469,10 +521,17 @@ pub fn stream_update_to_session_notification(
                     .content(vec![s.clone().into()])
                     .raw_output(parse_text_output_to_raw_value(effective_raw));
             }
-            SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+            let mut update = ToolCallUpdate::new(
                 ToolCallId::new(tool_call_id.as_str()),
                 fields,
-            ))
+            );
+            // Phase 3: versioned subagent metadata envelope (contract §6).
+            if let Some(m) = meta {
+                let mut sub_meta = Meta::new();
+                sub_meta.insert("anureo.dev".to_string(), m.clone());
+                update.meta = Some(sub_meta);
+            }
+            SessionUpdate::ToolCallUpdate(update)
         }
         StreamUpdate::Diff {
             tool_call_id,

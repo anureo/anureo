@@ -479,6 +479,37 @@ impl AsyncAgentRegistry {
         Ok(())
     }
 
+    /// Find an entry whose identity carries this child session id
+    /// (contract §7.2: `session/cancel(child)` routes to the invocation).
+    pub fn get_by_child_session(&self, child_session_id: &str) -> Option<AgentEntry> {
+        self.inner
+            .read()
+            .values()
+            .find(|e| {
+                e.identity
+                    .as_ref()
+                    .map(|i| i.child_session_id.as_str()) == Some(child_session_id)
+            })
+            .map(|e| e.strip_handles())
+    }
+
+    /// All invocations whose parent session is `parent_session_id`
+    /// (contract §7.2 cascade cancellation walks this index with a
+    /// visited set at the call site).
+    pub fn list_by_parent_session(&self, parent_session_id: &str) -> Vec<AgentEntry> {
+        self.inner
+            .read()
+            .values()
+            .filter(|e| {
+                e.identity
+                    .as_ref()
+                    .and_then(|i| i.parent_session_id.as_deref())
+                    == Some(parent_session_id)
+            })
+            .map(|e| e.strip_handles())
+            .collect()
+    }
+
     /// Update an agent's status to completed.
     pub fn complete(&self, agent_id: &str, result: String, stats: AgentCompletionStats) {
         let identity = {
