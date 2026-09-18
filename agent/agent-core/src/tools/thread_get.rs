@@ -36,7 +36,8 @@ impl Tool for ThreadGetTool {
             description: Some(
                 "Query thread information and agents. \
                  If `thread_id` is omitted, returns all threads with summary counts. \
-                 If provided, returns the thread summary and all agents in that thread."
+                 If provided, returns the thread summary and all agents in that thread. \
+                 For agent-level listing with full entries, use `agent_get`."
                     .to_string(),
             ),
             input_schema: json!({

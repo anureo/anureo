@@ -142,7 +142,7 @@ pub(super) async fn invoke_single_agent(
     let effective_working_folder = worktree_handle.as_ref().map(|h| h.path.clone());
 
     // --- delegate to shared execution ---
-    let (content, stats) = build_and_run_sub_agent(
+    let (mut content, stats) = build_and_run_sub_agent(
         base_config,
         &profile,
         task,
@@ -153,8 +153,11 @@ pub(super) async fn invoke_single_agent(
     )
     .await?;
 
-    // --- worktree cleanup ---
+    // --- worktree cleanup + placement info (T6) ---
+    let mut worktree_note = String::new();
     if let Some(handle) = worktree_handle {
+        let path_str = handle.path.display().to_string();
+        let branch_str = format!("{:?}", handle.branch);
         let wt_config = profile
             .worktree
             .as_ref()
@@ -163,7 +166,9 @@ pub(super) async fn invoke_single_agent(
         let manager = worktree::WorktreeManager::new(handle.repo_root.clone(), wt_config.clone());
         let has_changes = manager.check_changes(&handle).await.unwrap_or(false);
 
+        let mut preserved = true;
         if !has_changes && wt_config.auto_cleanup {
+            preserved = false;
             tracing::info!(
                 agent = %agent_name,
                 worktree_path = %handle.path.display(),
@@ -179,6 +184,18 @@ pub(super) async fn invoke_single_agent(
                 branch = ?handle.branch,
                 "Worktree has changes — preserving for review/merge"
             );
+        }
+        // T6: surface placement + preservation to the parent model — it cannot
+        // merge what it cannot locate.
+        worktree_note = format!(
+            "\n\n[worktree] path={}, branch={}, changes_preserved={}",
+            path_str, branch_str, preserved
+        );
+    }
+    if !worktree_note.is_empty() {
+        if let Some(text) = content.as_text() {
+            let text = text.to_string();
+            content = ToolCallContent::text(format!("{text}{worktree_note}"));
         }
     }
 

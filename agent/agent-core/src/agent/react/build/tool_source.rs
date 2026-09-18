@@ -372,7 +372,6 @@ pub(crate) async fn build_tool_source(
     aggregate
         .register_async(Box::new(GitWorktreeTool::new(Arc::new(config.clone()))))
         .await;
-    // ListAgentsTool is not available in this build (depends on anureo's profile system)
 
     apply_registry_config(&aggregate, config)
         .await

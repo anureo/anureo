@@ -148,11 +148,14 @@ impl Tool for AgentTool {
              (alias of `assistant`, a general-purpose agent with full tool access). \
              Default: \"default\".\n\
              \n\
+             You may issue multiple `agent` calls in the same turn to run sub-agents in parallel.\n\
+             \n\
              Optional: `background` (bool) — if true, starts agent in background and returns \
              `agent_id` immediately. Use `agent_get` tool to retrieve results. Default: false.\n\
              \n\
-             Optional: `timeout` (number) — timeout in seconds. If sync call exceeds this time, \
-             the agent transitions to background execution and returns `agent_id`. Default: 600.{}",
+             Optional: `timeout` (number) — sync wait timeout in seconds (ignored when \
+             `background` is true). If a sync call exceeds this time, the agent transitions to \
+             background execution and returns `agent_id`. Default: 600.{}",
             agents_desc,
         );
         ToolSpec {
@@ -196,6 +199,11 @@ impl Tool for AgentTool {
                         "type": "string",
                         "description": "worktree: create an isolated git worktree. none: explicitly disable worktree even if profile configures it. If omitted, uses profile default.",
                         "enum": ["worktree", "none"]
+                    },
+                    "estimated_paths": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional hint: paths the task is expected to touch. Speeds up worktree isolation when `isolation: worktree` is used. Parsed by the runner even though it was missing from this schema (T2)."
                     }
                 },
                 "required": ["task"]
@@ -240,7 +248,7 @@ impl Tool for AgentTool {
                 "Max depth reached, refusing agent invocation"
             );
             return Err(ToolSourceError::InvalidInput(format!(
-                "max sub-agent depth ({}) reached; cannot invoke further agents",
+                "max sub-agent depth ({}) reached; solve the task yourself instead of delegating further",
                 self.max_depth,
             )));
         }
@@ -262,7 +270,15 @@ impl Tool for AgentTool {
             let handle = self.spawn_agent_task(identity, args, ctx);
 
             match tokio::time::timeout(std::time::Duration::from_secs(timeout_sec), handle).await {
-                Ok(Ok(Ok((content, _)))) => Ok(content),
+                Ok(Ok(Ok((content, stats)))) => {
+                    // T5: sync path keeps the completion stats instead of dropping them.
+                    let mut text = content.as_text().unwrap_or_default().to_string();
+                    text.push_str(&format!(
+                        "\n\n[sub-agent stats] turn_count={}, total_tokens={}, tool_calls_count={}",
+                        stats.turn_count, stats.total_tokens, stats.tool_calls_count
+                    ));
+                    Ok(ToolCallContent::text(text))
+                }
                 Ok(Ok(Err(e))) => Err(e),
                 Ok(Err(_)) => {
                     // Task panicked.
