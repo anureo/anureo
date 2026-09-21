@@ -307,6 +307,8 @@ impl CodexAgent {
                 extra_tools: None,
                 default_extra_tools_provider: Some(tool_workflow::default_workflow_tool_provider()),
                 acp_session_id: None,
+                async_agent_registry: None,
+                subagent_sink: None,
                 force_compact: false,
                 chat_id: None,
                 worktree: false,

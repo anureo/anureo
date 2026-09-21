@@ -74,6 +74,8 @@ pub async fn run_anureo_agent_streaming(
         extra_tools: None,
         default_extra_tools_provider: Some(tool_workflow::default_workflow_tool_provider()),
         acp_session_id: None,
+        async_agent_registry: None,
+        subagent_sink: None,
         force_compact,
         chat_id: Some(chat_id),
         worktree: false,
