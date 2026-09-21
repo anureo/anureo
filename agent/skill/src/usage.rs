@@ -470,6 +470,7 @@ impl SkillUsageStore {
         let rows: Vec<SkillUsageReport> = data
             .into_iter()
             .filter(|(_, u)| u.created_by.as_deref() == Some("agent"))
+            .filter(|(name, _)| !self.is_off_limits(name))
             .map(|(name, usage)| SkillUsageReport::from((name, usage)))
             .collect();
         Ok(rows)

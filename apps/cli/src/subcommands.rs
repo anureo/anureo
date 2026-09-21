@@ -403,7 +403,9 @@ pub(crate) fn handle_skills_command(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use cli::run::skill_registry::{Lifecycle, SkillContent, SkillRegistry, Source};
 
-    let registry = SkillRegistry::new(&anureo_curator::skill_registry::default_path());
+    let skills_path = anureo_curator::skill_registry::default_path();
+    let registry = SkillRegistry::new(&skills_path);
+    let usage_store = skill::SkillUsageStore::new(&skills_path);
 
     match &skills_args.command {
         SkillsCommand::List => {
@@ -415,12 +417,14 @@ pub(crate) fn handle_skills_command(
             } else {
                 println!("Skills:");
                 for s in &skills {
-                    let src = match s.source {
-                        Source::Auto => "[auto]",
-                        Source::Manual => "[manual]",
-                        Source::Evolved => "[evolved]",
+                    let src = if usage_store.is_agent_created(&s.name) {
+                        "[agent]"
+                    } else {
+                        "[user]"
                     };
-                    let lc = match s.lifecycle {
+                    let usage = usage_store.get(&s.name);
+                    let lifecycle = usage.as_ref().map(|u| u.state).unwrap_or(s.lifecycle);
+                    let lc = match lifecycle {
                         Lifecycle::Active => "",
                         Lifecycle::Stale => " [stale]",
                         Lifecycle::Archived => " [archived]",
@@ -437,8 +441,17 @@ pub(crate) fn handle_skills_command(
                 println!("Skill: {}", skill.name);
                 println!("{}", "═".repeat(60));
                 println!("Description: {}", skill.description);
-                println!("Source: {:?}", skill.source);
-                println!("Lifecycle: {:?}", skill.lifecycle);
+                let usage = usage_store.get(name);
+                let owner = if usage_store.is_agent_created(name) {
+                    "agent"
+                } else {
+                    "user"
+                };
+                println!("Owner: {}", owner);
+                println!(
+                    "Lifecycle: {:?}",
+                    usage.as_ref().map(|u| u.state).unwrap_or(skill.lifecycle)
+                );
                 println!("Triggers: {}", skill.triggers.join(", "));
                 println!();
                 println!("{}", skill.body);
@@ -749,29 +762,27 @@ pub(crate) async fn handle_curator_command(
         }
         CuratorCommand::Status => {
             let state: CuratorState = curator.load_state().unwrap_or_default();
-            let all = curator.skills.list().unwrap_or_default();
-
-            let active = all
+            let usage_store = anureo_curator::SkillUsageStore::new(curator.skills.base_dir());
+            let usage_reports = usage_store.agent_created_report().unwrap_or_default();
+            let active = usage_reports
                 .iter()
-                .filter(|m| m.lifecycle == cli::run::skill_registry::Lifecycle::Active && !m.pinned)
+                .filter(|u| u.state == cli::run::skill_registry::Lifecycle::Active && !u.pinned)
                 .count();
-            let stale = all
+            let stale = usage_reports
                 .iter()
-                .filter(|m| m.lifecycle == cli::run::skill_registry::Lifecycle::Stale)
+                .filter(|u| u.state == cli::run::skill_registry::Lifecycle::Stale)
                 .count();
-            let archived = all
+            let archived = usage_reports
                 .iter()
-                .filter(|m| m.lifecycle == cli::run::skill_registry::Lifecycle::Archived)
+                .filter(|u| u.state == cli::run::skill_registry::Lifecycle::Archived)
                 .count();
-            let pinned = all.iter().filter(|m| m.pinned).count();
+            let pinned = usage_reports.iter().filter(|u| u.pinned).count();
 
             // Determine next-run eligibility
             let eligible = curator.should_run(None);
             let total = active + stale + archived + pinned;
 
             // Load usage for top-skills display
-            let usage_store = anureo_curator::SkillUsageStore::new(curator.skills.base_dir());
-            let usage_reports = usage_store.agent_created_report().unwrap_or_default();
             let mut top_skills: Vec<_> = usage_reports.iter().filter(|u| u.use_count > 0).collect();
             top_skills.sort_by_key(|a| std::cmp::Reverse(a.use_count));
             let top_skills: Vec<_> = top_skills.into_iter().take(5).collect();
@@ -871,11 +882,7 @@ pub(crate) async fn handle_curator_command(
                     "  Overlap threshold: {:.0}%",
                     curator.config_overlap_threshold() * 100.0
                 );
-                println!(
-                    "  Stale days (auto/manual): {}/{}",
-                    curator.config_stale_days_auto(),
-                    curator.config_stale_days_manual()
-                );
+                println!("  Stale days: {}", curator.config_stale_days_auto());
                 println!("  Archive days: {}", curator.config_archive_days());
                 if let Some(summary) = &state.last_run_summary {
                     println!();
@@ -989,8 +996,7 @@ pub(crate) async fn handle_curator_command(
                 .into());
             }
             curator
-                .skills
-                .set_pinned(skill, true)
+                .set_skill_pinned(skill, true)
                 .map_err(|e| format!("{:?}", e))?;
             println!("✓ Pinned '{}'", skill);
         }
@@ -1003,22 +1009,17 @@ pub(crate) async fn handle_curator_command(
                 .into());
             }
             curator
-                .skills
-                .set_pinned(skill, false)
+                .set_skill_pinned(skill, false)
                 .map_err(|e| format!("{:?}", e))?;
             println!("✓ Unpinned '{}'", skill);
         }
         CuratorCommand::Restore { skill } => {
-            use cli::run::skill_registry::Lifecycle;
             curator
-                .skills
-                .set_lifecycle(skill, Lifecycle::Active)
+                .restore_skill(skill)
                 .map_err(|e| format!("{:?}", e))?;
-            println!("✓ Restored '{}' to Active", skill);
+            println!("✓ Restored '{}'", skill);
         }
         CuratorCommand::Archive { skill } => {
-            use cli::run::skill_registry::Lifecycle;
-
             // Package integrity gate: warn but don't block manual archive
             let integrity =
                 anureo_curator::curator::check_package_integrity(curator.skills.base_dir(), skill);
@@ -1031,10 +1032,9 @@ pub(crate) async fn handle_curator_command(
             }
 
             curator
-                .skills
-                .set_lifecycle(skill, Lifecycle::Archived)
+                .archive_skill(skill)
                 .map_err(|e| format!("{:?}", e))?;
-            println!("✓ Archived '{}' (Lifecycle → Archived)", skill);
+            println!("✓ Archived '{}'", skill);
         }
         CuratorCommand::Backup { description } => {
             use anureo_curator::CuratorBackup;

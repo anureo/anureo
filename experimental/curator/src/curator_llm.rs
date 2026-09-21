@@ -120,10 +120,14 @@ fn snapshot_active_skills(
     let metas = registry.list().map_err(|e| format!("{:?}", e))?;
     let mut skills = Vec::new();
     for meta in &metas {
-        if meta.lifecycle != Lifecycle::Active || meta.pinned {
+        let Some(usage) = usage_store.get(&meta.name) else {
             continue;
-        }
-        if !usage_store.is_agent_created(&meta.name) {
+        };
+        if usage.created_by.as_deref() != Some("agent")
+            || usage.state != Lifecycle::Active
+            || usage.pinned
+            || !usage_store.is_agent_created(&meta.name)
+        {
             continue;
         }
         if let Ok(content) = registry.load(&meta.name) {

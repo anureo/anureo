@@ -20,8 +20,8 @@
 //!
 //! - **`create`**: Take a `content` argument containing the full SKILL.md
 //!   (YAML frontmatter + markdown body). Parse the frontmatter to extract
-//!   `name` and `description`. Write to `Source::Auto` (background review
-//!   context also calls `SkillUsageStore::mark_agent_created`).
+//!   `name` and `description`. Foreground writes remain user-owned;
+//!   background review writes are marked in `.usage.json`.
 //! - **`edit`**: Replace the SKILL.md with a new full document passed via
 //!   `content`. Same frontmatter validation as `create`.
 //! - **`patch`**: `old_string` / `new_string` find-and-replace. Validates
@@ -236,19 +236,22 @@ impl SkillManagerTool {
             )));
         }
 
+        // `Source` remains a legacy frontmatter compatibility field. The
+        // directory layout no longer uses it; curator ownership comes only
+        // from `.usage.json` and is recorded after a successful background
+        // review write.
+        let legacy_source = match self.default_origin {
+            WriteOrigin::BackgroundReview => Source::Auto,
+            WriteOrigin::Foreground => Source::Manual,
+        };
         let content = SkillContent {
             name: name.to_string(),
             description: description.clone(),
             triggers,
             lifecycle: Lifecycle::Active,
-            source: Source::Auto,
-            // Hermes parity (`skill_manager_tool.py` ~L300): the category
-            // argument previously was only echoed in the JSON response and
-            // never threaded into `storage.save()`. Now `save()` places the
-            // skill under `base_dir/source/<category>/<name>/` when this is
-            // Some, so the on-disk layout matches Hermes' `_create_skill`.
+            source: legacy_source,
             category: category.map(|s| s.to_string()),
-            created_by: Some("agent".to_string()),
+            created_by: None,
             body,
             raw: String::new(),
         };
@@ -262,7 +265,7 @@ impl SkillManagerTool {
         }
 
         if self.storage.load(name).is_ok() {
-            let existing_dir = self.storage.skill_dir(Source::Auto, name);
+            let existing_dir = self.storage.skill_dir(Source::Manual, name);
             return Ok(error_response(&format!(
                 "A skill named '{}' already exists at {}. Use action='edit' to update it, \
                  or action='patch' for in-place changes.",
@@ -274,7 +277,7 @@ impl SkillManagerTool {
         self.storage.save(name, &content).map_err(map_skill_err)?;
 
         let base_dir = self.storage.base_dir();
-        let skill_dir = self.storage.skill_dir(Source::Auto, name);
+        let skill_dir = self.storage.skill_dir(legacy_source, name);
         let skill_md_path = skill_dir.join("SKILL.md");
 
         if let Err(report) = security::security_scan_skill(&skill_dir, self.guard_agent_created) {
@@ -366,15 +369,12 @@ impl SkillManagerTool {
             name: name.to_string(),
             description: description.clone(),
             triggers,
-            lifecycle: Lifecycle::Active,
-            source: Source::Auto,
-            // Hermes parity (`skill_manager_tool.py` ~L300): the category
-            // argument previously was only echoed in the JSON response and
-            // never threaded into `storage.save()`. Now `save()` places the
-            // skill under `base_dir/source/<category>/<name>/` when this is
-            // Some, so the on-disk layout matches Hermes' `_create_skill`.
-            category: category.map(|s| s.to_string()),
-            created_by: Some("agent".to_string()),
+            lifecycle: original.lifecycle,
+            source: original.source,
+            category: category
+                .map(|s| s.to_string())
+                .or_else(|| original.category.clone()),
+            created_by: original.created_by.clone(),
             body,
             raw: String::new(),
         };
@@ -390,7 +390,7 @@ impl SkillManagerTool {
         self.storage.save(name, &content).map_err(map_skill_err)?;
 
         // Security scan — roll back on block by restoring original content.
-        let skill_dir = self.storage.skill_dir(Source::Auto, name);
+        let skill_dir = self.storage.skill_dir(original.source, name);
         if let Err(report) = security::security_scan_skill(&skill_dir, self.guard_agent_created) {
             let _ = self.storage.save(name, &original);
             return Ok(error_response(&report));
@@ -511,13 +511,10 @@ impl SkillManagerTool {
                 name: name.to_string(),
                 description: description.clone(),
                 triggers,
-                lifecycle: Lifecycle::Active,
-                source: Source::Auto,
-                // Hermes parity: preserve the existing skill's category so
-                // `storage::save()`'s category-aware branch does not move
-                // the skill to the flat layout on every patch.
+                lifecycle: snapshot.lifecycle,
+                source: snapshot.source,
                 category: snapshot.category.clone(),
-                created_by: Some("agent".to_string()),
+                created_by: snapshot.created_by.clone(),
                 body,
                 raw: new_content.clone(),
             };

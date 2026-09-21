@@ -3,8 +3,10 @@
 pub use anureo_llm::tool::ToolCall as CuratorToolCall;
 
 use super::prompts::CURATOR_REVIEW_PROMPT;
+#[cfg(test)]
+use super::skill_registry::Source;
 use super::skill_registry::{
-    Lifecycle, SkillContent, SkillError, SkillMeta, SkillRegistry, SkillRegistryCuratorExt, Source,
+    Lifecycle, SkillContent, SkillError, SkillMeta, SkillRegistry, SkillRegistryCuratorExt,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -312,9 +314,36 @@ impl Curator {
         self.skill_usage.is_agent_created(name)
     }
 
+    /// Pin or unpin a curator-managed skill. `.usage.json` is the authority;
+    /// the SKILL.md update is retained during the compatibility window so
+    /// older anureo builds continue to display the same state.
+    pub fn set_skill_pinned(&self, name: &str, pinned: bool) -> Result<(), SkillError> {
+        if !self.is_agent_created_skill(name) {
+            return Err(SkillError::NotFound(format!(
+                "'{}' is not agent-created; refusing to change pin state",
+                name
+            )));
+        }
+        self.skills.set_pinned(name, pinned)?;
+        self.skill_usage.set_pinned(name, pinned);
+        Ok(())
+    }
+
     pub fn should_run(&self, idle_for_seconds: Option<f64>) -> bool {
         // Gate 0: minimum skill count (don't run on near-empty libraries)
-        let skill_count = self.skills.list().map(|m| m.len()).unwrap_or(0);
+        let skill_count = self
+            .skill_usage
+            .agent_created_report()
+            .map(|reports| {
+                reports
+                    .into_iter()
+                    .filter(|usage| {
+                        usage.state != Lifecycle::Archived
+                            && self.skills.find_skill_dir(&usage.name).is_some()
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
         if skill_count < self.config.min_skills_to_run {
             info!(
                 "Curator: too few skills ({}) — need at least {}",
@@ -452,6 +481,15 @@ impl Curator {
         }
 
         let all_skills = self.skills.list()?;
+        let skills_by_name: HashMap<String, SkillMeta> = all_skills
+            .iter()
+            .cloned()
+            .map(|meta| (meta.name.clone(), meta))
+            .collect();
+        let managed_usage = self
+            .skill_usage
+            .agent_created_report()
+            .map_err(SkillError::InvalidFormat)?;
         let mut state = self.load_state()?;
 
         let now = Utc::now();
@@ -468,29 +506,42 @@ impl Curator {
             failures: Vec::new(),
         };
 
-        for meta in &all_skills {
-            if meta.pinned {
-                info!("Skipping pinned skill: {}", meta.name);
+        // Curator ownership lives in `.usage.json`. Legacy directory names
+        // and SKILL.md `source` fields never opt a user-authored skill into
+        // automatic lifecycle transitions.
+        for usage in &managed_usage {
+            if !self.skill_usage.is_agent_created(&usage.name) {
+                continue;
+            }
+            if usage.state == Lifecycle::Archived {
+                report.archived.push(usage.name.clone());
+                continue;
+            }
+            let Some(_meta) = skills_by_name.get(&usage.name) else {
+                warn!(
+                    "Curator: agent-created skill '{}' is missing from the active skill tree",
+                    usage.name
+                );
+                continue;
+            };
+            if usage.pinned {
+                info!("Skipping pinned skill: {}", usage.name);
                 report.active += 1;
                 continue;
             }
 
-            let stale_days = match meta.source {
-                Source::Auto => self.config.stale_days_auto,
-                _ => self.config.stale_days_manual,
-            };
+            let stale_days = self.config.stale_days_auto;
+            let days_since = compute_usage_days_since(usage, &now);
 
-            let days_since = compute_days_since(&state.skill_last_used, meta, &now);
-
-            match meta.lifecycle {
+            match usage.state {
                 Lifecycle::Active => {
                     if days_since >= stale_days {
-                        report.stale.push(meta.name.clone());
+                        report.stale.push(usage.name.clone());
                         if !dry_run {
-                            self.update_lifecycle(&meta.name, Lifecycle::Stale)?;
+                            self.update_lifecycle(&usage.name, Lifecycle::Stale)?;
                             info!(
                                 "Marked '{}' as stale ({} days unused)",
-                                meta.name, days_since
+                                usage.name, days_since
                             );
                         }
                     } else {
@@ -501,48 +552,47 @@ impl Curator {
                     if days_since < stale_days {
                         info!(
                             "Reactivating stale skill '{}' ({} days since last use)",
-                            meta.name, days_since
+                            usage.name, days_since
                         );
-                        report.reactivated.push(meta.name.clone());
+                        report.reactivated.push(usage.name.clone());
                         if !dry_run {
-                            self.update_lifecycle(&meta.name, Lifecycle::Active)?;
+                            self.update_lifecycle(&usage.name, Lifecycle::Active)?;
                         }
                     } else if days_since >= self.config.archive_days {
-                        report.archived.push(meta.name.clone());
+                        report.archived.push(usage.name.clone());
                         if !dry_run {
-                            // Hermes-aligned archive discipline: stamp the
-                            // lifecycle enum first (so the SKILL.md frontmatter
-                            // reflects the new state even before the dir is
-                            // moved), then physically move the dir under
-                            // `.archive/` so it leaves the active discovery
-                            // tree (`archive_skill` no-ops on the second pass
-                            // if the dir is already archived).
-                            self.update_lifecycle(&meta.name, Lifecycle::Archived)?;
                             // Collect per-skill archive failures
                             // (`hermes_cli/curator.py:354-368`) so the CLI
                             // can surface them and exit 1 instead of
                             // silently swallowing the error.
-                            if let Err(e) = self.archive_skill(&meta.name) {
+                            if let Err(e) = self.archive_skill(&usage.name) {
                                 let msg = format!("{:?}", e);
-                                warn!("Curator: archive failed for '{}': {}", meta.name, msg);
-                                report.failures.push((meta.name.clone(), msg));
+                                warn!("Curator: archive failed for '{}': {}", usage.name, msg);
+                                report.failures.push((usage.name.clone(), msg));
                             }
-                            info!("Archived '{}' ({} days unused)", meta.name, days_since);
+                            info!("Archived '{}' ({} days unused)", usage.name, days_since);
                         }
                     } else {
-                        report.stale.push(meta.name.clone());
+                        report.stale.push(usage.name.clone());
                     }
                 }
-                Lifecycle::Archived => {
-                    report.archived.push(meta.name.clone());
-                }
+                Lifecycle::Archived => unreachable!("handled above"),
             }
         }
 
+        let managed_names: std::collections::HashSet<&str> = managed_usage
+            .iter()
+            .filter(|usage| {
+                usage.state == Lifecycle::Active
+                    && !usage.pinned
+                    && self.skill_usage.is_agent_created(&usage.name)
+            })
+            .map(|usage| usage.name.as_str())
+            .collect();
         let loaded: Vec<SkillContent> = all_skills
             .iter()
-            .filter(|m| m.lifecycle == Lifecycle::Active)
-            .filter_map(|m| self.skills.load(&m.name).ok())
+            .filter(|meta| managed_names.contains(meta.name.as_str()))
+            .filter_map(|meta| self.skills.load(&meta.name).ok())
             .collect();
 
         for i in 0..loaded.len() {
@@ -567,10 +617,10 @@ impl Curator {
             state.last_run_at = Some(now_str);
             state.run_count += 1;
 
-            for meta in &all_skills {
+            for usage in &managed_usage {
                 state
                     .skill_last_used
-                    .entry(meta.name.clone())
+                    .entry(usage.name.clone())
                     .or_insert_with(|| now.to_rfc3339());
             }
             self.save_state(&state)?;
@@ -638,42 +688,20 @@ impl Curator {
                 name
             )));
         }
+        if self
+            .skill_usage
+            .get(name)
+            .map(|usage| usage.pinned)
+            .unwrap_or(false)
+        {
+            return Err(SkillError::Pinned(name.to_string()));
+        }
 
-        let src = self.skills.base_dir().join(name);
-        if !src.is_dir() {
-            return Err(SkillError::NotFound(name.to_string()));
-        }
-        let archive_root = self.skills.base_dir().join(".archive");
-        std::fs::create_dir_all(&archive_root)?;
-        let mut dst = archive_root.join(name);
-        if dst.exists() {
-            // Hermes-aligned collision fallback: append a 14-digit UTC
-            // stamp (`%Y%m%d%H%M%S`, Hermes `skill_usage.py:506-512`) so
-            // we never silently overwrite an earlier archive and
-            // `restore_skill` can disambiguate by suffix length /
-            // digit-only shape. The previous `as_secs()` form was a
-            // 10-digit counter that collided on rapid re-archives and
-            // left `restore_skill` guessing which copy to pick.
-            let ts = Utc::now().format("%Y%m%d%H%M%S").to_string();
-            dst = archive_root.join(format!("{}-{}", name, ts));
-        }
-        // Cross-device rename fallback: `fs::rename` fails on Windows when
-        // src/dst are on different volumes. Mirror Hermes `shutil.move`,
-        // which falls back to copy+remove.
-        if let Err(e) = std::fs::rename(&src, &dst) {
-            if e.raw_os_error() == Some(17) || e.raw_os_error() == Some(18) {
-                // 17=ERROR_NOT_SAME_DEVICE, 18=ERROR_NO_MORE_FILES (rare on
-                // edge cases). Fall back to copy_tree + remove_dir_all.
-                info!(
-                    "fs::rename failed for '{}' ({}); falling back to copy+remove",
-                    name, e
-                );
-                copy_dir_recursive(&src, &dst)?;
-                std::fs::remove_dir_all(&src)?;
-            } else {
-                return Err(SkillError::Io(e));
-            }
-        }
+        // The shared archive service resolves flat, category-nested, and
+        // legacy auto/curated/evolved layouts recursively. The previous
+        // `base_dir.join(name)` assumption failed for every nested skill.
+        let src = skill::archive::archive_skill_to(self.skills.base_dir(), name)?;
+        self.skill_usage.set_state(name, Lifecycle::Archived);
         // Priority #20 (Hermes `tools/skill_usage.py`): record the
         // pruned skill in `.curator_suppressed` so the next
         // `sync_skills` / `anureo update` pass does not re-seed it from
@@ -681,7 +709,7 @@ impl Curator {
         // `agent/skill/src/sync.rs` before applying any bundled write
         // unless the user explicitly sets `ANUREO_SKILL_FORCE=1`.
         self.skills.usage_store().add_suppressed_name(name);
-        info!("Archived skill '{}' to {}", name, dst.display());
+        info!("Archived skill '{}' from {}", name, src.display());
         Ok(src)
     }
 
@@ -691,12 +719,10 @@ impl Curator {
         // Shadowing guard: refuse to overwrite a skill that already exists
         // in the active tree, OR a non-agent-created skill (bundled / hub).
         // Hermes refuses both before touching disk.
-        if self.is_agent_created_skill(name)
-            && self.skills.base_dir().join(name).join("SKILL.md").exists()
-        {
+        if self.is_agent_created_skill(name) && self.skills.find_skill_dir(name).is_some() {
             // Already in the active tree — caller is racing with another
             // restore. Treat as no-op success to match Hermes.
-            return Ok(self.skills.base_dir().join(name));
+            return Ok(self.skills.find_skill_dir(name).unwrap());
         }
 
         let archive_root = self.skills.base_dir().join(".archive");
@@ -748,6 +774,7 @@ impl Curator {
         // pass keeps it. Idempotent — `remove_suppressed_name` is a
         // no-op if the name wasn't in the list.
         self.skills.usage_store().remove_suppressed_name(name);
+        self.update_lifecycle(name, Lifecycle::Active)?;
         info!("Restored skill '{}' from {}", name, src.display());
         Ok(dst)
     }
@@ -865,7 +892,9 @@ impl Curator {
         }
         let mut skill = self.skills.load(name)?;
         skill.lifecycle = lifecycle;
-        self.skills.save(name, &skill)
+        self.skills.save(name, &skill)?;
+        self.skill_usage.set_state(name, lifecycle);
+        Ok(())
     }
 
     pub fn load_state(&self) -> Result<CuratorState, SkillError> {
@@ -968,13 +997,10 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()
     Ok(())
 }
 
-fn compute_days_since(
-    last_used_map: &HashMap<String, String>,
-    meta: &SkillMeta,
-    now: &chrono::DateTime<chrono::Utc>,
-) -> u32 {
-    if let Some(ts) = last_used_map
-        .get(&meta.name)
+fn compute_usage_days_since(usage: &SkillUsageReport, now: &chrono::DateTime<chrono::Utc>) -> u32 {
+    if let Some(ts) = usage
+        .last_activity_at
+        .as_ref()
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
     {
         return now
@@ -982,11 +1008,7 @@ fn compute_days_since(
             .num_days()
             .max(0) as u32;
     }
-    if let Some(ts) = meta
-        .created_at
-        .as_ref()
-        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-    {
+    if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(&usage.created_at) {
         return now
             .signed_duration_since(ts.with_timezone(&chrono::Utc))
             .num_days()

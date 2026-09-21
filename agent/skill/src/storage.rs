@@ -251,10 +251,11 @@ pub enum Source {
 }
 
 impl Source {
-    /// Directory segment under `base_dir` for this source (Hermes parity
-    /// with `skill_manager_tool.py:_skill_dir_for_source`). Mirrors the
-    /// match arm inside `skill_dir()` but is callable from
-    /// `save()`'s category-aware branch.
+    /// Legacy directory segment used by pre-Hermes-layout installations.
+    ///
+    /// New writes no longer encode provenance in the directory tree. This
+    /// helper remains for migration/compatibility code that needs to
+    /// recognize `auto/`, `curated/`, and `evolved/` layouts.
     pub fn dir_name(self) -> &'static str {
         match self {
             Source::Auto => "auto",
@@ -317,9 +318,8 @@ pub struct SkillContent {
     pub triggers: Vec<String>,
     pub lifecycle: Lifecycle,
     pub source: Source,
-    /// Optional category/domain segment used by storage to place the skill
-    /// under `base_dir/source/category/name/` (Hermes parity,
-    /// `skill_manager_tool.py` ~L300).
+    /// Optional category/domain segment used by storage to place a new skill
+    /// under `base_dir/category/name/`.
     pub category: Option<String>,
     pub created_by: Option<String>,
     pub body: String,
@@ -374,19 +374,15 @@ impl SkillStorageRegistry {
         SkillUsageStore::new(&self.base_dir)
     }
 
-    /// Compute the storage directory for a skill given its source.
+    /// Resolve a skill directory by name, falling back to the canonical flat
+    /// location for a skill that has not been created yet.
     ///
-    /// Maps `Source` to a subdirectory under `base_dir`:
-    /// - `Auto`    → `base_dir/auto/<name>/`
-    /// - `Manual`  → `base_dir/curated/<name>/`
-    /// - `Evolved` → `base_dir/evolved/<name>/`
-    pub fn skill_dir(&self, source: Source, name: &str) -> PathBuf {
-        let subdir = match source {
-            Source::Auto => "auto",
-            Source::Manual => "curated",
-            Source::Evolved => "evolved",
-        };
-        self.base_dir.join(subdir).join(name)
+    /// `source` is retained in the signature for API compatibility. Hermes'
+    /// current layout stores provenance in `.usage.json`, so it no longer
+    /// participates in path construction.
+    pub fn skill_dir(&self, _source: Source, name: &str) -> PathBuf {
+        self.find_skill_dir(name)
+            .unwrap_or_else(|| self.base_dir.join(name))
     }
 
     pub fn skill_file_path(&self, source: Source, name: &str) -> PathBuf {
@@ -398,7 +394,7 @@ impl SkillStorageRegistry {
     /// Walks `base_dir` recursively looking for `<dir>/SKILL.md` where
     /// `<dir>` has the given name. Excludes `.git`, `node_modules`, etc.
     /// Returns the path to the directory containing `SKILL.md`.
-    fn find_skill_dir(&self, name: &str) -> Option<PathBuf> {
+    pub fn find_skill_dir(&self, name: &str) -> Option<PathBuf> {
         if !self.base_dir.exists() {
             return None;
         }
@@ -644,24 +640,16 @@ Hint: skill '{}' not found in current profile.                  Did you mean a s
             }
         }
 
-        // Hermes parity (`skill_manager_tool.py` ~L300): when a category is
-        // supplied, the skill lives under
-        // `base_dir/source/<category>/<name>/SKILL.md` rather than the
-        // flat `base_dir/source/<name>/SKILL.md`. Previously the category
-        // argument was echoed in the JSON response but never consulted by
-        // `save()`, so all category-bearing skills collapsed to the same
-        // directory and clobbered each other.
-        let dir = if let Some(cat) = content.category.as_deref().filter(|c| !c.is_empty()) {
-            let sanitized = sanitize_category(cat);
-            self.base_dir
-                .join(content.source.dir_name())
-                .join(&sanitized)
-                .join(name)
-        } else {
-            match self.find_skill_dir(name) {
-                Some(existing) => existing,
-                None => self.skill_dir(content.source, name),
-            }
+        // Hermes layout: provenance is stored in `.usage.json`; directories
+        // express only an optional category. Existing skills remain in place
+        // (including legacy auto/curated/evolved trees) so an edit never
+        // performs a surprise migration.
+        let dir = match self.find_skill_dir(name) {
+            Some(existing) => existing,
+            None => match content.category.as_deref().filter(|c| !c.is_empty()) {
+                Some(cat) => self.base_dir.join(sanitize_category(cat)).join(name),
+                None => self.base_dir.join(name),
+            },
         };
         fs::create_dir_all(&dir)?;
         let path = dir.join("SKILL.md");

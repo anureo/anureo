@@ -134,7 +134,7 @@ register_mcp_tools
 
 ### 5.2 持久化与 `skill_manage`
 
-`agent/skill/src/storage.rs` 的 `SkillStorageRegistry` 以传入的 `base_dir` 为根：`Source::Auto` → `auto`，`Source::Manual` → `curated`，`Source::Evolved` → `evolved`；有 category 时保存到 `base_dir/source/category/name/SKILL.md`。`save` 使用 `atomic_write_text`（临时 sibling file、`sync_all`、rename），`list` recursive 查找 SKILL.md，并排除 hidden/underscore/`.anureo` 内部路径。
+`agent/skill/src/storage.rs` 的 `SkillStorageRegistry` 以传入的 `base_dir` 为根。新 skill 保存到 `base_dir/name/SKILL.md`，有 category 时保存到 `base_dir/category/name/SKILL.md`；来源与生命周期由根目录下的 `.usage.json` 管理。旧的 `auto/curated/evolved/` 布局继续递归可读，编辑时保持原位置。`save` 使用 `atomic_write_text`（临时 sibling file、`sync_all`、rename），`list` recursive 查找 SKILL.md，并排除 hidden/underscore/`.anureo` 内部路径。
 
 `agent/tool/tool-basic/src/skill/manage.rs` 的 `SkillManagerTool` 暴露六个 action：`create`、`patch`、`edit`、`delete`、`write_file`、`remove_file`；`action` 和 `name` 是 schema required。create/edit 接收完整 SKILL.md，patch 默认只替换一个 occurrence，`replace_all=true` 替换全部，patch 可用 `file_path` 修改 support file。write/remove file 用 `file_path`，每个 support file 上限为 1 MiB。
 

@@ -102,20 +102,23 @@ impl SkillRegistry {
         // 1. Project skills
         let project_dir = working_folder.join(SKILLS_SUBDIR);
         if project_dir.is_dir() {
-            skills.extend(scan_skills_dir(&project_dir, SkillSource::Project));
+            skills.extend(scan_skills_dir_recursive(
+                &project_dir,
+                SkillSource::Project,
+            ));
         }
 
         // 2. Extra/profile directories
         for dir in extra_dirs {
             if dir.is_dir() {
-                skills.extend(scan_skills_dir(dir, SkillSource::ProfileDir));
+                skills.extend(scan_skills_dir_recursive(dir, SkillSource::ProfileDir));
             }
         }
 
         // 3. User skills
         let user_dir = env_config::home::anureo_home().join("skills");
         if user_dir.is_dir() {
-            skills.extend(scan_skills_dir(&user_dir, SkillSource::User));
+            skills.extend(scan_skills_dir_recursive(&user_dir, SkillSource::User));
         }
 
         // 4. Data skills (recursive)
@@ -138,7 +141,7 @@ impl SkillRegistry {
         if !agent_skills_dir.is_dir() {
             return Ok(());
         }
-        let new_skills = scan_skills_dir(agent_skills_dir, SkillSource::Agent);
+        let new_skills = scan_skills_dir_recursive(agent_skills_dir, SkillSource::Agent);
         for entry in new_skills {
             if !self
                 .skills
