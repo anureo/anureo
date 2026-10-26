@@ -4387,6 +4387,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "hook-core"
+version = "0.5.0"
+dependencies = [
+ "futures",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "htmlescape"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
