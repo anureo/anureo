@@ -709,7 +709,9 @@ mod tests {
             .save("pinned", &make_test_skill_content("pinned"))
             .unwrap();
         usage.mark_agent_created("pinned");
-        registry.set_pinned("pinned", true).unwrap();
+        // `.usage.json` is the pin authority (fe1941cf); snapshot_active_skills
+        // never consults the registry-side SKILL.md frontmatter pin.
+        usage.set_pinned("pinned", true);
 
         let skills = snapshot_active_skills(&registry, &usage).unwrap();
         assert!(skills.is_empty(), "pinned skills should be excluded");

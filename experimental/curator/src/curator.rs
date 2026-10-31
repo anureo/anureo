@@ -2058,8 +2058,15 @@ mod tests {
             .save("skill-a", &make_test_skill("skill-a", Source::Auto))
             .unwrap();
 
+        // fe1941cf moved curator ownership to `.usage.json`: a skill only
+        // counts as active once registered there as agent-created
+        // (touch_skill() is a no-op for skills not yet registered).
+        let usage = SkillUsageStore::new(dir.path());
+        usage.mark_agent_created("skill-a");
+
         let state_dir = tempfile::tempdir().unwrap();
         let curator = Curator::new(skills, CuratorConfig::default())
+            .with_skill_usage(usage)
             .with_state_path(state_dir.path().join("state.json"));
 
         let report = curator.run(true).unwrap();
