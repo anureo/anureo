@@ -28,6 +28,7 @@ use agent_client_protocol::schema::v1::{
     SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest,
     SetSessionModeResponse, StopReason, Usage,
 };
+use agent_client_protocol::schema::v1::ConfigOptionUpdate;
 use agent_client_protocol::schema::ProtocolVersion;
 use checkpoint::{Checkpointer, JsonSerializer, RunnableConfig};
 use checkpoint_sqlite_store::SqliteSaver;
@@ -1085,7 +1086,7 @@ impl AnureoAcpAgent {
             .clone()
             .unwrap_or_else(|| "auto".to_string());
         let model_reasoning_efforts = self.get_model_reasoning_efforts(&current_model).await;
-        build_set_session_config_option_response(
+        let config_options = build_session_config_options(
             &current_mode,
             &current_model,
             &current_effort,
@@ -1093,7 +1094,25 @@ impl AnureoAcpAgent {
             &model_options,
             model_reasoning_efforts.as_deref(),
         )
-        .map_err(|e| agent_client_protocol::Error::internal_error().data(e.to_string()))
+        .map_err(|e| agent_client_protocol::Error::internal_error().data(e.to_string()))?;
+        // ACP 标准通知（session/update → config_option_update）：把最新选项集广播给
+        // 连接的其他端（anureo app / cowork 等），使其无需重新轮询即可刷新模型、
+        // mode 与 effort 档位及当前值。失败仅记日志，不影响 set 响应。
+        if let Some(tx) = &self.session_update_tx {
+            let notification = SessionNotification::new(
+                args.session_id.clone(),
+                SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(config_options.clone())),
+            );
+            if let Err(e) = tx.send(SessionUpdateEnvelope::Session(notification)) {
+                tracing::debug!(
+                    session_id = %args.session_id,
+                    error = %e,
+                    "config option update notification failed"
+                );
+            }
+        }
+        build_set_session_config_option_response_with(config_options)
+            .map_err(|e| agent_client_protocol::Error::internal_error().data(e.to_string()))
     }
 
     pub async fn set_session_mode(
@@ -3106,23 +3125,11 @@ fn build_session_config_options(
     serde_json::from_value(json)
 }
 
-/// Build SetSessionConfigOptionResponse with a single "model" option (protocol types are non_exhaustive, so we construct via serde).
-fn build_set_session_config_option_response(
-    current_mode: &str,
-    current_model: &str,
-    current_effort: &str,
-    modes: &[agent_client_protocol::schema::v1::SessionMode],
-    model_options: &[ModelOption],
-    model_reasoning_efforts: Option<&[String]>,
+/// Assemble the response from an already built set of config options (protocol types are non_exhaustive, so we construct via serde; also avoid
+/// double construction when the option set needs to be broadcast to other clients in the connection as `config_option_update`).
+fn build_set_session_config_option_response_with(
+    config_options: Vec<agent_client_protocol::schema::v1::SessionConfigOption>,
 ) -> Result<SetSessionConfigOptionResponse, serde_json::Error> {
-    let config_options = build_session_config_options(
-        current_mode,
-        current_model,
-        current_effort,
-        modes,
-        model_options,
-        model_reasoning_efforts,
-    )?;
     let json = serde_json::json!({
         "configOptions": config_options,
         "meta": None::<()>
@@ -3446,14 +3453,16 @@ mod tests {
             provider: "openai".to_string(),
         }];
 
-        let result = build_set_session_config_option_response(
+        let config_options = build_session_config_options(
             "ask",
             "gpt-4o",
             "auto",
             &modes,
             &model_options,
             None,
-        );
+        )
+        .unwrap();
+        let result = build_set_session_config_option_response_with(config_options);
         assert!(result.is_ok());
 
         let response = result.unwrap();

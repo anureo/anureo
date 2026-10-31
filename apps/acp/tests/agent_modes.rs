@@ -1,6 +1,8 @@
 use agent_client_protocol::schema::v1::{
-    LoadSessionRequest, NewSessionRequest, SetSessionConfigOptionRequest, SetSessionModeRequest,
+    LoadSessionRequest, NewSessionRequest, SessionNotification, SessionUpdate,
+    SetSessionConfigOptionRequest, SetSessionModeRequest,
 };
+use anureo_acp::stream_bridge::SessionUpdateEnvelope;
 use anureo_acp::{AnureoAcpAgent, ModelOption, ModelProvider};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -297,4 +299,60 @@ async fn test_set_session_config_option_mode_accepts_typed_value_payload() {
     let load_response = agent.load_session(load_request).await.unwrap();
     let load_json = serde_json::to_value(&load_response).unwrap();
     assert_eq!(extract_current_mode_id(&load_json), Some("dev".to_string()));
+}
+
+#[tokio::test]
+async fn test_set_session_config_option_broadcasts_config_option_update() {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<SessionUpdateEnvelope>();
+    let agent = AnureoAcpAgent::with_session_update_tx(tx)
+        .unwrap()
+        .with_model_provider(Arc::new(MockModelProvider));
+    let ns_response = agent.new_session(make_new_session_request()).await.unwrap();
+    let session_id = ns_response.session_id.clone();
+
+    let set_config_request: SetSessionConfigOptionRequest =
+        serde_json::from_value(serde_json::json!({
+            "sessionId": session_id.to_string(),
+            "configId": "effort",
+            "value": "high"
+        }))
+        .unwrap();
+    agent
+        .set_session_config_option(set_config_request)
+        .await
+        .unwrap();
+
+    // set 响应之外，还应向连接广播 ACP 标准的 session/update → config_option_update，
+    // 让同会话的其他端（anureo app / cowork）无需轮询即可刷新档位与当前值。
+    let deadline = tokio::time::Duration::from_secs(2);
+    let mut broadcast: Option<SessionNotification> = None;
+    while broadcast.is_none() {
+        let envelope = tokio::time::timeout(deadline, rx.recv())
+            .await
+            .expect("timed out waiting for config_option_update")
+            .expect("update channel closed");
+        match envelope {
+            SessionUpdateEnvelope::Session(notification) => {
+                if matches!(notification.update, SessionUpdate::ConfigOptionUpdate(_)) {
+                    broadcast = Some(notification);
+                }
+            }
+            SessionUpdateEnvelope::SessionReplay { .. } => {}
+            SessionUpdateEnvelope::HistoryBatch { .. } => {}
+        }
+    }
+    let notification = broadcast.unwrap();
+    assert_eq!(notification.session_id, session_id);
+    let SessionUpdate::ConfigOptionUpdate(update) = notification.update else {
+        unreachable!("filtered to ConfigOptionUpdate above");
+    };
+    let update_json = serde_json::to_value(&update).unwrap();
+    let options = update_json["configOptions"]
+        .as_array()
+        .expect("configOptions should be an array");
+    let effort = options
+        .iter()
+        .find(|option| option["id"] == "effort")
+        .expect("effort option should be part of the broadcast");
+    assert_eq!(effort["currentValue"], "high");
 }
