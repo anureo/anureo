@@ -316,6 +316,14 @@ impl AnureoAcpAgent {
             goal_db: tokio::sync::OnceCell::new(),
             goal_self: std::sync::OnceLock::new(),
         };
+        if let Some(review) = agent.extension_registry.review_handler() {
+            review
+                .configure(
+                    agent.checkpoint_db_path.clone(),
+                    agent.session_update_tx.clone(),
+                )
+                .map_err(|error| format!("background review runtime init failed: {error}"))?;
+        }
         agent.restore_session_metadata()?;
         Ok(agent)
     }
@@ -1514,17 +1522,23 @@ impl AnureoAcpAgent {
                         let resolved = self
                             .resolve_model_with_tier_awareness(&entry.session_config)
                             .await;
-                        let (review_memory, review_skills) =
-                            crate::review_runner::scope_to_review_config(&scope);
-                        crate::review_runner::spawn_inprocess_review(
-                            entry.thread_id.clone(),
-                            resolved,
-                            review_memory,
-                            review_skills,
-                            "review-skill".to_string(),
-                            self.session_update_tx.clone(),
-                            Some(args.session_id.clone()),
-                        );
+                        let scope_name = match scope.as_deref() {
+                            Some("memory") => "memory",
+                            Some("skills") | Some("skill") => "skills",
+                            _ => "all",
+                        };
+                        if let Some(review) = self.extension_registry.review_handler() {
+                            if let Err(error) = review.start_for_agent(
+                                &args.session_id.to_string(),
+                                &entry.thread_id,
+                                &entry.owner_principal,
+                                resolved,
+                                scope_name,
+                                "review-skill",
+                            ) {
+                                tracing::warn!(session_id = %args.session_id, %error, "failed to start review-skill review");
+                            }
+                        }
                         return Ok(PromptResponse::new(StopReason::EndTurn));
                     }
                     agent::commands::Command::Models { .. }
@@ -1876,15 +1890,18 @@ impl AnureoAcpAgent {
 
         match result {
             Ok(RunCompletion::Finished(_reply)) => {
-                crate::review_runner::spawn_inprocess_review(
-                    entry.thread_id.clone(),
-                    resolved_for_review,
-                    true,
-                    true,
-                    "background".to_string(),
-                    self.session_update_tx.clone(),
-                    Some(session_id),
-                );
+                if let Some(review) = self.extension_registry.review_handler() {
+                    if let Err(error) = review.start_for_agent(
+                        &session_id.to_string(),
+                        &entry.thread_id,
+                        &entry.owner_principal,
+                        resolved_for_review,
+                        "all",
+                        "background",
+                    ) {
+                        tracing::warn!(session_id = %session_id, %error, "failed to start background review");
+                    }
+                }
                 let mut resp = PromptResponse::new(StopReason::EndTurn);
                 if let Some(usage) = build_acp_usage(&usage_acc) {
                     resp = resp.usage(usage);
@@ -2625,12 +2642,25 @@ impl AnureoAcpAgent {
             })?
             .into_iter()
             .map(|record| {
+                let session_id = record.session_id.clone();
                 let mut info = agent_client_protocol::schema::v1::SessionInfo::new(
                     record.session_id,
                     record.cwd,
                 );
                 info.title = record.title;
                 info.updated_at = Some(record.activity_at);
+                let thread_id = self
+                    .session_repository
+                    .get(&session_id)
+                    .ok()
+                    .flatten()
+                    .map(|metadata| metadata.thread_id)
+                    .unwrap_or(session_id);
+                if let Ok(Some(review)) =
+                    crate::review_runner::latest_review_state(&self.checkpoint_db_path, &thread_id)
+                {
+                    info = info.meta(review.to_meta());
+                }
                 info
             })
             .collect();
@@ -3751,9 +3781,16 @@ mod tests {
         );
     }
 
+    fn isolated_agent() -> (tempfile::TempDir, AnureoAcpAgent) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let agent =
+            AnureoAcpAgent::new_with_db_path(dir.path().join("memory.db")).expect("isolated agent");
+        (dir, agent)
+    }
+
     #[tokio::test]
     async fn test_initialize_returns_mcp_capabilities() {
-        let agent = AnureoAcpAgent::new().expect("agent");
+        let (_dir, agent) = isolated_agent();
         let req = InitializeRequest::new(1.into());
         let resp = agent.initialize(req).await.expect("initialize");
         assert!(resp.protocol_version >= 1.into());
@@ -3762,7 +3799,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_initialize_returns_prompt_capabilities() {
-        let agent = AnureoAcpAgent::new().expect("agent");
+        let (_dir, agent) = isolated_agent();
         let req = InitializeRequest::new(1.into());
         let resp = agent.initialize(req).await.expect("initialize");
         assert_prompt_caps(&resp);
@@ -3770,7 +3807,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_initialize_accepts_client_mcp_capabilities() {
-        let agent = AnureoAcpAgent::new().expect("agent");
+        let (_dir, agent) = isolated_agent();
         let req = InitializeRequest::new(1.into()).client_info(
             agent_client_protocol::schema::v1::Implementation::new(
                 "test-client".to_string(),
@@ -3783,7 +3820,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_initialize_accepts_client_prompt_capabilities() {
-        let agent = AnureoAcpAgent::new().expect("agent");
+        let (_dir, agent) = isolated_agent();
         let req = InitializeRequest::new(1.into()).client_info(
             agent_client_protocol::schema::v1::Implementation::new(
                 "test-client".to_string(),
@@ -3796,7 +3833,7 @@ mod tests {
 
     #[tokio::test]
     async fn initialize_advertises_registered_session_lifecycle_methods() {
-        let agent = AnureoAcpAgent::new().expect("agent");
+        let (_dir, agent) = isolated_agent();
         let resp = agent
             .initialize(InitializeRequest::new(1.into()))
             .await
@@ -3809,12 +3846,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn session_list_projects_durable_background_review_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("memory.db");
+        let agent = AnureoAcpAgent::new_with_db_path(db_path.clone()).expect("agent");
+        agent
+            .session_repository
+            .insert(
+                "session-review",
+                "thread-review",
+                "owner-review",
+                dir.path(),
+            )
+            .unwrap();
+        anureo_curator::ReviewHistory::with_db_path(db_path)
+            .append(&anureo_curator::ReviewRecord {
+                review_id: Some("review-list".into()),
+                session_id: "thread-review".into(),
+                reviewed_at: chrono::Utc::now(),
+                trigger: "background".into(),
+                model: "model".into(),
+                memory_update_count: 1,
+                skill_update_count: 0,
+                skipped: false,
+                skip_reason: None,
+                duration_ms: 25,
+                actions: vec![anureo_curator::ReviewActionSummary {
+                    kind: "memory".into(),
+                    op: "add".into(),
+                    target: "user".into(),
+                    file_path: Some("USER.md".into()),
+                    summary: "saved preference".into(),
+                    succeeded: true,
+                    chars_before: None,
+                    chars_after: None,
+                    diff_ref: None,
+                    persisted_diff: None,
+                    diff_truncated: false,
+                }],
+            })
+            .unwrap();
+
+        let response = agent
+            .list_sessions_for_owner(ListSessionsRequest::new(), "owner-review")
+            .await
+            .unwrap();
+        let review = response.sessions[0]
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.get("review"))
+            .expect("review metadata");
+        assert_eq!(review["status"], "reviewed");
+        assert_eq!(review["review_id"], "review-list");
+        assert_eq!(review["actions"].as_array().unwrap().len(), 1);
+        assert!(review["actions"][0].get("file_path").is_none());
+    }
+
+    #[tokio::test]
     async fn initialize_advertises_neutral_goal_meta() {
         // P8（alignment 附录 C.1）：initialize `_meta.goal` 静态能力块。
         // 两处广播：响应顶层 `_meta.goal`（codex-acp / cowork
         // `goalCapabilitiesFromInitialize` 的识别位置）+
         // `agentCapabilities._meta.goal`（同形保留）。
-        let agent = AnureoAcpAgent::new().expect("agent");
+        let (_dir, agent) = isolated_agent();
         let resp = agent
             .initialize(InitializeRequest::new(1.into()))
             .await

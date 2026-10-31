@@ -52,10 +52,31 @@
 //! - **SessionNotification**: `session_id`, `session_update` (SessionUpdate union).
 //! - **SessionUpdate variants**: user_message_chunk, **agent_message_chunk**, **agent_thought_chunk**, **tool_call**, **tool_call_update**, plan, available_commands_update, current_mode_update, config_option_update, **session_info_update**.
 //! - anureo sources: think output -> agent_message_chunk/agent_thought_chunk; Act decides to call tool -> tool_call (Pending); during/after execution -> tool_call_update (Running/Success/Failure).
-//! - **Background review completion**: When `spawn_inprocess_review` finishes (post-prompt or `/review-skill`), two `session/update` notifications are emitted:
+//! - **Background Review v2**: post-prompt, `/review-skill`, and
+//!   `_anureo.dev/review/start` share one durable four-state projection:
+//!   `running | reviewed | skipped | failed`. `_meta.review`,
+//!   `review/status`, `review/history`, and `review/changed` serialize the same
+//!   `ReviewState` schema. Inline action summaries are capped at 10; complete
+//!   persisted actions are paged through `review/details`.
+//! - Initialize advertises this surface as
+//!   `_meta["anureo.dev"].backgroundReview`. Diff support is advertised as
+//!   `false` until curator persists content-level diff data; an
+//!   `includeDiff: true` details request is rejected explicitly.
+//! - A running row is persisted before the curator thread starts. Every
+//!   terminal path writes curator history (including failures) and only then
+//!   clears the running row, so reconnecting clients converge via
+//!   `session/list` or `review/status` even when best-effort notifications are
+//!   lost. On process restart, orphaned running rows become durable failed
+//!   records with `fail_reason = "process_restarted"`.
+//! - **Background review completion**: When the review finishes, two `session/update` notifications are emitted:
 //!   1. `agent_message_chunk` — human-readable summary ("Background review saved 2 memories + 1 skill (1.2s)." or "... skipped (...)"). Uses a random UUID `message_id`; per ACP spec the client renders a new `messageId` as a distinct assistant message.
-//!   2. `session_info_update` with `_meta.review = { status, reviewed_at, memory_count, skill_count, skip_reason?, duration_ms }` — fills the schema field declared in `session/list` above, enabling IDE session-list badges.
+//!   2. `session_info_update` with the complete v2 `_meta.review` snapshot,
+//!      including `review_id`, `trigger`, `started_at`, bounded `actions`, and
+//!      `fail_reason` where applicable.
 //! - Both notifications are best-effort (`try_send` on the session mpsc channel); review failures never crash the ACP process.
+//! - `_anureo.dev/review/{status,history,details,start,cancel}` checks the
+//!   durable session owner before reading or mutating review data. Cancellation
+//!   is review-local and never forwards `session/cancel` to the main prompt.
 //!
 //! ## Tool call and SessionUpdate mapping (stream_bridge)
 //!

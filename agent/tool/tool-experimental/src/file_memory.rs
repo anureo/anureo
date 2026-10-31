@@ -1,6 +1,6 @@
-use async_trait::async_trait;
 use anureo_llm::message::ToolCallContent;
 use anureo_llm::tool::{ToolSourceError, ToolSpec};
+use async_trait::async_trait;
 use memory_v2::{
     AddResult, MemoryError, MemoryFile, MemoryProvenance, MemoryStore, RemoveResult, ReplaceResult,
 };
@@ -109,13 +109,21 @@ impl MemoryTool {
                 entry_count,
                 usage,
                 provenance,
-            }) => json!({
-                "success": success,
-                "message": message,
-                "entries": entry_count,
-                "usage": usage,
-                "provenance": provenance,
-            }),
+            }) => {
+                let mut response = json!({
+                    "success": success,
+                    "message": message,
+                    "entries": entry_count,
+                    "usage": usage,
+                    "provenance": provenance,
+                });
+                if success {
+                    response["op"] = json!("add");
+                    response["file"] = json!(Self::file_wire_name(file));
+                    response["chars"] = json!(content.trim().chars().count());
+                }
+                response
+            }
             Err(e) => Self::fmt_error(&e),
         }
     }
@@ -128,13 +136,21 @@ impl MemoryTool {
                 matched_count,
                 entry_count,
                 usage,
-            }) => json!({
-                "success": success,
-                "message": message,
-                "matched": matched_count,
-                "entries": entry_count,
-                "usage": usage
-            }),
+            }) => {
+                let mut response = json!({
+                    "success": success,
+                    "message": message,
+                    "matched": matched_count,
+                    "entries": entry_count,
+                    "usage": usage
+                });
+                if success {
+                    response["op"] = json!("replace");
+                    response["file"] = json!(Self::file_wire_name(file));
+                    response["chars"] = json!(new_content.trim().chars().count());
+                }
+                response
+            }
             Err(e) => Self::fmt_error(&e),
         }
     }
@@ -146,13 +162,28 @@ impl MemoryTool {
                 message,
                 entry_count,
                 usage,
-            }) => json!({
-                "success": success,
-                "message": message,
-                "entries": entry_count,
-                "usage": usage
-            }),
+            }) => {
+                let mut response = json!({
+                    "success": success,
+                    "message": message,
+                    "entries": entry_count,
+                    "usage": usage
+                });
+                if success {
+                    response["op"] = json!("remove");
+                    response["file"] = json!(Self::file_wire_name(file));
+                }
+                response
+            }
             Err(e) => Self::fmt_error(&e),
+        }
+    }
+
+    // The protocol calls project memory `memory`, not serde's `project`.
+    fn file_wire_name(file: MemoryFile) -> &'static str {
+        match file {
+            MemoryFile::User => "user",
+            MemoryFile::Project => "memory",
         }
     }
 
@@ -304,6 +335,72 @@ mod tests {
     }
 
     #[test]
+    fn successful_responses_include_structured_wire_fields() {
+        let store = test_store();
+        let tool = MemoryTool::new(store);
+
+        let add = tool.dispatch(&json!({
+            "action": "add",
+            "target": "memory",
+            "content": "  偏爱 Rust  "
+        }));
+        assert_eq!(add["op"], "add");
+        assert_eq!(add["file"], "memory");
+        assert_eq!(add["chars"], 7);
+        assert!(add["entries"].is_number());
+        assert!(add["usage"].is_string());
+
+        let replace = tool.dispatch(&json!({
+            "action": "replace",
+            "target": "memory",
+            "old_text": "Rust",
+            "content": "  偏爱 Go  "
+        }));
+        assert_eq!(replace["op"], "replace");
+        assert_eq!(replace["file"], "memory");
+        assert_eq!(replace["chars"], 5);
+        assert!(replace["matched"].is_number());
+        assert!(replace["entries"].is_number());
+        assert!(replace["usage"].is_string());
+
+        let remove = tool.dispatch(&json!({
+            "action": "remove",
+            "target": "memory",
+            "old_text": "Go"
+        }));
+        assert_eq!(remove["op"], "remove");
+        assert_eq!(remove["file"], "memory");
+        assert!(remove.get("chars").is_none());
+        assert!(remove["entries"].is_number());
+        assert!(remove["usage"].is_string());
+
+        let user = tool.dispatch(&json!({
+            "action": "add",
+            "target": "user",
+            "content": "concise replies"
+        }));
+        assert_eq!(user["file"], "user");
+    }
+
+    #[test]
+    fn failed_responses_do_not_include_structured_wire_fields() {
+        let store = test_store();
+        let tool = MemoryTool::new(store);
+        let result = tool.dispatch(&json!({
+            "action": "replace",
+            "target": "memory",
+            "old_text": "missing",
+            "content": "replacement"
+        }));
+
+        assert_eq!(result["success"], false);
+        assert!(result.get("op").is_none());
+        assert!(result.get("file").is_none());
+        assert!(result.get("chars").is_none());
+        assert!(result["error"].is_string());
+    }
+
+    #[test]
     fn dispatch_unknown_action() {
         let store = test_store();
         let tool = MemoryTool::new(store);
@@ -336,7 +433,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tool_trait_call() {
+    async fn tool_call_serializes_structured_wire_fields() {
         let store = test_store();
         let tool = MemoryTool::new(store);
         let result = tool
@@ -351,7 +448,14 @@ mod tests {
             _ => panic!("expected text"),
         };
         let parsed: Value = serde_json::from_str(&text).unwrap();
-        assert!(parsed["success"].as_bool().unwrap());
+        assert_eq!(parsed["success"], true);
+        assert_eq!(parsed["op"], "add");
+        assert_eq!(parsed["file"], "memory");
+        assert_eq!(parsed["chars"], 4);
+        assert!(parsed["message"].is_string());
+        assert!(parsed["entries"].is_number());
+        assert!(parsed["usage"].is_string());
+        assert!(parsed["provenance"].is_object());
     }
 
     #[test]

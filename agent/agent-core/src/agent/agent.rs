@@ -2,6 +2,7 @@ use crate::agent::react::build::build_react_runner;
 use crate::agent::react::{ReactBuildConfig, ReactRunner};
 use crate::runner_common::StreamRunOutcome;
 use crate::state::ReActState;
+use crate::RunCancellation;
 use checkpoint::RunnableConfig;
 use std::sync::Arc;
 use stream_event::StreamEvent;
@@ -29,6 +30,7 @@ pub enum AgentEvent {
     TextChunk(String),
     ReasoningChunk(String),
     ToolCallStart {
+        call_id: Option<String>,
         name: String,
         arguments: String,
     },
@@ -37,6 +39,7 @@ pub enum AgentEvent {
         content: String,
     },
     ToolEnd {
+        call_id: Option<String>,
         name: String,
         result: String,
         is_error: bool,
@@ -58,6 +61,17 @@ pub struct Agent {
 impl Agent {
     pub async fn from_config(config: AgentConfig) -> Result<Self, AgentError> {
         let runner = build_react_runner(&config, None, false, None, None)
+            .await
+            .map_err(|e| AgentError::Build(e.to_string()))?;
+        Ok(Self { runner, config })
+    }
+
+    /// Build an agent whose LLM and tool operations can be cancelled as one run.
+    pub async fn from_config_with_cancellation(
+        config: AgentConfig,
+        cancellation: RunCancellation,
+    ) -> Result<Self, AgentError> {
+        let runner = build_react_runner(&config, None, false, Some(cancellation), None)
             .await
             .map_err(|e| AgentError::Build(e.to_string()))?;
         Ok(Self { runner, config })
@@ -131,8 +145,11 @@ fn map_stream_event(ev: StreamEvent<ReActState>) -> Option<AgentEvent> {
         StreamEvent::TextDelta { content, .. } => Some(AgentEvent::TextChunk(content)),
         StreamEvent::ReasoningDelta { content, .. } => Some(AgentEvent::ReasoningChunk(content)),
         StreamEvent::ToolCall {
-            name, arguments, ..
+            call_id,
+            name,
+            arguments,
         } => Some(AgentEvent::ToolCallStart {
+            call_id,
             name,
             arguments: arguments.to_string(),
         }),
@@ -140,11 +157,13 @@ fn map_stream_event(ev: StreamEvent<ReActState>) -> Option<AgentEvent> {
             Some(AgentEvent::ToolOutput { name, content })
         }
         StreamEvent::ToolEnd {
+            call_id,
             name,
             result,
             is_error,
             ..
         } => Some(AgentEvent::ToolEnd {
+            call_id,
             name,
             result,
             is_error,
@@ -217,9 +236,14 @@ mod tests {
         };
         let mapped = map_stream_event(ev).unwrap();
         match mapped {
-            AgentEvent::ToolCallStart { name, arguments } => {
+            AgentEvent::ToolCallStart {
+                name,
+                arguments,
+                call_id,
+            } => {
                 assert_eq!(name, "read");
                 assert!(arguments.contains("foo.rs"));
+                assert_eq!(call_id.as_deref(), Some("c1"));
             }
             other => panic!("expected ToolCallStart, got {:?}", other),
         }
@@ -241,7 +265,7 @@ mod tests {
     #[test]
     fn map_tool_end_success() {
         let ev = StreamEvent::<ReActState>::ToolEnd {
-            call_id: None,
+            call_id: Some("c1".into()),
             name: "read".into(),
             result: "file contents".into(),
             is_error: false,
@@ -249,8 +273,8 @@ mod tests {
         };
         assert!(matches!(
             map_stream_event(ev),
-            Some(AgentEvent::ToolEnd { name, is_error, .. })
-                if name == "read" && !is_error
+            Some(AgentEvent::ToolEnd { call_id, name, is_error, .. })
+                if call_id.as_deref() == Some("c1") && name == "read" && !is_error
         ));
     }
 

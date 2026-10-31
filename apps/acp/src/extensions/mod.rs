@@ -37,6 +37,7 @@ pub mod provider;
 pub mod question;
 pub mod quota_provider;
 pub mod relay;
+pub mod review;
 pub mod scheduled_task;
 pub mod session_assist;
 pub mod session_auth;
@@ -193,6 +194,7 @@ pub trait ExtensionHandler: Send + Sync {
 
 pub struct ExtensionRegistry {
     handlers: HashMap<String, Arc<dyn ExtensionHandler>>,
+    review_handler: Option<Arc<review::ReviewHandler>>,
     /// 中立方法全名 → 规范扩展方法全名（如 `_session/goal` →
     /// `_anureo.dev/goal/session_control`），见 [`Self::register_alias`]。
     aliases: HashMap<String, String>,
@@ -203,6 +205,7 @@ impl ExtensionRegistry {
     pub fn new() -> Self {
         Self {
             handlers: HashMap::new(),
+            review_handler: None,
             aliases: HashMap::new(),
             capabilities: RwLock::new(Value::Object(Default::default())),
         }
@@ -214,19 +217,37 @@ impl ExtensionRegistry {
         self.handlers.insert(domain.to_string(), handler);
     }
 
+    pub fn register_review(&mut self, handler: Arc<review::ReviewHandler>) {
+        self.review_handler = Some(handler.clone());
+        self.register("review", handler);
+    }
+
+    pub fn review_handler(&self) -> Option<Arc<review::ReviewHandler>> {
+        self.review_handler.clone()
+    }
+
     /// Register a neutral (non-`_anureo.dev/`) method alias that routes to a
     /// canonical extension method (P8：中立 goal 扩展 `_session/goal` →
     /// `_anureo.dev/goal/session_control`）。Alias 不出现在能力快照中
     /// （中立面经 initialize `_meta.goal` 单独广播）。
     pub fn register_alias(&mut self, alias: &str, canonical: &str) {
         tracing::info!(alias, canonical, "Registered extension method alias");
-        self.aliases.insert(alias.to_string(), canonical.to_string());
+        self.aliases
+            .insert(alias.to_string(), canonical.to_string());
     }
 
     pub fn build_capability_snapshot(&self) -> Value {
         let mut snapshot = serde_json::Map::new();
         for (domain, handler) in &self.handlers {
-            snapshot.insert(domain.clone(), handler.capabilities());
+            // The methods use `_anureo.dev/review/*`, while the v2
+            // capability contract deliberately uses `backgroundReview` to
+            // distinguish this domain from code auto-review.
+            let capability = if domain == "review" {
+                "backgroundReview"
+            } else {
+                domain
+            };
+            snapshot.insert(capability.to_string(), handler.capabilities());
         }
         Value::Object(snapshot)
     }

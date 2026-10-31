@@ -358,7 +358,7 @@ pub async fn run_curator_llm_pass(
     let result = match agent
         .run_with_config(&prompt, Some(fork_config), move |ev| {
             match ev {
-                AgentEvent::ToolCallStart { name, arguments } => {
+                AgentEvent::ToolCallStart { name, arguments, .. } => {
                     debug!(tool = %name, "Curator tool call");
                     // Truncate arguments to 400 chars for report readability
                     // (aligns Hermes curator.py:1797-1798).
@@ -374,6 +374,7 @@ pub async fn run_curator_llm_pass(
                     name,
                     result,
                     is_error,
+                    ..
                 } => {
                     if is_error {
                         warn!(

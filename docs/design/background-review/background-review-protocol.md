@@ -1,6 +1,7 @@
 # Background Review ACP 协议设计（v2 修订）
 
 > **状态**：Draft v2 — 待评审
+> **实施进度**：P1a–P1d 已接入；P2 的内容 diff、字符计数、checkpoint 引用与 `includeDiff` 已实现，测试验证见代码。候选确认/回滚属于架构方案后续阶段，不在本协议修订范围。
 > **日期**：2026-09-06（v1: 2026-08-20）
 > **范围**：anureo ACP Background review 的 session metadata、修改明细、内容 diff、查询方法、通知和结果契约
 > **相关代码**：`apps/acp/src/review_runner.rs`、`apps/acp/src/agent.rs`、`apps/acp/src/protocol.rs`、`experimental/curator/src/review.rs`、`experimental/curator/src/history.rs`、`agent/tool/tool-experimental/src/file_memory.rs`、`agent/tool/tool-basic/src/skill/manage.rs`
@@ -303,6 +304,8 @@ pub struct ReviewActionSummary {
 - **格式**：unified diff（`---/+++ @@`），UTF-8 安全；
 - **上限**：每条 action ≤ 8 KiB，超出截断并置 `diff_truncated: true`；
 - **不落明文**：`review_history.actions_json` 持久化 diff **引用**（入参已在 checkpoint/会话记录中），可选配置 `persist_diff: true` 才落明文（默认 false，控制 memory.db 体积与敏感面）。
+
+当前实现以 `review_id` 作为 review checkpoint thread id，`actions_json.diff_ref` 保存 tool call id；`review/details` 在 owner 校验后按引用读取同一 `memory.db` 的 `background-review` checkpoint。可选的 ACP 运行时开关为 `ANUREO_REVIEW_PERSIST_DIFF=1`；未设置时不在 review history 复制输入明文。旧记录、无引用的 `write_file`/`edit` 等动作返回 `diff_available: false`。
 
 ---
 

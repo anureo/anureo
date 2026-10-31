@@ -206,8 +206,8 @@ pub mod content;
 pub mod extensions;
 pub mod global_events;
 
-pub mod goal_runtime;
 pub mod goal_runner;
+pub mod goal_runtime;
 pub mod high_freq_usage;
 pub mod last_model;
 pub mod logging;
@@ -215,6 +215,7 @@ pub mod mcp_convert;
 pub mod notification_router;
 pub mod prompt_executor;
 pub mod protocol;
+mod review_diff;
 pub mod review_runner;
 pub mod runtime;
 pub mod session;

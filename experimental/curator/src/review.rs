@@ -2,7 +2,9 @@ use crate::prompts::select_review_prompt;
 use crate::review_tool_gate::ReviewToolGate;
 use agent::agent::{Agent, AgentError, AgentEvent};
 use agent::ReactBuildConfig;
+use agent::RunCancellation;
 use checkpoint::RunnableConfig;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use tracing::{error, info, warn};
 
@@ -26,6 +28,12 @@ pub struct ReviewConfig {
     pub max_session_chars: usize,
     pub min_session_chars: usize,
     pub observability_enabled: bool,
+    /// When present, persist the review agent's checkpoints under this stable
+    /// thread id so action diff references can be resolved after reconnect.
+    pub checkpoint_thread_id: Option<String>,
+    /// Explicit opt-in to store bounded plaintext diffs in review history.
+    /// Defaults to false; checkpoint references are used instead.
+    pub persist_diff: bool,
 }
 
 impl Default for ReviewConfig {
@@ -36,20 +44,49 @@ impl Default for ReviewConfig {
             max_session_chars: 24_000,
             min_session_chars: 200,
             observability_enabled: true,
+            checkpoint_thread_id: None,
+            persist_diff: false,
         }
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ReviewActionSummary {
     pub kind: String,
+    /// Normalized mutation operation. Legacy serialized actions did not carry
+    /// this field, so they deserialize as `"unknown"`.
+    #[serde(default = "default_unknown_op")]
+    pub op: String,
+    /// Logical mutation target: memory file (`user`/`memory`) or skill name.
+    /// Legacy tool results fall back to the tool name.
+    #[serde(default)]
     pub target: String,
+    /// Skill-relative path (or memory markdown file) when the tool identifies
+    /// one. This remains optional for legacy and whole-skill operations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
     /// Human-readable detail about the action. For successes, the tool's own
     /// `message` field (e.g. "Skill 'foo' created."); for failures, the tool's
     /// `error` field (falling back to `message`). Capped at 160 characters with
     /// UTF-8 safe truncation (Chinese text safe).
     pub summary: String,
     pub succeeded: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chars_before: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chars_after: Option<u64>,
+    /// Tool call id in the review checkpoint. No source text is stored here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff_ref: Option<String>,
+    /// Populated only when ReviewConfig.persist_diff is explicitly enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persisted_diff: Option<String>,
+    #[serde(default)]
+    pub diff_truncated: bool,
+}
+
+fn default_unknown_op() -> String {
+    "unknown".to_string()
 }
 
 #[derive(Debug, Clone, Default)]
@@ -151,7 +188,21 @@ pub struct ReviewCallbacks {
 
 pub type ReviewCallbackFn = Arc<dyn Fn(&str) + Send + Sync>;
 
+#[cfg(test)]
 fn parse_action(name: &str, result: &str) -> Option<ReviewActionSummary> {
+    parse_action_with_input(name, result, None, false)
+}
+
+/// Parses a mutation result, using the matching `ToolCallStart` arguments as
+/// a compatibility fallback until every tool result exposes structured v2
+/// fields. `force_failed` covers executor-level failures whose result is not
+/// JSON while still retaining the attempted mutation in review history.
+fn parse_action_with_input(
+    name: &str,
+    result: &str,
+    input: Option<&str>,
+    force_failed: bool,
+) -> Option<ReviewActionSummary> {
     // Alignment with Hermes `summarize_background_review_actions` (background_review.py:237-297):
     // Hermes parses tool message content as JSON and checks `data["success"]`.
     // anureo mirrors this but works at the event level (tool name + result string)
@@ -176,11 +227,15 @@ fn parse_action(name: &str, result: &str) -> Option<ReviewActionSummary> {
     //
     // The `count` fallback covers read-only tools like `skill_list` that don't
     // bother to set `message` but do report how many items they listed.
-    let (succeeded, detail) = if let Ok(data) = serde_json::from_str::<serde_json::Value>(result) {
+    let input = input.and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok());
+    let data = serde_json::from_str::<serde_json::Value>(result).ok();
+
+    let (succeeded, detail) = if let Some(data) = data.as_ref() {
         let success = data
             .get("success")
             .and_then(|v| v.as_bool())
-            .unwrap_or(true);
+            .unwrap_or(!force_failed)
+            && !force_failed;
         let detail = if success {
             data.get("message")
                 .and_then(|v| v.as_str())
@@ -200,6 +255,8 @@ fn parse_action(name: &str, result: &str) -> Option<ReviewActionSummary> {
                 .to_string()
         };
         (success, detail)
+    } else if force_failed {
+        (false, extract_error_reason(result))
     } else {
         // Result is not valid JSON — likely truncated by display_limit or
         // a non-JSON tool output. Skip rather than dump raw text to the user.
@@ -212,12 +269,159 @@ fn parse_action(name: &str, result: &str) -> Option<ReviewActionSummary> {
     const MAX_DETAIL_CHARS: usize = 160;
     let preview = truncate_unicode(&detail, MAX_DETAIL_CHARS);
 
+    let raw_op = json_string(data.as_ref(), &["op", "action"])
+        .or_else(|| json_string(input.as_ref(), &["op", "action"]));
+    let op = normalize_action_op(kind, raw_op.as_deref());
+
+    let structured_target = match kind {
+        "memory" => json_string(data.as_ref(), &["file", "target"])
+            .or_else(|| json_string(input.as_ref(), &["target", "file"])),
+        "skill" => json_string(data.as_ref(), &["name", "target"])
+            .or_else(|| json_string(input.as_ref(), &["name", "target"])),
+        _ => json_string(data.as_ref(), &["target", "name"])
+            .or_else(|| json_string(input.as_ref(), &["target", "name"])),
+    };
+    let target = structured_target
+        .clone()
+        .unwrap_or_else(|| name.to_string());
+
+    let mut file_path = json_string(data.as_ref(), &["file_path"])
+        .or_else(|| json_string(input.as_ref(), &["file_path"]));
+    if file_path.is_none() && kind == "memory" && structured_target.is_some() {
+        file_path = match target.as_str() {
+            "user" => Some("USER.md".to_string()),
+            "memory" => Some("PROJECT.md".to_string()),
+            _ => None,
+        };
+    }
+    if file_path.is_none()
+        && kind == "skill"
+        && matches!(raw_op.as_deref(), Some("patch") | Some("edit"))
+    {
+        file_path = Some("SKILL.md".to_string());
+    }
+
     Some(ReviewActionSummary {
         kind: kind.to_string(),
-        target: name.to_string(),
+        op,
+        target,
+        file_path,
         summary: preview,
         succeeded,
+        chars_before: None,
+        chars_after: None,
+        diff_ref: None,
+        persisted_diff: None,
+        diff_truncated: false,
     })
+}
+
+fn attach_diff_metadata(
+    action: &mut ReviewActionSummary,
+    input: Option<&str>,
+    call_id: Option<&str>,
+    checkpoint_enabled: bool,
+    persist_diff: bool,
+) {
+    if !action.succeeded {
+        return;
+    }
+    let Some(input) = input.and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+    else {
+        return;
+    };
+    let (before, after) = match (action.kind.as_str(), action.op.as_str()) {
+        ("memory", "add") => (Some(""), input.get("content").and_then(|v| v.as_str())),
+        ("memory", "replace") => (
+            input.get("old_text").and_then(|v| v.as_str()),
+            input.get("content").and_then(|v| v.as_str()),
+        ),
+        ("memory", "remove") => (input.get("old_text").and_then(|v| v.as_str()), Some("")),
+        ("skill", "update") if input.get("old_string").is_some() => (
+            input.get("old_string").and_then(|v| v.as_str()),
+            input.get("new_string").and_then(|v| v.as_str()),
+        ),
+        _ => return,
+    };
+    let (Some(before), Some(after)) = (before, after) else {
+        return;
+    };
+    action.chars_before = Some(before.chars().count() as u64);
+    action.chars_after = Some(after.chars().count() as u64);
+    if checkpoint_enabled {
+        action.diff_ref = call_id.filter(|id| !id.is_empty()).map(str::to_string);
+    }
+    if persist_diff {
+        let (diff, truncated) = bounded_review_unified_diff(before, after);
+        action.persisted_diff = Some(diff);
+        action.diff_truncated = truncated;
+    }
+}
+
+/// Unified patch for the tool-input before/after snippet, capped at 8 KiB on
+/// a UTF-8 boundary. The caller decides whether to persist or only return it.
+pub fn bounded_review_unified_diff(before: &str, after: &str) -> (String, bool) {
+    const MAX_DIFF_BYTES: usize = 8 * 1024;
+    let old_lines: Vec<&str> = if before.is_empty() {
+        Vec::new()
+    } else {
+        before.split_terminator('\n').collect()
+    };
+    let new_lines: Vec<&str> = if after.is_empty() {
+        Vec::new()
+    } else {
+        after.split_terminator('\n').collect()
+    };
+    let old_start = if old_lines.is_empty() { 0 } else { 1 };
+    let new_start = if new_lines.is_empty() { 0 } else { 1 };
+    let mut text = format!(
+        "--- before\n+++ after\n@@ -{old_start},{} +{new_start},{} @@\n",
+        old_lines.len(),
+        new_lines.len()
+    );
+    for line in old_lines {
+        text.push('-');
+        text.push_str(line);
+        text.push('\n');
+    }
+    if !before.is_empty() && !before.ends_with('\n') {
+        text.push_str("\\ No newline at end of file\n");
+    }
+    for line in new_lines {
+        text.push('+');
+        text.push_str(line);
+        text.push('\n');
+    }
+    if !after.is_empty() && !after.ends_with('\n') {
+        text.push_str("\\ No newline at end of file\n");
+    }
+    if text.len() <= MAX_DIFF_BYTES {
+        return (text, false);
+    }
+    let mut end = MAX_DIFF_BYTES;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.truncate(end);
+    (text, true)
+}
+
+fn json_string(value: Option<&serde_json::Value>, keys: &[&str]) -> Option<String> {
+    let value = value?;
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(|v| v.as_str()))
+        .map(str::to_string)
+}
+
+fn normalize_action_op(kind: &str, op: Option<&str>) -> String {
+    let Some(op) = op.filter(|op| !op.is_empty()) else {
+        return default_unknown_op();
+    };
+    match (kind, op) {
+        ("skill", "edit" | "patch" | "write_file") => "update".to_string(),
+        ("skill", "remove_file" | "delete") => "delete".to_string(),
+        _ => op.to_string(),
+    }
 }
 
 /// Tool-aware phrasing for read-only tools that report how many items they
@@ -288,6 +492,25 @@ pub async fn run_review(
     parent_checkpoint_id: String,
     session_content: &str,
     config: &ReviewConfig,
+) -> Result<ReviewOutcome, AgentError> {
+    run_review_with_cancellation(
+        parent_config,
+        parent_checkpoint_id,
+        session_content,
+        config,
+        None,
+    )
+    .await
+}
+
+/// Run a review with an optional run-scoped cancellation handle. ACP manual
+/// cancellation uses this path so a cancelled review stops LLM/tool work.
+pub async fn run_review_with_cancellation(
+    parent_config: ReactBuildConfig,
+    parent_checkpoint_id: String,
+    session_content: &str,
+    config: &ReviewConfig,
+    cancellation: Option<RunCancellation>,
 ) -> Result<ReviewOutcome, AgentError> {
     let start = std::time::Instant::now();
 
@@ -372,21 +595,40 @@ pub async fn run_review(
         "Starting background review"
     );
 
-    let agent = Agent::from_config(review_config).await?;
+    let fork_thread_id = config
+        .checkpoint_thread_id
+        .clone()
+        .unwrap_or_else(|| format!("review-{}", uuid_v4()));
+    let checkpoint_enabled = config.checkpoint_thread_id.is_some();
+    let persist_diff = config.persist_diff;
+    if checkpoint_enabled {
+        review_config.thread_id = Some(fork_thread_id.clone());
+    }
 
-    let fork_thread_id = format!("review-{}", uuid_v4());
+    let agent = match cancellation {
+        Some(cancellation) => {
+            Agent::from_config_with_cancellation(review_config, cancellation).await?
+        }
+        None => Agent::from_config(review_config).await?,
+    };
+
     let fork_thread_id_log = fork_thread_id.clone();
     let fork_config = RunnableConfig {
         thread_id: Some(fork_thread_id),
-        checkpoint_id: Some(parent_checkpoint_id),
+        checkpoint_id: (!checkpoint_enabled).then_some(parent_checkpoint_id),
         checkpoint_ns: "background-review".to_string(),
         ..Default::default()
     };
 
     let actions: Arc<Mutex<Vec<ReviewActionSummary>>> = Arc::new(Mutex::new(Vec::new()));
+    // Pair inputs and results per tool in FIFO order. ToolEnd's id takes
+    // precedence because ReAct may assign one after ToolCallStart fires.
+    type PendingToolInputs = HashMap<String, VecDeque<(Option<String>, String)>>;
+    let pending_inputs: Arc<Mutex<PendingToolInputs>> = Arc::new(Mutex::new(HashMap::new()));
     let violations: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let tokens: Arc<Mutex<TokenUsageSummary>> = Arc::new(Mutex::new(TokenUsageSummary::default()));
     let actions_clone = actions.clone();
+    let pending_inputs_clone = pending_inputs.clone();
     let violations_clone = violations.clone();
     let tokens_clone = tokens.clone();
 
@@ -397,7 +639,17 @@ pub async fn run_review(
 
     let result = agent
         .run_with_config(&user_message, Some(fork_config), move |ev| match ev {
-            AgentEvent::ToolCallStart { name, .. } => {
+            AgentEvent::ToolCallStart {
+                call_id,
+                name,
+                arguments,
+            } => {
+                pending_inputs_clone
+                    .lock()
+                    .unwrap()
+                    .entry(name.clone())
+                    .or_default()
+                    .push_back((call_id, arguments));
                 if !gate.is_allowed(&name) {
                     warn!("Review tool violation: '{}' not in whitelist", name);
                     violations_clone
@@ -409,10 +661,16 @@ pub async fn run_review(
                 }
             }
             AgentEvent::ToolEnd {
+                call_id: end_call_id,
                 name,
                 result,
                 is_error,
             } => {
+                let input = pending_inputs_clone
+                    .lock()
+                    .unwrap()
+                    .get_mut(&name)
+                    .and_then(VecDeque::pop_front);
                 if is_error {
                     let preview = truncate_unicode(&result, 200);
                     warn!("Review tool '{}' failed: {}", name, preview);
@@ -433,9 +691,22 @@ pub async fn run_review(
                             ""
                         }
                     );
-                    if let Some(a) = parse_action(&name, &result) {
-                        actions_clone.lock().unwrap().push(a);
-                    }
+                }
+                let (start_call_id, input) = input
+                    .map(|(call_id, input)| (call_id, Some(input)))
+                    .unwrap_or((None, None));
+                let call_id = end_call_id.or(start_call_id);
+                if let Some(mut a) =
+                    parse_action_with_input(&name, &result, input.as_deref(), is_error)
+                {
+                    attach_diff_metadata(
+                        &mut a,
+                        input.as_deref(),
+                        call_id.as_deref(),
+                        checkpoint_enabled,
+                        persist_diff,
+                    );
+                    actions_clone.lock().unwrap().push(a);
                 }
             }
             AgentEvent::Usage {
@@ -589,7 +860,9 @@ mod tests {
     fn parse_action_recognizes_memory() {
         let a = parse_action("memory", r#"{"success": true, "result": "saved"}"#).unwrap();
         assert_eq!(a.kind, "memory");
+        assert_eq!(a.op, "unknown");
         assert_eq!(a.target, "memory");
+        assert_eq!(a.file_path, None);
         assert!(a.succeeded);
     }
 
@@ -597,6 +870,164 @@ mod tests {
     fn parse_action_recognizes_skill_manage_as_skill() {
         let a = parse_action("skill_manage", r#"{"ok": true}"#).unwrap();
         assert_eq!(a.kind, "skill");
+        assert_eq!(a.op, "unknown");
+        assert_eq!(a.target, "skill_manage");
+        assert_eq!(a.file_path, None);
+    }
+
+    #[test]
+    fn parse_action_prefers_structured_v2_result_fields() {
+        let a = parse_action(
+            "memory",
+            r#"{"success":true,"message":"saved","op":"replace","file":"user"}"#,
+        )
+        .unwrap();
+        assert_eq!(a.op, "replace");
+        assert_eq!(a.target, "user");
+        assert_eq!(a.file_path.as_deref(), Some("USER.md"));
+    }
+
+    #[test]
+    fn parse_action_uses_tool_input_as_structured_fallback() {
+        let a = parse_action_with_input(
+            "skill_manage",
+            r#"{"success":true,"message":"patched"}"#,
+            Some(r#"{"action":"patch","name":"rust-feedback","file_path":"references/a.md"}"#),
+            false,
+        )
+        .unwrap();
+        assert_eq!(a.kind, "skill");
+        assert_eq!(a.op, "update");
+        assert_eq!(a.target, "rust-feedback");
+        assert_eq!(a.file_path.as_deref(), Some("references/a.md"));
+    }
+
+    #[test]
+    fn parse_action_records_executor_failure_with_input() {
+        let a = parse_action_with_input(
+            "memory",
+            "Error executing tool 'memory' with error:\n denied\n Please fix the error and try again.",
+            Some(r#"{"action":"remove","target":"user","old_text":"secret"}"#),
+            true,
+        )
+        .unwrap();
+        assert!(!a.succeeded);
+        assert_eq!(a.op, "remove");
+        assert_eq!(a.target, "user");
+        assert_eq!(a.summary, "denied");
+    }
+
+    #[test]
+    fn review_action_deserializes_legacy_json() {
+        let action: ReviewActionSummary = serde_json::from_str(
+            r#"{"kind":"memory","target":"memory","summary":"saved","succeeded":true}"#,
+        )
+        .unwrap();
+        assert_eq!(action.op, "unknown");
+        assert_eq!(action.file_path, None);
+        assert_eq!(action.chars_before, None);
+        assert_eq!(action.chars_after, None);
+        assert_eq!(action.diff_ref, None);
+        assert_eq!(action.persisted_diff, None);
+        assert!(!action.diff_truncated);
+    }
+
+    #[test]
+    fn diff_metadata_uses_tool_input_without_persisting_content() {
+        let cases = [
+            (
+                "memory",
+                r#"{"success":true,"op":"add","file":"user"}"#,
+                r#"{"action":"add","target":"user","content":"你好"}"#,
+                (0, 2),
+            ),
+            (
+                "memory",
+                r#"{"success":true,"op":"replace","file":"memory"}"#,
+                r#"{"action":"replace","target":"memory","old_text":"旧","content":"新值"}"#,
+                (1, 2),
+            ),
+            (
+                "memory",
+                r#"{"success":true,"op":"remove","file":"user"}"#,
+                r#"{"action":"remove","target":"user","old_text":"旧值"}"#,
+                (2, 0),
+            ),
+            (
+                "skill_manage",
+                r#"{"success":true,"op":"patch","name":"rust"}"#,
+                r#"{"action":"patch","name":"rust","old_string":"old","new_string":"新"}"#,
+                (3, 1),
+            ),
+        ];
+        for (name, result, input, expected) in cases {
+            let mut action = parse_action_with_input(name, result, Some(input), false).unwrap();
+            attach_diff_metadata(&mut action, Some(input), Some("call-1"), true, false);
+            assert_eq!(
+                (action.chars_before, action.chars_after),
+                (Some(expected.0), Some(expected.1))
+            );
+            assert_eq!(action.diff_ref.as_deref(), Some("call-1"));
+            let persisted = serde_json::to_string(&action).unwrap();
+            assert!(!persisted.contains("old_string"));
+            assert!(!persisted.contains("new_string"));
+            assert!(!persisted.contains("old_text"));
+            assert!(!persisted.contains("content"));
+        }
+    }
+
+    #[test]
+    fn failed_or_unsupported_action_has_no_diff_reference() {
+        let mut failed = parse_action_with_input(
+            "memory",
+            r#"{"success":false,"op":"remove","file":"user"}"#,
+            Some(r#"{"old_text":"secret"}"#),
+            false,
+        )
+        .unwrap();
+        attach_diff_metadata(
+            &mut failed,
+            Some(r#"{"old_text":"secret"}"#),
+            Some("call-1"),
+            true,
+            false,
+        );
+        assert!(failed.diff_ref.is_none());
+
+        let mut unsupported = parse_action_with_input(
+            "skill_manage",
+            r#"{"success":true,"op":"write_file","name":"rust"}"#,
+            Some(r#"{"action":"write_file","file_content":"secret"}"#),
+            false,
+        )
+        .unwrap();
+        attach_diff_metadata(
+            &mut unsupported,
+            Some(r#"{"file_content":"secret"}"#),
+            Some("call-2"),
+            true,
+            false,
+        );
+        assert!(unsupported.diff_ref.is_none());
+    }
+
+    #[test]
+    fn plaintext_diff_is_persisted_only_with_explicit_opt_in() {
+        let input = r#"{"action":"replace","target":"user","old_text":"旧","content":"新"}"#;
+        let mut action = parse_action_with_input(
+            "memory",
+            r#"{"success":true,"op":"replace","file":"user"}"#,
+            Some(input),
+            false,
+        )
+        .unwrap();
+        attach_diff_metadata(&mut action, Some(input), Some("call-1"), true, false);
+        assert!(action.persisted_diff.is_none());
+        attach_diff_metadata(&mut action, Some(input), Some("call-1"), true, true);
+        let diff = action.persisted_diff.as_deref().unwrap();
+        assert!(diff.contains("-旧"));
+        assert!(diff.contains("+新"));
+        assert!(!action.diff_truncated);
     }
 
     #[test]
@@ -999,6 +1430,7 @@ mod tests {
         assert!(c.review_skills);
         assert_eq!(c.max_session_chars, 24_000);
         assert_eq!(c.min_session_chars, 200);
+        assert!(!c.persist_diff);
     }
 
     #[test]

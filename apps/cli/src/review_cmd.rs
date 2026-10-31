@@ -2,8 +2,10 @@ use crate::args::{ReviewArgs, ReviewCommand};
 use crate::review_history::{ReviewHistory, ReviewRecord};
 use crate::review_skill_cmd::build_review_react_config;
 use crate::session::SessionManager;
+use anureo_curator::{
+    run_review, ReviewConfig as BgReviewConfig, ReviewOutcome, TokenUsageSummary,
+};
 use chrono::{Duration, Utc};
-use anureo_curator::{run_review, ReviewConfig as BgReviewConfig, ReviewOutcome, TokenUsageSummary};
 use std::time::Instant;
 
 pub(crate) async fn handle_review_command(
@@ -63,6 +65,7 @@ async fn do_review_single(
 
     if text.chars().count() < 200 {
         let record = ReviewRecord {
+            review_id: Some(uuid::Uuid::new_v4().to_string()),
             session_id: session_id.to_string(),
             reviewed_at: Utc::now(),
             trigger: trigger.to_string(),
@@ -72,6 +75,7 @@ async fn do_review_single(
             skipped: true,
             skip_reason: Some("insufficient_content".to_string()),
             duration_ms: start.elapsed().as_millis() as u64,
+            actions: Vec::new(),
         };
         history.append(&record)?;
         if json {
@@ -108,6 +112,7 @@ async fn do_review_single(
     match run_review(react_config, checkpoint_id, &text, &review_config).await {
         Ok(outcome) => {
             let record = ReviewRecord {
+                review_id: Some(uuid::Uuid::new_v4().to_string()),
                 session_id: session_id.to_string(),
                 reviewed_at: Utc::now(),
                 trigger: trigger.to_string(),
@@ -117,6 +122,7 @@ async fn do_review_single(
                 skipped: outcome.skipped,
                 skip_reason: outcome.skip_reason.clone(),
                 duration_ms: start.elapsed().as_millis() as u64,
+                actions: outcome.actions.clone(),
             };
             history.append(&record)?;
 
@@ -146,6 +152,7 @@ async fn do_review_single(
         }
         Err(e) => {
             let record = ReviewRecord {
+                review_id: Some(uuid::Uuid::new_v4().to_string()),
                 session_id: session_id.to_string(),
                 reviewed_at: Utc::now(),
                 trigger: trigger.to_string(),
@@ -155,6 +162,7 @@ async fn do_review_single(
                 skipped: true,
                 skip_reason: Some(format!("llm_error: {}", e)),
                 duration_ms: start.elapsed().as_millis() as u64,
+                actions: Vec::new(),
             };
             history.append(&record)?;
             return Err(e.to_string().into());

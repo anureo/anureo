@@ -114,7 +114,7 @@ impl StatsCollector for InMemoryCollector {
                     model: None,
                 });
             }
-            AgentEvent::ToolCallStart { name, arguments: _ } => {
+            AgentEvent::ToolCallStart { name, arguments: _, .. } => {
                 session.pending_tool_starts.insert(name.clone(), now);
             }
             AgentEvent::ToolOutput { name: _, content: _ } => {}
@@ -122,6 +122,7 @@ impl StatsCollector for InMemoryCollector {
                 name,
                 result,
                 is_error,
+                ..
             } => {
                 let started_at_ms = session.pending_tool_starts.remove(name).unwrap_or(now);
                 session.tool_calls.push(ToolCallRecord {
@@ -241,6 +242,7 @@ mod tests {
         collector.record_event(
             "s1",
             &AgentEvent::ToolCallStart {
+                call_id: None,
                 name: "bash".into(),
                 arguments: "{}".into(),
             },
@@ -248,6 +250,7 @@ mod tests {
         collector.record_event(
             "s1",
             &AgentEvent::ToolEnd {
+                call_id: None,
                 name: "bash".into(),
                 result: "ok".into(),
                 is_error: false,
@@ -277,6 +280,7 @@ mod tests {
         collector.record_event(
             "s1",
             &AgentEvent::ToolCallStart {
+                call_id: None,
                 name: "bash".into(),
                 arguments: "{}".into(),
             },
@@ -284,6 +288,7 @@ mod tests {
         collector.record_event(
             "s1",
             &AgentEvent::ToolEnd {
+                call_id: None,
                 name: "bash".into(),
                 result: "boom".into(),
                 is_error: true,

@@ -17,6 +17,7 @@ pub struct ExtensionRegistryHandles {
     /// P5b：goal 扩展句柄，需在 agent `Arc` 包装后 `bind`（thread 解析 +
     /// runtime 钩子 + goal/updated 广播）。
     pub goal: Arc<super::goal::GoalHandler>,
+    pub review: Arc<super::review::ReviewHandler>,
 }
 
 /// Register every extension domain implemented in this crate.
@@ -40,9 +41,7 @@ pub fn register_default_extensions(
     registry.register("model", Arc::new(super::model::ModelHandler::new()));
     // P5b：goal 后端 = thread_goals；构造后经 handles.goal.bind(&agent) 接线。
     let goal_handler = match connections.as_ref() {
-        Some(connections) => {
-            super::goal::GoalHandler::new().with_connections(connections.clone())
-        }
+        Some(connections) => super::goal::GoalHandler::new().with_connections(connections.clone()),
         None => super::goal::GoalHandler::new(),
     };
     let goal_handler = Arc::new(goal_handler);
@@ -69,8 +68,10 @@ pub fn register_default_extensions(
         "client-auth",
         Arc::new(super::client_auth::ClientAuthHandler::default()),
     );
-    let question_handler = match connections {
-        Some(connections) => super::question::QuestionHandler::with_connections(connections),
+    let question_handler = match connections.as_ref() {
+        Some(connections) => {
+            super::question::QuestionHandler::with_connections(connections.clone())
+        }
         None => super::question::QuestionHandler::default(),
     };
     let question_handler = Arc::new(question_handler);
@@ -134,6 +135,8 @@ pub fn register_default_extensions(
         "auto-review",
         Arc::new(super::auto_review::AutoReviewHandler::default()),
     );
+    let review_handler = Arc::new(super::review::ReviewHandler::new(connections.clone()));
+    registry.register_review(review_handler.clone());
     registry.register(
         "preview",
         Arc::new(super::preview::PreviewHandler::default()),
@@ -180,5 +183,30 @@ pub fn register_default_extensions(
         session_list,
         question: question_handler,
         goal: goal_handler,
+        review: review_handler,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn default_registry_advertises_background_review_v2() {
+        let mut registry = ExtensionRegistry::new();
+        let handles =
+            register_default_extensions(&mut registry, Arc::new(GlobalEventBus::new()), None);
+        assert!(registry.has_domain("review"));
+        assert!(Arc::ptr_eq(
+            &handles.review,
+            &registry.review_handler().expect("typed review handler")
+        ));
+        let capabilities = registry.build_capability_snapshot();
+        assert_eq!(capabilities["backgroundReview"]["status"], true);
+        assert_eq!(capabilities["backgroundReview"]["history"], true);
+        assert_eq!(capabilities["backgroundReview"]["details"], true);
+        assert_eq!(capabilities["backgroundReview"]["diff"], true);
+        assert_eq!(capabilities["backgroundReview"]["start"], true);
+        assert_eq!(capabilities["backgroundReview"]["cancel"], true);
     }
 }

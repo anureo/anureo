@@ -919,7 +919,7 @@ impl Tool for SkillManagerTool {
             )));
         }
 
-        let result = with_write_origin(self.default_origin, async {
+        let mut result = with_write_origin(self.default_origin, async {
             match action {
                 "create" => self.handle_create(&args).await,
                 "patch" => self.handle_patch(&args).await,
@@ -932,7 +932,33 @@ impl Tool for SkillManagerTool {
         })
         .await?;
 
+        add_success_wire_fields(&mut result, action, &args);
+
         Ok(ToolCallContent::text(result.to_string()))
+    }
+}
+
+fn add_success_wire_fields(result: &mut Value, action: &str, args: &Value) {
+    if result.get("success").and_then(Value::as_bool) != Some(true) {
+        return;
+    }
+
+    result["op"] = json!(action);
+    if let Some(name) = args.get("name").and_then(Value::as_str) {
+        result["name"] = json!(name);
+    }
+
+    let file_path = match action {
+        "patch" => Some(
+            args.get("file_path")
+                .and_then(Value::as_str)
+                .unwrap_or("SKILL.md"),
+        ),
+        "write_file" | "remove_file" => args.get("file_path").and_then(Value::as_str),
+        _ => None,
+    };
+    if let Some(file_path) = file_path {
+        result["file_path"] = json!(file_path);
     }
 }
 
@@ -972,3 +998,113 @@ fn map_skill_err(err: SkillError) -> ToolSourceError {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod wire_tests {
+    use super::*;
+
+    fn json_response(result: ToolCallContent) -> Value {
+        let ToolCallContent::Text(text) = result else {
+            panic!("expected text result");
+        };
+        serde_json::from_str(&text).expect("tool result should be valid JSON")
+    }
+
+    #[test]
+    fn successful_results_include_raw_action_name_and_applicable_file_path() {
+        let cases = [
+            ("create", None, None),
+            ("edit", None, None),
+            ("patch", None, Some("SKILL.md")),
+            (
+                "patch",
+                Some("references/notes.md"),
+                Some("references/notes.md"),
+            ),
+            (
+                "write_file",
+                Some("scripts/setup.ps1"),
+                Some("scripts/setup.ps1"),
+            ),
+            (
+                "remove_file",
+                Some("assets/old.txt"),
+                Some("assets/old.txt"),
+            ),
+            ("delete", None, None),
+        ];
+
+        for (action, input_path, expected_path) in cases {
+            let mut args = json!({"action": action, "name": "wire-skill"});
+            if let Some(input_path) = input_path {
+                args["file_path"] = json!(input_path);
+            }
+            let mut result = json!({"success": true, "message": "unchanged"});
+
+            add_success_wire_fields(&mut result, action, &args);
+
+            assert_eq!(result["op"], action);
+            assert_eq!(result["name"], "wire-skill");
+            assert_eq!(
+                result.get("file_path").and_then(Value::as_str),
+                expected_path
+            );
+            assert_eq!(result["message"], "unchanged");
+        }
+    }
+
+    #[test]
+    fn failed_results_do_not_include_success_wire_fields() {
+        let args = json!({
+            "action": "patch",
+            "name": "wire-skill",
+            "file_path": "references/notes.md"
+        });
+        let mut result = json!({"success": false, "error": "not found"});
+
+        add_success_wire_fields(&mut result, "patch", &args);
+
+        assert!(result.get("op").is_none());
+        assert!(result.get("name").is_none());
+        assert!(result.get("file_path").is_none());
+        assert_eq!(result["error"], "not found");
+    }
+
+    #[tokio::test]
+    async fn tool_call_serializes_structured_wire_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(SkillStorageRegistry::new(dir.path()));
+        let tool = SkillManagerTool::for_background_review(storage, None);
+        let content = "---\nname: wire-skill\ndescription: Wire contract\n---\nold text";
+
+        let created = json_response(
+            tool.call(
+                json!({"action": "create", "name": "wire-skill", "content": content}),
+                None,
+            )
+            .await
+            .unwrap(),
+        );
+        assert_eq!(created["op"], "create");
+        assert_eq!(created["name"], "wire-skill");
+        assert!(created["message"].as_str().unwrap().contains("created"));
+
+        let patched = json_response(
+            tool.call(
+                json!({
+                    "action": "patch",
+                    "name": "wire-skill",
+                    "old_string": "old text",
+                    "new_string": "new text"
+                }),
+                None,
+            )
+            .await
+            .unwrap(),
+        );
+        assert_eq!(patched["op"], "patch");
+        assert_eq!(patched["name"], "wire-skill");
+        assert_eq!(patched["file_path"], "SKILL.md");
+        assert!(patched["_change"].is_object());
+    }
+}

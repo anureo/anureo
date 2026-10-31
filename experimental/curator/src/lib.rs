@@ -25,8 +25,8 @@ pub mod workflow;
 
 // Re-export key types for convenience
 pub use review::{
-    run_review, spawn_background_review, spawn_review_after_session, ReviewActionSummary,
-    ReviewConfig, ReviewOutcome, TokenUsageSummary, REVIEW_INSTRUCTION,
+    bounded_review_unified_diff, run_review, run_review_with_cancellation, spawn_background_review, spawn_review_after_session,
+    ReviewActionSummary, ReviewConfig, ReviewOutcome, TokenUsageSummary, REVIEW_INSTRUCTION,
 };
 pub use review_tool_gate::{ReviewToolGate, REVIEW_ALLOWED_TOOLS};
 
@@ -38,7 +38,10 @@ pub use curator::{
     SkillCluster, SkillSnapshot, StateTransition,
 };
 pub use curator_backup::{BackupError, CuratorBackup, SnapshotMeta};
-pub use history::{ReviewHistory, ReviewRecord, ReviewStatus};
+pub use history::{
+    ReviewDetailsPage, ReviewHistory, ReviewHistoryPage, ReviewRecord, ReviewRunStatus,
+    ReviewStatus, ReviewStatusRecord,
+};
 pub use observability::ObservabilityStore;
 pub use skill::sync::{
     compute_content_hash, compute_dir_hash, compute_hash, sync_skills, BundledManifest, SyncResult,

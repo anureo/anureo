@@ -1,6 +1,6 @@
 # Background Review 架构设计
 
-> **状态**：Draft，待评审
+> **状态**：Draft；ACP 协议 P0/P1 及内容 diff 已实现，候选确认与回滚待另立设计实施
 > **日期**：2026-08-20
 > **范围**：anureo ACP background review（Memory / Skill 知识整理）的运行时、生命周期与持久化边界
 > **相关代码**：`apps/acp/src/review_runner.rs`、`apps/acp/src/agent.rs`、`apps/acp/src/extensions/auto_review.rs`
@@ -24,25 +24,25 @@
 ```text
 prompt 完成
   → apps/acp/src/agent.rs
-  → review_runner::spawn_inprocess_review
+  → review_runner::spawn_inprocess_review（自动、手动共享）
   → extract_session_text
-  → anureo_curator::run_review
+  → anureo_curator::run_review_with_cancellation
   → Memory / Skill 写入
   → ReviewHistory 持久化
-  → agent_message_chunk + session_info_update
+  → agent_message_chunk + session_info_update + review/changed
 ```
 
 当前实现：
 
 | 能力 | 现状 | 证据 |
 |---|---|---|
-| 异步执行 | 独立 OS thread 和 Tokio runtime | `apps/acp/src/review_runner.rs:101-170` |
-| 每 session 去重 | `global_registry().try_acquire` | `apps/acp/src/review_runner.rs:128-140` |
-| 自动触发 | 每次 `RunCompletion::Finished` 后启动 | `apps/acp/src/agent.rs:1272-1288` |
-| 手动触发 | `/review-skill` 命令 | `apps/acp/src/agent.rs:1045-1060` |
-| 历史记录 | `ReviewHistory` append | `apps/acp/src/review_runner.rs:172-220` |
-| session 状态 | `session/list` 返回 `_meta.review` | `apps/acp/src/agent.rs:2059-2180` |
-| 完成通知 | assistant 摘要和 session metadata | `apps/acp/src/review_runner.rs:242-285` |
+| 异步执行 | 独立 OS thread 和 Tokio runtime | `apps/acp/src/review_runner.rs` |
+| 每 session 去重 | 进程内 active registry + 持久化 running 行 | `apps/acp/src/review_runner.rs` |
+| 自动触发 | 主 prompt 完成后启动 | `apps/acp/src/agent.rs` |
+| 手动触发 | `/review-skill` 或 ACP `review/start` | `apps/acp/src/agent.rs`、`apps/acp/src/extensions/review.rs` |
+| 历史记录 | `ReviewHistory` 持久化 review id、actions 和失败原因 | `experimental/curator/src/history.rs` |
+| session 状态 | `session/list` 返回 `_meta.review`；重启后孤儿 running 记为 failed | `apps/acp/src/agent.rs`、`apps/acp/src/review_runner.rs` |
+| 状态通知 | `session_info_update` 与 owner-scoped `review/changed` | `apps/acp/src/review_runner.rs`、`apps/acp/src/extensions/review.rs` |
 
 ## 3. 设计决策
 

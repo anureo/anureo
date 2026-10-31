@@ -81,6 +81,12 @@ anureo review pending --limit 50
 
 `history` 查看最新审查记录（可按 trigger 过滤）；注意当前实现先取最新 N 条总体记录，再应用 trigger filter，所以匹配记录可能少于 N。`show` 查看某 session 的最新 status，尚未处理则显示 pending；`pending` 列出尚未出现在 review status 中的 sessions。`history` 是 append-only，但同一 session 的 `review_status` 会被最新记录 upsert；因此重审会保留历史，同时改变 pending 判定。打开 history 可能初始化 `memory.db` schema，旧 JSONL 迁移成功后重命名为 `.jsonl.bak`。
 
+### ACP Background Review 状态与查询
+
+ACP 客户端可从 `session/list` 的 `_meta.review` 或 `_anureo.dev/review/status` 读取最近一次状态：`running`、`reviewed`、`skipped`、`failed`。状态带稳定的 `review_id`；终态包含计数、耗时与最多 10 条结构化 `actions`，超过上限时 `actions_truncated: true`。`review/history` 分页读取历史，`review/details` 按 `reviewId` 分页读取完整动作。状态变化通过 `session_info_update` 和 `_anureo.dev/review/changed` 通知；通知可能丢失，刷新或重连后应重新查询。
+
+客户端可调用 `review/start`（`scope: all | memory | skills`）和 `review/cancel`。重复启动同一 session 的运行中 review 会返回原 `reviewId`；取消只影响后台 review，不取消主 prompt。能力协商中的 `backgroundReview.diff` 为 `true`；`review/details` 加 `includeDiff: true` 可获取可用动作的内容 diff。旧记录或无法从工具入参重建的动作会返回 `diff_available: false`。默认只在 review history 保存 checkpoint 引用，不复制 diff 明文；仅显式设置 `ANUREO_REVIEW_PERSIST_DIFF=1` 才落明文。修改结果仍建议直接核对 Memory/Skill 文件及备份。
+
 ### `review-skill`：stdin 或文件
 
 ```powershell

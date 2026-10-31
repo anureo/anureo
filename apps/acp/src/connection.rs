@@ -127,6 +127,11 @@ impl AcpConnection {
         self.initialized.load(Ordering::Acquire)
     }
 
+    #[cfg(test)]
+    pub(crate) fn mark_initialized_for_test(&self) {
+        self.initialized.store(true, Ordering::Release);
+    }
+
     pub async fn require_capabilities(
         &self,
     ) -> Result<ClientCapabilitiesInfo, ConnectionStateError> {

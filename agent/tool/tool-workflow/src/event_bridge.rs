@@ -4,7 +4,9 @@ use luft_core::contract::event::{AgentEvent as LuftAgentEvent, ProgressDelta};
 pub fn map_anureo_event_to_delta(ev: &AnureoAgentEvent) -> Option<ProgressDelta> {
     match ev {
         AnureoAgentEvent::TextChunk(text) => Some(ProgressDelta::Message { text: text.clone() }),
-        AnureoAgentEvent::ToolCallStart { name, arguments } => {
+        AnureoAgentEvent::ToolCallStart {
+            name, arguments, ..
+        } => {
             let summary = if arguments.len() > 200 {
                 format!("{}({}...)", name, &arguments[..200])
             } else {
